@@ -1,11 +1,46 @@
 /**
- * Medium-LLM prompt composition — faithful port of build_medium_prompt from kernel.py
+ * Medium-LLM prompt composition — BSP walks of medium-agent.json.
  *
- * All prompt patterns are read from the block's prompt_template (layer 2).
- * The kernel just assembles them. A designer can change behaviour by editing the block.
+ * All prompt intelligence lives in the pscale block (layer 2).
+ * This function just walks the block and assembles context.
+ * Change behaviour by editing the block, not this code.
  */
 
 import type { Block } from './types';
+import { bsp } from './bsp';
+import type { DirResult } from './bsp';
+import mediumAgent from '../../blocks/xstream/medium-agent.json';
+
+/**
+ * Flatten a pscale subtree into lines of text.
+ * Walks underscore-first, then digits 1-9, recursively.
+ */
+function flattenNode(node: unknown): string[] {
+  if (typeof node === 'string') return [node];
+  if (!node || typeof node !== 'object') return [];
+  const obj = node as Record<string, unknown>;
+  const lines: string[] = [];
+  if ('_' in obj && typeof obj._ === 'string') lines.push(obj._);
+  for (let d = 1; d <= 9; d++) {
+    const k = String(d);
+    if (k in obj) lines.push(...flattenNode(obj[k]));
+  }
+  return lines;
+}
+
+/** Walk a block address and flatten the subtree at that point into joined text. */
+function walkText(address: number): string {
+  const result = bsp(mediumAgent, address, 'dir') as DirResult;
+  return flattenNode(result.subtree).join('\n');
+}
+
+/** Walk a block address and return each node as a separate bullet. */
+function walkBullets(address: number, name: string): string {
+  const result = bsp(mediumAgent, address, 'dir') as DirResult;
+  return flattenNode(result.subtree)
+    .map(line => `- ${line.replace(/this character/gi, name).replace(/the character/gi, name)}`)
+    .join('\n');
+}
 
 export function buildMediumPrompt(
   block: Block,
@@ -13,25 +48,25 @@ export function buildMediumPrompt(
   dominoContext?: string
 ): string {
   const char = block.character;
-  const tmpl = block.prompt_template;
   const name = char.name;
 
-  // Role
-  const role = tmpl.role.replace(/{name}/g, name);
+  // ── Role (from block 0.1) ──
+  const roleText = walkText(0.1).replace(/this character/gi, name).replace(/the character/gi, name);
+  const role = `You are the medium-LLM for ${name}.\n${roleText}`;
 
-  // Scene
+  // ── Scene (from character block — dynamic) ──
   const sceneSection = `SCENE:\n${block.scene}`;
 
-  // Character
+  // ── Character (from character block — dynamic) ──
   const charSection = `CHARACTER — ${name}:\n${char.state}`;
 
-  // Solid history (last 3 for continuity)
+  // ── Solid history (last 3 for continuity) ──
   const history = char.solid_history.slice(-3);
   const historySection = history.length > 0
     ? `PREVIOUS NARRATIVE (canon for ${name}):\n${history.map(s => `• ${s}`).join('\n')}`
     : '';
 
-  // Accumulated context
+  // ── Accumulated context (from character block — dynamic) ──
   const acc = block.accumulated;
   const accSection = acc.length > 0
     ? `ACCUMULATED CONTEXT (CANON — already happened):\n${acc.map(a =>
@@ -39,7 +74,7 @@ export function buildMediumPrompt(
       ).join('\n\n')}`
     : 'ACCUMULATED CONTEXT: Nothing accumulated from other characters.';
 
-  // Intention depends on trigger type
+  // ── Intention / domino trigger (dynamic + block-walked mode instructions) ──
   let intentSection: string;
   const dominoMode = block.trigger?.domino_mode ?? 'auto';
 
@@ -51,20 +86,22 @@ export function buildMediumPrompt(
       intentSection += `\n\n${name}'S PENDING LIQUID (submitted before domino — may be used or overridden by events):\n${block.pending_liquid}`;
     }
 
-    // Mode-specific domino instruction
+    // Mode-specific domino instruction from block 0.52 (informed) or 0.51 (auto)
     if (dominoMode === 'informed') {
-      intentSection += `\n\nDOMINO MODE: PERCEPTION ONLY. Narrate what ${name} perceives — sights, sounds, sensations. ${name} does NOT act, speak, decide, or respond. You are a camera, not an actor. The player will decide what to do. Produce empty domino list — do not trigger further cascades.`;
+      const informedText = walkText(0.52).replace(/this character/gi, name).replace(/the character/gi, name);
+      intentSection += `\n\nDOMINO MODE: PERCEPTION ONLY.\n${informedText}`;
     }
-    // 'auto' mode: no extra instruction, medium narrates freely including character action
+    // 'auto' mode: no extra instruction, medium narrates freely
   }
 
-  // Constraints
-  const constraints = tmpl.constraints
-    .map(c => `- ${c.replace(/{name}/g, name)}`)
-    .join('\n');
+  // ── Constraints (from block 0.2) ──
+  const constraints = walkBullets(0.2, name);
 
-  // Output instruction
-  const output = tmpl.output_instruction;
+  // ── Output schema (from block 0.3) ──
+  const outputSchema = walkText(0.3).replace(/this character/gi, name).replace(/the character/gi, name);
+
+  // ── Response format (from block 0.7) ──
+  const responseFormat = walkText(0.7);
 
   return `${role}
 
@@ -81,14 +118,9 @@ ${intentSection}
 RULES:
 ${constraints}
 
-Produce:
-(a) SOLID — 2-4 sentences, ${name}'s sensory perspective only. Second person present tense ("You step forward", "You hear"). Include quoted speech when characters speak.
-(b) EVENTS — 2-5 observable facts others could perceive (NOT internal thoughts)
-(c) DOMINO — characters directly affected who must respond immediately.
-    Each entry: {"target": "char_id", "context": "what happened to them", "urgency": "immediate"}
-    Empty list if action is self-contained.
-(d) INTERNAL — one sentence on ${name}'s mental state
+OUTPUT:
+${outputSchema}
 
-${output}
+${responseFormat}
 {"solid":"narrative","events":["event"],"domino":[],"internal":"state"}`;
 }
