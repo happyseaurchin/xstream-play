@@ -1,19 +1,19 @@
 /**
  * Medium-LLM prompt composition — BSP walks of medium-agent.json.
  *
- * All prompt intelligence lives in the pscale block (layer 2).
- * This function just walks the block and assembles context.
- * Change behaviour by editing the block, not this code.
+ * The block holds the tested prompt text from the Python kernel.
+ * This function walks it and assembles the context window.
+ * Same output as kernel.py build_medium_prompt, different source.
  */
 
 import type { Block } from './types';
 import { bsp } from './bsp';
-import type { DirResult } from './bsp';
+import type { DirResult, SpindleResult } from './bsp';
 import mediumAgent from '../../blocks/xstream/medium-agent.json';
 
 /**
  * Flatten a pscale subtree into lines of text.
- * Walks underscore-first, then digits 1-9, recursively.
+ * Underscore first, then digits 1-9, recursively.
  */
 function flattenNode(node: unknown): string[] {
   if (typeof node === 'string') return [node];
@@ -28,20 +28,6 @@ function flattenNode(node: unknown): string[] {
   return lines;
 }
 
-/** Walk a block address and flatten the subtree at that point into joined text. */
-function walkText(address: number): string {
-  const result = bsp(mediumAgent, address, 'dir') as DirResult;
-  return flattenNode(result.subtree).join('\n');
-}
-
-/** Walk a block address and return each node as a separate bullet. */
-function walkBullets(address: number, name: string): string {
-  const result = bsp(mediumAgent, address, 'dir') as DirResult;
-  return flattenNode(result.subtree)
-    .map(line => `- ${line.replace(/this character/gi, name).replace(/the character/gi, name)}`)
-    .join('\n');
-}
-
 export function buildMediumPrompt(
   block: Block,
   triggerType: 'commit' | 'domino',
@@ -50,14 +36,14 @@ export function buildMediumPrompt(
   const char = block.character;
   const name = char.name;
 
-  // ── Role (from block 0.1) ──
-  const roleText = walkText(0.1).replace(/this character/gi, name).replace(/the character/gi, name);
-  const role = `You are the medium-LLM for ${name}.\n${roleText}`;
+  // ── Role: spindle root ──
+  const roleResult = bsp(mediumAgent, 0) as SpindleResult;
+  const role = roleResult.nodes[0].text.replace(/{name}/g, name);
 
-  // ── Scene (from character block — dynamic) ──
+  // ── Scene ──
   const sceneSection = `SCENE:\n${block.scene}`;
 
-  // ── Character (from character block — dynamic) ──
+  // ── Character ──
   const charSection = `CHARACTER — ${name}:\n${char.state}`;
 
   // ── Solid history (last 3 for continuity) ──
@@ -66,7 +52,7 @@ export function buildMediumPrompt(
     ? `PREVIOUS NARRATIVE (canon for ${name}):\n${history.map(s => `• ${s}`).join('\n')}`
     : '';
 
-  // ── Accumulated context (from character block — dynamic) ──
+  // ── Accumulated context ──
   const acc = block.accumulated;
   const accSection = acc.length > 0
     ? `ACCUMULATED CONTEXT (CANON — already happened):\n${acc.map(a =>
@@ -74,7 +60,7 @@ export function buildMediumPrompt(
       ).join('\n\n')}`
     : 'ACCUMULATED CONTEXT: Nothing accumulated from other characters.';
 
-  // ── Intention / domino trigger (dynamic + block-walked mode instructions) ──
+  // ── Intention / domino trigger ──
   let intentSection: string;
   const dominoMode = block.trigger?.domino_mode ?? 'auto';
 
@@ -85,25 +71,29 @@ export function buildMediumPrompt(
     if (block.pending_liquid) {
       intentSection += `\n\n${name}'S PENDING LIQUID (submitted before domino — may be used or overridden by events):\n${block.pending_liquid}`;
     }
-
-    // Mode-specific domino instruction from block 0.52 (informed) or 0.51 (auto)
     if (dominoMode === 'informed') {
-      const informedText = walkText(0.52).replace(/this character/gi, name).replace(/the character/gi, name);
-      intentSection += `\n\nDOMINO MODE: PERCEPTION ONLY.\n${informedText}`;
+      intentSection += `\n\nDOMINO MODE: PERCEPTION ONLY. Narrate what ${name} perceives — sights, sounds, sensations. ${name} does NOT act, speak, decide, or respond. Produce empty domino list.`;
     }
-    // 'auto' mode: no extra instruction, medium narrates freely
   }
 
-  // ── Constraints (from block 0.2) ──
-  const constraints = walkBullets(0.2, name);
+  // ── Rules: dir walk of section 1 → header + ring of constraints ──
+  const rulesDir = bsp(mediumAgent, 0.1, 'dir') as DirResult;
+  const rulesLines = flattenNode(rulesDir.subtree);
+  const rules = rulesLines[0] + '\n' + rulesLines.slice(1)
+    .map(line => `- ${line}`)
+    .join('\n');
 
-  // ── Output schema (from block 0.3) ──
-  const outputSchema = walkText(0.3).replace(/this character/gi, name).replace(/the character/gi, name);
+  // ── Produce: dir walk of section 2 → header + ring of output fields ──
+  const produceDir = bsp(mediumAgent, 0.2, 'dir') as DirResult;
+  const produceLines = flattenNode(produceDir.subtree);
+  const produce = produceLines.join('\n');
 
-  // ── Response format (from block 0.7) ──
-  const responseFormat = walkText(0.7);
+  // ── Format: point at section 3 ──
+  const formatResult = bsp(mediumAgent, 0.3) as SpindleResult;
+  const format = formatResult.nodes[formatResult.nodes.length - 1].text;
 
-  return `${role}
+  // Substitute {name} in rules and produce
+  const prompt = `${role}
 
 ${sceneSection}
 
@@ -115,11 +105,11 @@ ${accSection}
 
 ${intentSection}
 
-RULES:
-${constraints}
+${rules}
 
-OUTPUT:
-${outputSchema}
+${produce}
 
-${responseFormat}`;
+${format}`;
+
+  return prompt.replace(/{name}/g, name);
 }
