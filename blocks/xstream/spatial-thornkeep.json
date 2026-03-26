@@ -1,0 +1,46 @@
+{
+  "_": "The Broken Coast — a stretch of rocky shoreline where fishing villages cling to the cliffs and trade routes pass through reluctantly. Salt wind, grey stone, persistent rain.",
+  "1": {
+    "_": "Thornkeep — a village of two hundred souls built into the cliff face above a natural harbour. Stone buildings, slate roofs, narrow streets that switchback up the slope. The harbour below brings trade; the cliff above brings wind.",
+    "1": {
+      "_": "The Salted Dog — Thornkeep's only tavern, built into the base of the cliff where the main street meets the harbour road. Three hundred years old. Stone walls two feet thick. A place where fishers, traders, and guards share warmth against the Atlantic weather.",
+      "1": {
+        "_": "Main room — low ceiling, stone hearth at the far wall, bar of dark oak running the length of the right side. Six tables, none matching. The floor is flagstone worn smooth by centuries of boots. A wooden partition screens the corner table from the rest of the room. The front door is heavy oak with iron studs, visible from the bar and from behind the bar but not from behind the partition. Whale-oil lamps hang from iron hooks. The fire is always lit.",
+        "1": "The hearth — a stone fireplace large enough to stand in, blackened by three centuries of use. The mantel holds a ship's bell and a carved whalebone. The fire throws warmth across the main room and light that flickers on the far wall. The corner table sits to its left, partially screened.",
+        "2": "The bar — dark oak, scarred and polished by use. Eight stools. Behind it: shelves of bottles, a rack of cleaned glasses, a trapdoor to the cellar. The barkeeper's position is slightly elevated on a stone step, giving a full view of the room including the front door.",
+        "3": "The corner table — screened by the wooden partition on two sides. Candle-lit. Seats four. The partition blocks the view of the front door from this position. Characters here see the hearth and part of the room but not the entrance. Popular with those who want privacy.",
+        "4": "The front door — heavy oak with iron studs. Opens inward. When it opens, cold air and harbour-smell enter. The draught reaches the hearth and the bar. The sound of the door carries to every part of the room. Rain noise intensifies briefly.",
+        "5": "The common floor — flagstone, six tables of various sizes scattered without pattern. Background patrons occupy two or three on any given evening. The space between bar and hearth is the natural thoroughfare — anyone moving between them crosses the common floor."
+      },
+      "2": {
+        "_": "Back room — smaller, accessed through a curtained doorway behind the bar. Storage, supplies, and a table where the barkeeper does accounts. Not public, but not locked. Characters entering here are noticed by the barkeeper.",
+        "1": "Supply shelves — barrels of ale, bottles of spirits, sacks of grain. The cellar trapdoor in the bar connects to a lower storage area that also has a hatch opening to the back room.",
+        "2": "The account table — a scratched wooden desk with a ledger, a cashbox, and a lamp. The barkeeper's private space. Papers, notes, a knife used for cutting twine."
+      },
+      "3": {
+        "_": "Stairs up — a narrow stone staircase accessed from the back room, leading to two rooms above the tavern. Creaks audibly. Anyone ascending or descending is heard in the back room and faintly in the main room.",
+        "1": "Upper room east — a sleeping room with two cots, a washstand, and a window overlooking the harbour. Available for rent. The window gives a view of the harbour road, the fishing boats, and on clear nights, the lighthouse on the headland.",
+        "2": "Upper room west — the barkeeper's room. Locked. A bed, a chest, personal effects. The window faces the cliff, showing only rock and sky. A rope ladder is coiled under the window for emergencies."
+      }
+    },
+    "2": {
+      "_": "The harbour road — runs from the harbour steps up through the village to the cliff path above. The Salted Dog sits where harbour road meets the main street. Cobbled, narrow, slippery in rain. Whale-oil lamps at intervals.",
+      "1": "The harbour steps — cut into the rock, leading down to the harbour proper. Slippery with salt spray. Fishing boats moored below, nets hanging to dry on frames.",
+      "2": "The market corner — where harbour road widens briefly. Three permanent stalls: a chandler, a net-mender, a fishmonger who sells whatever came in that day. Closed after dark.",
+      "3": "The cliff path — continues up from the village toward the headland. Exposed to weather. The lighthouse is visible from here on clear days. Few go up at night."
+    },
+    "3": {
+      "_": "The guard station — a stone building at the top of the harbour road where it enters the village proper. Two guards on rotation. They see everyone who comes up from the harbour. Off-duty guards frequently found at the Salted Dog.",
+      "1": "The watch room — a single room with a table, two chairs, a weapons rack, and a window overlooking the harbour road. A logbook records arrivals and departures.",
+      "2": "The lockup — a cell behind the watch room. Iron door, stone walls, no window. Rarely used. Currently empty."
+    }
+  },
+  "2": {
+    "_": "The headland — rocky promontory extending beyond the village. The lighthouse stands at its tip. The cliff path from Thornkeep reaches it after a twenty-minute walk. Windswept, exposed, dramatic views of the coast in both directions.",
+    "1": "The lighthouse — stone tower, currently maintained by a keeper who is rarely seen in the village. Light burns every night. Ships navigate by it. The keeper has been there longer than most villagers remember."
+  },
+  "3": {
+    "_": "The southern road — the trade route that connects the Broken Coast to inland settlements. Passes through scrubland and heath before reaching the Greymarch crossing two days' travel south. Tolls have increased recently, affecting merchant traffic.",
+    "1": "The Greymarch crossing — a bridge over a deep river gorge, controlled by a toll station. The only viable river crossing for wagons. Recent toll increases have caused complaint among traders. The guild mark on the toll receipts is distinctive bronze-work."
+  }
+}

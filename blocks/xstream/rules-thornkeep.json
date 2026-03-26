@@ -1,0 +1,55 @@
+{
+  "_": "Rules for Thornkeep — what constrains action, how conflicts resolve, and what social norms apply. These are read by the hard-LLM and included in the perception frame as applicable_rules. The medium-LLM respects them when producing narrative.",
+  "1": {
+    "_": "Social norms — the unwritten rules that govern behaviour in Thornkeep.",
+    "1": {
+      "_": "The Salted Dog — Essa's house, Essa's rules. Drawing a weapon inside is a serious transgression. The barkeeper has authority to eject anyone and has done so for thirty years. Guards who cause trouble inside lose their welcome, and losing your welcome at the only tavern in Thornkeep is a real consequence.",
+      "1": "Weapons may be carried but not drawn. Sword belts unbuckled and placed on furniture is the local custom for off-duty guards — it signals 'not working, not threatening.'",
+      "2": "Strangers are watched but not confronted unless they cause trouble first. Thornkeep depends on trade; hostility to strangers harms the village. The barkeeper makes first contact, not guards.",
+      "3": "The back room is not public but not forbidden. Entering without invitation from the barkeeper draws a look and a question, not violence."
+    },
+    "2": {
+      "_": "The harbour road and village — public space governed by guard authority. Guards patrol in pairs. Off-duty guards carry authority in emergencies but technically should call for on-duty colleagues.",
+      "1": "After dark, the harbour road is lit by whale-oil lamps but the spaces between are shadowed. Movement after midnight draws guard attention.",
+      "2": "The market corner is public by day, empty by night. Goods left unattended are not stolen — Thornkeep is small enough that theft has social consequences that outweigh the gain."
+    },
+    "3": {
+      "_": "The harbour and cliffs — dangerous terrain. Falls kill. The harbour steps are slippery. The cliff path is exposed. Weather matters.",
+      "1": "Rain makes stone surfaces treacherous. Any physical action on wet stone has a higher chance of failure or complication. The medium-LLM should reflect this — a chase on wet harbour steps is not the same as a chase on dry cobbles.",
+      "2": "The sea is cold. Falling in means hypothermia within minutes. Swimming is not a casual option."
+    }
+  },
+  "2": {
+    "_": "Conflict resolution — how the medium-LLM determines outcomes when actions are contested.",
+    "1": {
+      "_": "Default: narrative resolution. The medium-LLM judges outcomes based on character capabilities, position, physical reality, and narrative coherence. No dice, no numbers. The world is realistic and the LLM is honest about what would happen.",
+      "1": "A trained guard draws faster than a merchant. A barkeeper who has broken up hundreds of fights reads the room faster than a young guard. A merchant recognises trade goods that others miss. Competence is derived from character state, not stats.",
+      "2": "Position matters more than skill in many situations. The person closer to the door reaches it first. The person facing the threat sees it first. The person behind the bar has elevation. Physical reality constrains action."
+    },
+    "2": {
+      "_": "Optional: dice evaluation. When enabled by the designer, contested actions can include a mechanical resolution step. The dice block defines the system — currently simple, expandable.",
+      "1": "Roll format: target number set by difficulty, modified by character competence. Higher is better. The result is a skeleton that the medium-LLM narrates around.",
+      "2": "Dice results are injected into the medium's context as accumulated context: 'Stealth check: rolled 4 against difficulty 6. Failed narrowly.' The medium narrates the failure in character-appropriate terms.",
+      "3": "Dice never override narrative impossibility. You cannot succeed at picking a lock if you have no lockpicking tools, regardless of the roll. The dice resolve uncertain outcomes within the space of what is physically possible."
+    },
+    "3": {
+      "_": "Domino physics — when one action forces another character to respond.",
+      "1": "Direct physical contact or immediate threat generates a domino. Drawing a weapon near someone. Throwing something at someone. Grabbing someone's arm. Blocking a doorway someone is moving toward.",
+      "2": "Indirect effects do not generate dominos. Speaking across the room. Entering a building. Looking at someone. These produce events that accumulate; they do not force response.",
+      "3": "Area effects — kicking over a table, starting a fire, shouting — may domino multiple characters if they are within the affected area. The medium-LLM judges who is close enough to be directly affected."
+    }
+  },
+  "3": {
+    "_": "Perception rules — what characters can and cannot detect.",
+    "1": "Vision requires line of sight and sufficient light. The wooden partition in the Salted Dog blocks vision to the corner table. The back room is not visible from the main room unless the curtain is open.",
+    "2": "Sound carries through stone walls but is muffled. Conversation in the back room is inaudible from the main room unless raised to shouting. The creak of the stairs is audible from the back room and faintly from the main room.",
+    "3": "Smell and temperature carry through open spaces. The draught from the front door reaches the hearth. Smoke from the fire permeates everything. A new smell — wet wool, perfume, blood — is noticeable to anyone in the room.",
+    "4": "Touch and proprioception are immediate. You feel the temperature change when the door opens. You feel someone grab your arm. You feel the floor vibrate when something heavy falls nearby."
+  },
+  "4": {
+    "_": "Time and pacing — how the game handles the passage of time.",
+    "1": "One commit covers roughly one natural beat of action — a few seconds in a fight, a minute in conversation, longer for travel or waiting. The medium-LLM judges the appropriate duration from the nature of the action.",
+    "2": "Multiple characters at different pscales coexist. One character in rapid combat (fine pscale, seconds per commit) while another is studying a map (coarse pscale, minutes per commit). The accumulation model handles this naturally — faster characters produce more events that the slower character incorporates on their next commit.",
+    "3": "The game does not have turns. There is no initiative order. Commit when ready. The timing of the commit is itself a meaningful choice — early for influence, late for information."
+  }
+}
