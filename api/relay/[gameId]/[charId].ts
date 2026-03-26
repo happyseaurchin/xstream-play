@@ -5,6 +5,8 @@
 import { put, head } from '@vercel/blob';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
+const token = process.env.BLOB_READ_WRITE_TOKEN || process.env.BLOB2_READ_WRITE_TOKEN;
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, OPTIONS');
@@ -36,6 +38,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         addRandomSuffix: false,
         allowOverwrite: true,
         contentType: 'application/json',
+        token,
       });
       return res.status(200).json({ ok: true, size: json.length });
     } catch (e: unknown) {
@@ -48,7 +51,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (req.method === 'GET') {
     try {
-      const meta = await head(key);
+      const meta = await head(key, { token });
       if (!meta) return res.status(404).json({ error: 'not found' });
       const resp = await fetch(meta.url);
       const data = await resp.json();

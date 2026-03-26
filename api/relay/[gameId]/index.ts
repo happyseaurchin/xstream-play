@@ -7,6 +7,8 @@
 import { list } from '@vercel/blob';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
+const token = process.env.BLOB_READ_WRITE_TOKEN || process.env.BLOB2_READ_WRITE_TOKEN;
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -19,7 +21,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const prefix = `relay/${gameId}/`;
 
   try {
-    const { blobs } = await list({ prefix });
+    const { blobs } = await list({ prefix, token });
 
     // Fetch each blob's content, excluding the requester's own
     const blocks = await Promise.all(

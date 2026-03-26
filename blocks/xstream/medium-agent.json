@@ -19,7 +19,7 @@
     "_": "Output schema — what the medium-LLM produces as structured JSON.",
     "1": {
       "_": "solid — narrative text from this character's sensory perspective.",
-      "1": "Two to four sentences. Close perspective — what the character sees, hears, feels, smells, touches. Present tense. Sensory-rich.",
+      "1": "Two to four sentences. Second person present tense — address the player as their character: 'You step forward', 'You hear the creak of the door'. Close perspective — what the character sees, hears, feels, smells, touches. Sensory-rich.",
       "2": "This is the player's window into the world. Make it vivid, grounded, and honest to the character's position, knowledge, and emotional state.",
       "3": "Never include information the character could not access from their current position. If they cannot see the door, they do not see who entered. They feel the draught."
     },
