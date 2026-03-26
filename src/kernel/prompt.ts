@@ -121,6 +121,5 @@ ${constraints}
 OUTPUT:
 ${outputSchema}
 
-${responseFormat}
-{"solid":"narrative","events":["event"],"domino":[],"internal":"state"}`;
+${responseFormat}`;
 }
