@@ -1,8 +1,34 @@
 # CLAUDE.md — XStream Play
 
-> **This is not a normal coding project.**
-> This system is built around pscale JSON blocks and BSP navigation.
-> Before writing TypeScript, ask: "Can this be a block edit instead?"
+## FIRST THING YOU DO
+
+Before ANY coding, fetch and understand pscale:
+
+```
+https://raw.githubusercontent.com/pscale-commons/pscale/main/pscale-touchstone.json
+https://raw.githubusercontent.com/pscale-commons/pscale/main/bsp.js
+```
+
+**Read the touchstone.** It is a pscale JSON block that teaches the pscale block format by being an operational example of it. Every spindle through it delivers both explanation and demonstration simultaneously.
+
+**Implement or import bsp.js.** The BSP function is the single most important tool in this project. Everything — prompt composition, world navigation, context window assembly — should flow through BSP walks. `bsp(block, number, mode?)` splits a number into digits, walks the tree, collects underscore text at each level. The result is a spindle: broad context narrowing to specific detail.
+
+**The coding inversion**: in pscale, meaning lives inside numbers. Address `0.213` walks a tree and returns a chain of semantic content. The number IS the query. The structure IS the index. There are no field names to memorise, no schema to learn — just underscore, digits 1-9, and curly brackets. Any consumer that understands these three conventions can navigate any block regardless of subject matter.
+
+> **HONESTY**: The current codebase does NOT yet use BSP walks for prompt composition.
+> `prompt.ts` assembles text directly from block fields. This is the main gap.
+> The most important work is replacing direct field access with BSP spindle walks
+> through pscale blocks. Every session should move the codebase toward this.
+
+---
+
+## THE RULE
+
+Before writing TypeScript, ask: **"Can this be a block edit instead?"**
+
+If you're adding a new feature, ask: **"Can BSP walk a block to provide this?"**
+
+If you're changing behaviour, ask: **"Is this a spindle at a different address?"**
 
 ---
 
@@ -21,30 +47,15 @@
 
 ---
 
-## PSCALE JSON BLOCKS — READ THIS FIRST
+## PSCALE QUICK REFERENCE
 
-The entire system is built on pscale JSON blocks. Before touching any code, understand these:
+The format uses three key types: `_` (meaning at zero), `1`-`9` (branches), `{}` (depth).
 
-### What is a pscale block?
-A JSON object using exactly three key types:
-- `_` (underscore) — meaning at the zero position. Always a complete thought, never a heading.
-- `1` through `9` — branch positions. At most nine children per level.
-- `{}` (nesting) — depth via curly brackets.
+BSP modes: `spindle` (default — vertical context chain), `ring` (siblings), `dir` (full tree), `point` (one node), `disc` (one depth across all branches).
 
-### BSP (Block-Spindle-Point)
-One function: `bsp(block, number, mode?)`. It splits a number into digits, walks the tree collecting underscore text at each level. The result is a **spindle** — a chain from broad context to specific detail.
+Floor = underscore chain depth. A rendition block (floor 1) has addresses like `0.213`. A living block (floor 3) has addresses like `321.4`. The walk function is identical — floor calibrates which depth is human scale.
 
-Example: `bsp(block, 0.21)` walks digit 2 then digit 1, collecting root._ → root[2]._ → root[2][1]. Three levels of meaning in one call.
-
-### The reference implementation
-- **Touchstone**: https://raw.githubusercontent.com/pscale-commons/pscale/main/pscale-touchstone.json
-- **BSP (JS)**: https://raw.githubusercontent.com/pscale-commons/pscale/main/bsp.js
-- **BSP (Python)**: https://raw.githubusercontent.com/pscale-commons/pscale/main/bsp.py
-
-### Why this matters for this project
-Context windows are composed from BSP spindle walks through blocks. The medium-LLM doesn't receive "a prompt" — it receives assembled spindles from character blocks, scene blocks, event blocks. Changing the game means changing the blocks, not the code.
-
-**Current gap**: The build doesn't yet use BSP walks for prompt composition. `prompt.ts` assembles text directly from block fields. The next step is to make prompt templates into pscale blocks that BSP walks compose into context windows. This is the most important evolution of the codebase.
+Full spec: read the touchstone (linked above). It teaches itself.
 
 ---
 
