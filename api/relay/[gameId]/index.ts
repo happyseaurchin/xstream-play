@@ -3,11 +3,25 @@
  *
  * Returns an array of character blocks, excluding the requester's own.
  * This is what the kernel polls to discover peer events and dominos.
+ *
+ * Relay storage: Supabase relay_blocks table
  */
-import { list } from '@vercel/blob';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-const token = process.env.BLOB2_READ_WRITE_TOKEN;
+const SUPABASE_URL = process.env.SUPABASE_URL!;
+const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY!;
+
+function supaFetch(path: string, init?: RequestInit) {
+  return fetch(`${SUPABASE_URL}/rest/v1${path}`, {
+    ...init,
+    headers: {
+      apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${SUPABASE_KEY}`,
+      'Content-Type': 'application/json',
+      ...init?.headers,
+    },
+  });
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -18,31 +32,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'method not allowed' });
 
   const { gameId, exclude } = req.query as { gameId: string; exclude?: string };
-  const prefix = `relay/${gameId}/`;
 
   try {
-    const { blobs } = await list({ prefix, token });
+    let path = `/relay_blocks?game_id=eq.${gameId}&select=block`;
+    if (exclude) {
+      path += `&char_id=neq.${exclude}`;
+    }
 
-    // Fetch each blob's content, excluding the requester's own
-    const blocks = await Promise.all(
-      blobs
-        .filter(blob => {
-          if (!exclude) return true;
-          // blob.pathname is like "relay/abc123/kael.json"
-          const charId = blob.pathname.split('/').pop()?.replace('.json', '');
-          return charId !== exclude;
-        })
-        .map(async blob => {
-          try {
-            const resp = await fetch(blob.url);
-            return await resp.json();
-          } catch {
-            return null;
-          }
-        })
-    );
+    const resp = await supaFetch(path);
+    if (!resp.ok) {
+      const err = await resp.text();
+      return res.status(500).json({ error: err });
+    }
 
-    return res.status(200).json(blocks.filter(Boolean));
+    const rows = await resp.json();
+    return res.status(200).json(rows.map((r: { block: unknown }) => r.block));
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Unknown error';
     return res.status(500).json({ error: msg });
