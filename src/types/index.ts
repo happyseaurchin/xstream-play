@@ -1,0 +1,88 @@
+// Core types for xstream
+
+// Phase 0.9.0: Renamed 'player' to 'character'
+export type Face = 'character' | 'author' | 'designer'
+export type TextState = 'draft' | 'submitted' | 'committed'
+export type LLMMode = 'soft' | 'medium'
+export type SolidView = 'log' | 'dir'
+export type SoftType = 'artifact' | 'clarify' | 'refine' | 'action' | 'info'
+
+// Frame definition
+export interface Frame {
+  id: string | null
+  name: string
+  xyz: string
+}
+
+// Visibility settings for sharing and filtering
+export interface VisibilitySettings {
+  shareVapor: boolean
+  shareLiquid: boolean
+  showVapor: boolean
+  showLiquid: boolean
+  showSolid: boolean
+}
+
+export interface SkillUsed {
+  category: string
+  name: string
+}
+
+export interface FrameSkill {
+  id: string
+  name: string
+  category: string
+  applies_to: string[]
+  content: string
+  package_name?: string
+  package_level?: string
+}
+
+export interface ShelfEntry {
+  id: string
+  text: string
+  face: Face
+  frameId: string | null
+  state: TextState
+  timestamp: string
+  isEditing?: boolean
+  response?: string
+  error?: string
+  skillsUsed?: SkillUsed[]
+  createdSkill?: FrameSkill | null
+  // Parsed artifact metadata (for directory display)
+  artifactName?: string
+  artifactType?: string
+}
+
+export interface SoftLLMResponse {
+  id: string
+  originalInput: string
+  text: string
+  softType: SoftType
+  document?: string
+  options?: string[]
+  face: Face
+  frameId: string | null
+}
+
+export interface ParsedInput {
+  text: string
+  route: 'soft' | 'liquid' | 'solid' | 'hard'
+}
+
+// Parsed artifact from shelf entry
+export interface ParsedArtifact {
+  name: string
+  type: string // category for skills, 'character' for characters, element type for authors
+  level: 'user' // shelf entries are always user-level
+}
+
+// Zone proportions for UI (Phase 0.9.0)
+export interface ZoneProportions {
+  solid: number
+  liquid: number
+  vapour: number
+}
+
+// Legacy re-exports removed — hooks and pscale not used in kernel app
