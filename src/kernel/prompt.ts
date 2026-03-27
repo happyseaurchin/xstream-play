@@ -4,6 +4,10 @@
  * The block holds the tested prompt text from the Python kernel.
  * This function walks it and assembles the context window.
  * Same output as kernel.py build_medium_prompt, different source.
+ *
+ * Returns { system, user } for proper Claude API message separation.
+ * System = role + rules + schema + format (stable per-agent content)
+ * User = scene + character + history + accumulated + intention (per-call content)
  */
 
 import type { Block, Frame } from './types';
@@ -63,17 +67,49 @@ function flattenNode(node: unknown): string[] {
   return lines;
 }
 
+export interface MediumPrompt {
+  system: string;
+  user: string;
+}
+
 export function buildMediumPrompt(
   block: Block,
   triggerType: 'commit' | 'domino',
   dominoContext?: string
-): string {
+): MediumPrompt {
   const char = block.character;
   const name = char.name;
+
+  // ══════════════════════════════════════════════
+  // SYSTEM — stable per-agent content
+  // ══════════════════════════════════════════════
 
   // ── Role: spindle root ──
   const roleResult = bsp(mediumAgent, 0) as SpindleResult;
   const role = roleResult.nodes[0].text.replace(/{name}/g, name);
+
+  // ── Rules: dir walk of section 1 → header + ring of constraints ──
+  const rulesDir = bsp(mediumAgent, 0.1, 'dir') as DirResult;
+  const rulesLines = flattenNode(rulesDir.subtree);
+  const rules = rulesLines[0] + '\n' + rulesLines.slice(1)
+    .map(line => `- ${line}`)
+    .join('\n');
+
+  // ── Produce: dir walk of section 2 → header + ring of output fields ──
+  const produceDir = bsp(mediumAgent, 0.2, 'dir') as DirResult;
+  const produceLines = flattenNode(produceDir.subtree);
+  const produce = produceLines.join('\n');
+
+  // ── Format: point at section 3 ──
+  const formatResult = bsp(mediumAgent, 0.3) as SpindleResult;
+  const format = formatResult.nodes[formatResult.nodes.length - 1].text;
+
+  const system = `${role}\n\n${rules}\n\n${produce}\n\n${format}`
+    .replace(/{name}/g, name);
+
+  // ══════════════════════════════════════════════
+  // USER — per-call content
+  // ══════════════════════════════════════════════
 
   // ── Scene: use Hard frame when available, fallback to static scene ──
   const sceneSection = block.frame
@@ -113,40 +149,8 @@ export function buildMediumPrompt(
     }
   }
 
-  // ── Rules: dir walk of section 1 → header + ring of constraints ──
-  const rulesDir = bsp(mediumAgent, 0.1, 'dir') as DirResult;
-  const rulesLines = flattenNode(rulesDir.subtree);
-  const rules = rulesLines[0] + '\n' + rulesLines.slice(1)
-    .map(line => `- ${line}`)
-    .join('\n');
+  const user = `${sceneSection}\n\n${charSection}\n\n${historySection}\n\n${accSection}\n\n${intentSection}`
+    .replace(/{name}/g, name);
 
-  // ── Produce: dir walk of section 2 → header + ring of output fields ──
-  const produceDir = bsp(mediumAgent, 0.2, 'dir') as DirResult;
-  const produceLines = flattenNode(produceDir.subtree);
-  const produce = produceLines.join('\n');
-
-  // ── Format: point at section 3 ──
-  const formatResult = bsp(mediumAgent, 0.3) as SpindleResult;
-  const format = formatResult.nodes[formatResult.nodes.length - 1].text;
-
-  // Substitute {name} in rules and produce
-  const prompt = `${role}
-
-${sceneSection}
-
-${charSection}
-
-${historySection}
-
-${accSection}
-
-${intentSection}
-
-${rules}
-
-${produce}
-
-${format}`;
-
-  return prompt.replace(/{name}/g, name);
+  return { system, user };
 }

@@ -65,6 +65,9 @@ export function createBlock(
     status: 'idle',
     last_seen: {},
 
+    // Aperture: default paragraph-level output
+    aperture_pscale: -2,
+
     // Hard-LLM state
     frame: null,
     spatial_address: '111',  // default: Salted Dog main room

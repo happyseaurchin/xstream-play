@@ -11,6 +11,7 @@
 
 import { callClaude } from './claude-direct';
 import { buildMediumPrompt } from './prompt';
+import { resolveAperture } from './aperture';
 import { runHard } from './hard';
 import type { Block, MediumResult, AccumulatedEvent, DominoSignal } from './types';
 
@@ -46,11 +47,12 @@ async function callMedium(
   triggerType: 'commit' | 'domino',
   dominoContext?: string
 ): Promise<MediumResult | null> {
-  const prompt = buildMediumPrompt(block, triggerType, dominoContext);
+  const { system, user } = buildMediumPrompt(block, triggerType, dominoContext);
   const config = block.medium;
+  const aperture = resolveAperture(block.aperture_pscale ?? -2);
 
   try {
-    const text = await callClaude(config.api_key, config.model, prompt, config.max_tokens);
+    const text = await callClaude(config.api_key, config.model, system, user, aperture);
     // Parse JSON from response — strip markdown fences if present
     const cleaned = text.trim()
       .replace(/^```json\s*/i, '')
