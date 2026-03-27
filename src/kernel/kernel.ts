@@ -11,6 +11,7 @@
 
 import { callClaude } from './claude-direct';
 import { buildMediumPrompt } from './prompt';
+import { runHard } from './hard';
 import type { Block, MediumResult, AccumulatedEvent, DominoSignal } from './types';
 
 // ============================================================
@@ -61,6 +62,22 @@ async function callMedium(
     console.error('[kernel] Medium call failed:', e);
     return null;
   }
+}
+
+// ============================================================
+// FAMILIARITY DETECTION — scan events for introduction patterns
+// ============================================================
+
+const INTRO_PATTERNS = [
+  /introduces?\s+(himself|herself|themselves|themself)\s+as\s+/i,
+  /tells?\s+you\s+(his|her|their)\s+name\s+is\s+/i,
+  /my\s+name\s+is\s+/i,
+  /I'm\s+[A-Z]/,
+  /call\s+me\s+[A-Z]/i,
+];
+
+function checkIntroduction(events: string[]): boolean {
+  return events.some(e => INTRO_PATTERNS.some(p => p.test(e)));
 }
 
 // ============================================================
@@ -126,6 +143,46 @@ function processMediumOutput(block: Block, result: MediumResult, triggerType: st
   block.outbox.sequence += 1;
   block.outbox.timestamp = new Date().toISOString();
 
+  // ── Event filing: tag events with S × T × I coordinates ──
+  if (result.events) {
+    for (const eventText of result.events) {
+      block.event_log.push({
+        S: block.spatial_address,
+        T: block.event_log.length + 1,
+        I: block.character.id,
+        text: eventText,
+        type: 'action',
+      });
+    }
+  }
+
+  // ── Movement: handle location_change ──
+  if (result.location_change) {
+    // File departure at old location
+    block.event_log.push({
+      S: block.spatial_address,
+      T: block.event_log.length + 1,
+      I: block.character.id,
+      text: `${block.character.name} leaves.`,
+      type: 'departure',
+    });
+
+    // Update address
+    block.spatial_address = result.location_change;
+
+    // File arrival at new location
+    block.event_log.push({
+      S: block.spatial_address,
+      T: block.event_log.length + 1,
+      I: block.character.id,
+      text: `${block.character.name} arrives.`,
+      type: 'arrival',
+    });
+
+    // Force Hard rebuild on next cycle
+    block.frame = null;
+  }
+
   // Add to own solid history
   if (result.solid) {
     block.character.solid_history.push(result.solid);
@@ -168,6 +225,9 @@ export class Kernel {
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private callbacks: KernelCallbacks;
   private running = false;
+  private lastHardRun = 0;
+  private lastSpatialAddress: string | null = null;
+  private static HARD_REFRESH_MS = 30_000; // periodic rebuild every 30s
 
   constructor(block: Block, gameId: string, callbacks: KernelCallbacks) {
     this.block = block;
@@ -222,11 +282,32 @@ export class Kernel {
     this.cycling = true;
 
     try {
-      // ── STEP 1: Poll peers ──
+      // ── STEP 0: Check if Hard should run ──
       const peerBlocks = await readPeerBlocks(this.gameId, this.block.character.id);
+      const shouldRunHard =
+        this.block.frame === null ||                                          // first run
+        this.block.spatial_address !== this.lastSpatialAddress ||              // location changed
+        (Date.now() - this.lastHardRun) > Kernel.HARD_REFRESH_MS;            // periodic refresh
+
+      if (shouldRunHard) {
+        this.callbacks.onLog('  🌍 Hard-LLM: rebuilding perception frame...');
+        try {
+          const frame = await runHard(this.block, peerBlocks);
+          this.block.frame = frame;
+          this.lastSpatialAddress = this.block.spatial_address;
+          this.lastHardRun = Date.now();
+          this.callbacks.onLog(`  🌍 Frame built: ${frame.location.slice(0, 60)}`);
+          await writeBlock(this.gameId, this.block.character.id, this.block);
+        } catch (e) {
+          console.error('[kernel] Hard-LLM failed:', e);
+          this.callbacks.onLog('  ⚠️ Hard-LLM failed, using existing frame');
+        }
+      }
+
+      // ── STEP 1: Poll peers ──
       const { newEvents, newDominos } = pollPeers(this.block, peerBlocks);
 
-      // Accumulate events
+      // Accumulate events + check for introductions
       for (const ev of newEvents) {
         this.block.accumulated.push({
           source: ev.source,
@@ -236,6 +317,17 @@ export class Kernel {
         this.callbacks.onLog(
           `  📥 Events from ${ev.source}: ${ev.events.length} accumulated`
         );
+
+        // Familiarity gating: detect introductions in peer events
+        if (checkIntroduction(ev.events)) {
+          const currentFam = this.block.familiarity[ev.source] ?? 0;
+          if (currentFam < 1) {
+            this.block.familiarity[ev.source] = 1;
+            this.callbacks.onLog(
+              `  👋 Introduction detected from ${ev.source} — familiarity → 1`
+            );
+          }
+        }
       }
 
       // ── STEP 2: Process dominos ──

@@ -3,6 +3,42 @@
  * Layer 2 (designer-editable) + Layer 0 (kernel-managed runtime).
  */
 
+// ── Hard-LLM Frame types ──
+
+export interface Frame {
+  location: string;
+  visible: string[];
+  audible: string[];
+  atmosphere: string;
+  characters_present: FrameCharacter[];
+  recent_traces: string[];
+  applicable_rules: string[];
+  exits: FrameExit[];
+}
+
+export interface FrameCharacter {
+  id: string;
+  description: string;
+  current_activity: string;
+  familiarity: number;
+}
+
+export interface FrameExit {
+  direction: string;
+  description: string;
+  spatial_address: string;
+}
+
+export interface GameEvent {
+  S: string;      // spatial address
+  T: number;      // temporal index
+  I: string;      // identity — who did it / who it's about
+  text: string;
+  type: 'action' | 'arrival' | 'departure' | 'state_change' | 'atmosphere';
+}
+
+// ── Block ──
+
 export interface Block {
   // ── Layer 2: Content (designer-editable) ──
   character: {
@@ -41,6 +77,12 @@ export interface Block {
   };
   status: 'idle' | 'waiting' | 'resolving' | 'domino_responding';
   last_seen: Record<string, number>;
+
+  // ── Hard-LLM state ──
+  frame: Frame | null;
+  spatial_address: string;
+  familiarity: Record<string, number>;
+  event_log: GameEvent[];
 }
 
 export interface DominoOut {
@@ -52,9 +94,11 @@ export interface DominoOut {
 export interface MediumResult {
   solid?: string;
   events?: string[];
+  structured_events?: GameEvent[];
   domino?: DominoOut[];
   internal?: string;
   liquid_status?: string;
+  location_change?: string;
 }
 
 export interface AccumulatedEvent {

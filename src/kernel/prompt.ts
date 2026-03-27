@@ -6,10 +6,45 @@
  * Same output as kernel.py build_medium_prompt, different source.
  */
 
-import type { Block } from './types';
+import type { Block, Frame } from './types';
 import { bsp } from './bsp';
 import type { DirResult, SpindleResult } from './bsp';
 import mediumAgent from '../../blocks/xstream/medium-agent.json';
+
+/**
+ * Format a Hard-LLM frame into text for Medium's context window.
+ * The frame replaces the static scene string.
+ */
+export function formatFrame(frame: Frame): string {
+  const sections = [
+    `LOCATION: ${frame.location}`,
+    `VISIBLE: ${frame.visible.join('. ')}`,
+    `AUDIBLE: ${frame.audible.join('. ')}`,
+    `ATMOSPHERE: ${frame.atmosphere}`,
+  ];
+
+  if (frame.characters_present.length > 0) {
+    sections.push(`CHARACTERS PRESENT:\n${frame.characters_present
+      .map(c => `- ${c.description}. ${c.current_activity}`)
+      .join('\n')}`);
+  }
+
+  if (frame.recent_traces.length > 0) {
+    sections.push(`RECENT TRACES: ${frame.recent_traces.join('. ')}`);
+  }
+
+  if (frame.applicable_rules.length > 0) {
+    sections.push(`RULES IN EFFECT:\n${frame.applicable_rules
+      .map(r => `- ${r}`)
+      .join('\n')}`);
+  }
+
+  sections.push(`EXITS: ${frame.exits
+    .map(e => `${e.direction} — ${e.description}`)
+    .join('. ')}`);
+
+  return sections.join('\n\n');
+}
 
 /**
  * Flatten a pscale subtree into lines of text.
@@ -40,8 +75,10 @@ export function buildMediumPrompt(
   const roleResult = bsp(mediumAgent, 0) as SpindleResult;
   const role = roleResult.nodes[0].text.replace(/{name}/g, name);
 
-  // ── Scene ──
-  const sceneSection = `SCENE:\n${block.scene}`;
+  // ── Scene: use Hard frame when available, fallback to static scene ──
+  const sceneSection = block.frame
+    ? formatFrame(block.frame)
+    : `SCENE:\n${block.scene}`;
 
   // ── Character ──
   const charSection = `CHARACTER — ${name}:\n${char.state}`;
