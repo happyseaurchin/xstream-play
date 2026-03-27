@@ -225,9 +225,7 @@ export class Kernel {
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private callbacks: KernelCallbacks;
   private running = false;
-  private lastHardRun = 0;
   private lastSpatialAddress: string | null = null;
-  private static HARD_REFRESH_MS = 30_000; // periodic rebuild every 30s
 
   constructor(block: Block, gameId: string, callbacks: KernelCallbacks) {
     this.block = block;
@@ -286,8 +284,7 @@ export class Kernel {
       const peerBlocks = await readPeerBlocks(this.gameId, this.block.character.id);
       const shouldRunHard =
         this.block.frame === null ||                                          // first run
-        this.block.spatial_address !== this.lastSpatialAddress ||              // location changed
-        (Date.now() - this.lastHardRun) > Kernel.HARD_REFRESH_MS;            // periodic refresh
+        this.block.spatial_address !== this.lastSpatialAddress;               // location changed
 
       if (shouldRunHard) {
         this.callbacks.onLog('  🌍 Hard-LLM: rebuilding perception frame...');
@@ -295,7 +292,6 @@ export class Kernel {
           const frame = await runHard(this.block, peerBlocks);
           this.block.frame = frame;
           this.lastSpatialAddress = this.block.spatial_address;
-          this.lastHardRun = Date.now();
           this.callbacks.onLog(`  🌍 Frame built: ${frame.location.slice(0, 60)}`);
           await writeBlock(this.gameId, this.block.character.id, this.block);
         } catch (e) {
