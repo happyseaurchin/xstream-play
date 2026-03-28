@@ -222,7 +222,7 @@ Produce the frame as JSON matching the schema in your instructions.`;
       block.medium.api_key,
       'claude-haiku-4-5-20251001',  // Hard uses Haiku — structured extraction
       prompt,
-      800
+      2048
     );
 
     // Parse JSON from response — strip markdown fences if present

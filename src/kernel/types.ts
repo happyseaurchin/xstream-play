@@ -78,6 +78,9 @@ export interface Block {
   status: 'idle' | 'waiting' | 'resolving' | 'domino_responding';
   last_seen: Record<string, number>;
 
+  // ── Harness ──
+  harness_pscale?: number;  // pscale level for solid output constraint, default -2 (paragraph)
+
   // ── Hard-LLM state ──
   frame: Frame | null;
   spatial_address: string;

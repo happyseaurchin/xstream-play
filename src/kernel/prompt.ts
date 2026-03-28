@@ -10,6 +10,7 @@ import type { Block, Frame } from './types';
 import { bsp } from './bsp';
 import type { DirResult, SpindleResult } from './bsp';
 import mediumAgent from '../../blocks/xstream/medium-agent.json';
+import { resolveHarness } from './harness';
 
 /**
  * Format a Hard-LLM frame into text for Medium's context window.
@@ -123,15 +124,29 @@ export function buildMediumPrompt(
   // ── Produce: dir walk of section 2 → header + ring of output fields ──
   const produceDir = bsp(mediumAgent, 0.2, 'dir') as DirResult;
   const produceLines = flattenNode(produceDir.subtree);
-  const produce = produceLines.join('\n');
+  let produce = produceLines.join('\n');
+
+  // ── Harness: inject solid constraint from pscale level ──
+  const harness = resolveHarness(block.harness_pscale ?? -2);
+  if (harness.constraint) {
+    produce = produce.replace(
+      /\(a\) SOLID — [^.]+\./,
+      `(a) SOLID — ${harness.constraint}`
+    );
+  }
 
   // ── Format: point at section 3 ──
   const formatResult = bsp(mediumAgent, 0.3) as SpindleResult;
   const format = formatResult.nodes[formatResult.nodes.length - 1].text;
 
+  // ── Few-shot examples from harness ──
+  const fewShotSection = harness.few_shot.length > 0
+    ? harness.few_shot.join('\n\n')
+    : '';
+
   // Substitute {name} in rules and produce
   const prompt = `${role}
-
+${fewShotSection ? `\n${fewShotSection}\n` : ''}
 ${sceneSection}
 
 ${charSection}
