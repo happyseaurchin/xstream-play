@@ -38,12 +38,27 @@ function flattenNode(node: unknown): string[] {
 }
 
 /**
- * Build the Hard-LLM system instructions from hard-agent.json via BSP.
+ * Build the Hard-LLM system instructions from hard-agent.json via BSP walks.
  */
 function buildHardSystem(name: string): string {
-  // Walk the entire block — role + rules + schema + format
-  const lines = flattenNode(hardAgent);
-  return lines.join('\n').replace(/{name}/g, name);
+  // 0._ = identity (spindle root)
+  const identity = (bsp(hardAgent as PscaleNode, 0) as SpindleResult).nodes[0].text;
+
+  // 0.1 = rules (dir walk → header + ring of constraints)
+  const rulesDir = bsp(hardAgent as PscaleNode, 0.1, 'dir') as DirResult;
+  const rulesLines = flattenNode(rulesDir.subtree);
+  const rules = rulesLines[0] + '\n' + rulesLines.slice(1).map(l => `- ${l}`).join('\n');
+
+  // 0.2 = frame schema (dir walk → header + ring of fields)
+  const schemaDir = bsp(hardAgent as PscaleNode, 0.2, 'dir') as DirResult;
+  const schemaLines = flattenNode(schemaDir.subtree);
+  const schema = schemaLines.join('\n');
+
+  // 0.3 = format instruction (spindle to leaf)
+  const formatResult = bsp(hardAgent as PscaleNode, 0.3) as SpindleResult;
+  const format = formatResult.nodes[formatResult.nodes.length - 1].text;
+
+  return `${identity}\n\n${rules}\n\n${schema}\n\n${format}`.replace(/{name}/g, name);
 }
 
 /**

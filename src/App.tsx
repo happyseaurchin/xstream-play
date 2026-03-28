@@ -17,6 +17,7 @@ import { ConstructionButton } from './components/xstream/ConstructionButton'
 import { Kernel } from './kernel/kernel'
 import { createBlock, generateGameCode } from './kernel/block-factory'
 import { callClaude } from './kernel/claude-direct'
+import { buildSoftPrompt } from './kernel/soft-prompt'
 import type { SolidBlock, LiquidCard } from './types/xstream'
 import type { SoftLLMResponse } from './types'
 import './App.css'
@@ -173,18 +174,7 @@ export default function App() {
 
     try {
       const block = kernelRef.current.block
-      const recentSolid = block.character.solid_history.slice(-1)[0] || ''
-      const scene = block.scene || ''
-
-      const prompt = `You are a thinking partner for ${characterName} in this scene:
-${scene}
-
-Recent narrative: ${recentSolid}
-
-The player is thinking: "${text}"
-
-Help them think. Be vivid and brief (1-3 sentences). Don't narrate — suggest, provoke, or clarify. Second person present tense.`
-
+      const prompt = buildSoftPrompt(block, text)
       const response = await callClaude(apiKey, 'claude-haiku-4-5-20251001', prompt, 256)
 
       setSoftResponse({

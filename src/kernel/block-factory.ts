@@ -50,7 +50,7 @@ export function createBlock(
     medium: {
       model,
       api_key: apiKey,
-      max_tokens: 800,
+      max_tokens: 2048,
     },
     prompt_template: { ...DEFAULT_PROMPT_TEMPLATE },
     pending_liquid: null,
