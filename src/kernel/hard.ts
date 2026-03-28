@@ -13,7 +13,7 @@ import type { Block, Frame, GameEvent } from './types';
 import { bsp } from './bsp';
 import type { SpindleResult, RingResult, DirResult } from './bsp';
 import { callClaude } from './claude-direct';
-import { resolveAperture } from './aperture';
+import { resolveHarness } from './harness';
 import hardAgent from '../../blocks/xstream/hard-agent.json';
 import spatialThornkeep from '../../blocks/xstream/spatial-thornkeep.json';
 import rulesThornkeep from '../../blocks/xstream/rules-thornkeep.json';
@@ -215,8 +215,8 @@ ${queryCharactersPresent(block, peerBlocks)}
 
 Produce the frame as JSON matching the schema in your instructions.`;
 
-  // Hard uses paragraph-level aperture (P-2) — structured JSON output
-  const aperture = resolveAperture(-2);
+  // Hard uses paragraph-level harness (P-2) — structured JSON output
+  const harness = resolveHarness(-2);
 
   try {
     const text = await callClaude(
@@ -224,7 +224,7 @@ Produce the frame as JSON matching the schema in your instructions.`;
       'claude-haiku-4-5-20251001',  // Hard uses Haiku — structured extraction
       system,
       userMessage,
-      aperture
+      harness
     );
 
     // Parse JSON from response — strip markdown fences if present

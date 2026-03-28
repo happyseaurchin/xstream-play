@@ -78,8 +78,8 @@ export interface Block {
   status: 'idle' | 'waiting' | 'resolving' | 'domino_responding';
   last_seen: Record<string, number>;
 
-  // ── Aperture control ──
-  aperture_pscale?: number;  // default -2 (paragraph). Designer-editable.
+  // ── Harness control ──
+  harness_pscale?: number;  // default -2 (paragraph). Designer-editable.
 
   // ── Hard-LLM state ──
   frame: Frame | null;

@@ -75,7 +75,7 @@ When active, the triad operates on a character within the narrative.
 | Tier | Function | Content Drawn From | Output |
 |------|----------|--------------------|--------|
 | **Soft** | Consults with player about character's intentions. "Can I sneak past?" "You could try — difficulty 8." | Character identity block, local spatial block, recent solid history | Refined intention → liquid |
-| **Medium** | Synthesizes all committed liquid from nearby characters + NOMAD outcomes into narrative | All proximity-window liquid, NOMAD results, spatial context at wider aperture | Solid narrative (10–100 words) |
+| **Medium** | Synthesizes all committed liquid from nearby characters + NOMAD outcomes into narrative | All proximity-window liquid, NOMAD results, spatial context at wider harness | Solid narrative (10–100 words) |
 | **Hard** | Manages proximity, files events into spatial/temporal blocks, exchanges semantic coordinates with other characters' Hard-LLMs | Broader spatial/temporal blocks, other characters' Hard-LLM outputs, determinancy cloud fragments | Frame (proximity states, context assembly) |
 
 **Permissions**: A player in character mode can only write *intentions*. They cannot write into the spatial block or modify game rules.
@@ -110,7 +110,7 @@ When active, the triad operates on game mechanics, rules, and operational logic.
 
 ### The Metacognitive Layer
 
-The designer mode is metacognitive — it's the instructions for the instructions. The game rules block tells the Medium-LLM how to process NOMAD. The physics block tells the Soft-LLM what's physically possible when consulting with a player. The compilation block tells the Hard-LLM how to perform aperture selection.
+The designer mode is metacognitive — it's the instructions for the instructions. The game rules block tells the Medium-LLM how to process NOMAD. The physics block tells the Soft-LLM what's physically possible when consulting with a player. The compilation block tells the Hard-LLM how to perform harness selection.
 
 This means the designer isn't just creating content or playing a character — they're shaping *how the system thinks*. A designer creating a magic system is writing a JSON block that will alter the Soft-LLM's consultation behavior ("yes, you can levitate — here are the rules"), the Medium-LLM's narrative generation ("levitation succeeds; the table rises"), and the Hard-LLM's proximity calculations ("the character is now airborne — vertical proximity applies").
 
@@ -213,15 +213,15 @@ When a player enters a gap, they have maximum agency. As they approach a determi
 
 ### The Simplification
 
-With JSON blocks and BSP, context compilation for each LLM tier is just a BSP walk with different aperture settings.
+With JSON blocks and BSP, context compilation for each LLM tier is just a BSP walk with different harness settings.
 
-| Tier | Aperture | What the BSP Walk Returns |
+| Tier | Harness | What the BSP Walk Returns |
 |------|----------|---------------------------|
 | **Soft** | Tight, local, personal | This character's identity block + immediate spatial spindle (what's in this room) + recent liquid from nearby characters. Minimal context. |
-| **Medium** | Mid-range, relational | All committed liquid from the proximity window + NOMAD outcomes + spatial context at slightly wider aperture. What's needed to synthesize. |
+| **Medium** | Mid-range, relational | All committed liquid from the proximity window + NOMAD outcomes + spatial context at slightly wider harness. What's needed to synthesize. |
 | **Hard** | Wide, structural | Broader spatial/temporal blocks + other characters' Hard-LLM outputs + determinancy cloud fragments. The full coordinate picture. |
 
-Each is a different depth and breadth of BSP walk through the same underlying JSON structure. The BSP function doesn't know or care whether it's assembling context for a player's Soft-LLM or an author's Medium-LLM. It walks the blocks, extracts the spindle at the requested aperture, and returns the context current.
+Each is a different depth and breadth of BSP walk through the same underlying JSON structure. The BSP function doesn't know or care whether it's assembling context for a player's Soft-LLM or an author's Medium-LLM. It walks the blocks, extracts the spindle at the requested harness, and returns the context current.
 
 ### The Mode Block as System Prompt
 
@@ -241,7 +241,7 @@ Mode Block (character/author/designer)
     ↓ selects
 Content Blocks (spatial, temporal, identity, game rules, physics...)
     ↓ navigated by
-BSP Walk (parameterized by mode + tier aperture)
+BSP Walk (parameterized by mode + tier harness)
     ↓ produces
 Context Current (the compiled content for this specific LLM call)
     ↓ fed to
@@ -252,7 +252,7 @@ Output (intention / narrative / world content / rule / frame)
 Appropriate Block (character thread / spatial block / operational block)
 ```
 
-Same pipeline. Every time. The mode selects the blocks. The aperture selects the depth. The BSP walk compiles the current. The LLM processes. The output goes back into blocks. And the cycle continues.
+Same pipeline. Every time. The mode selects the blocks. The harness selects the depth. The BSP walk compiles the current. The LLM processes. The output goes back into blocks. And the cycle continues.
 
 ---
 
@@ -318,7 +318,7 @@ The JSON block format (pscale keystone v4) plus BSP function provides:
 2. **Uniform navigation** — BSP walk works the same way regardless of block type. The structure IS the navigation.
 3. **Compositional multiplication** — S × T × I = event. The product is new meaning, not stored meaning. The determinancy cloud is just the set of computed products.
 4. **Compression** — when blocks fill up, they compress (summary or emergence). The world grows memory through the same mechanism blocks grow.
-5. **Aperture selection** — different BSP walk depths for different purposes. Soft gets tight local context, Hard gets the full coordinate picture.
+5. **Harness selection** — different BSP walk depths for different purposes. Soft gets tight local context, Hard gets the full coordinate picture.
 
 The mode blocks (character/author/designer) + content blocks (spatial/temporal/identity/operational) + BSP compilation = a complete specification of how any LLM call in the system gets its context window assembled. It's all blocks, all the way down.
 
@@ -364,7 +364,7 @@ The mode blocks (character/author/designer) + content blocks (spatial/temporal/i
 | Designer face | Same — present in code, unreachable from UI. |
 | NOMAD dice | Not implemented. |
 | Multiplayer / spindle exchange | Solo only. No inter-character LLM communication. |
-| Aperture filtering per tier | Hard reads entire blocks. No tight/mid/wide aperture distinction. |
+| Harness filtering per tier | Hard reads entire blocks. No tight/mid/wide harness distinction. |
 | Determinancy cloud | Not implemented. Events are flat, not S x T x I products. |
 | Skill packs | Agent blocks are hardcoded exports, not runtime-loaded from shelf. |
 | Block universe (Y1) | Operating as Y0 — stasis until animated. |
@@ -407,4 +407,4 @@ blocks/worlds/thornkeep/    # Authored world JSON blocks
 
 ### Next Steps
 
-The prototype proves the basic pipeline: type → Soft consults → commit → Medium narrates → Hard updates frame. The experience quality needs work (narrative voice, pacing, knowledge gating). The architecture doc above remains the target — particularly S x T x I products, aperture-driven BSP walks, and face currents as the next layer of depth.
+The prototype proves the basic pipeline: type → Soft consults → commit → Medium narrates → Hard updates frame. The experience quality needs work (narrative voice, pacing, knowledge gating). The architecture doc above remains the target — particularly S x T x I products, harness-driven BSP walks, and face currents as the next layer of depth.

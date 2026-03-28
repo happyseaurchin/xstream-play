@@ -65,8 +65,8 @@ export function createBlock(
     status: 'idle',
     last_seen: {},
 
-    // Aperture: default paragraph-level output
-    aperture_pscale: -2,
+    // Harness: default paragraph-level output
+    harness_pscale: -2,
 
     // Hard-LLM state
     frame: null,

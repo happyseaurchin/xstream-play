@@ -1,5 +1,5 @@
 {
-  "_": "aperture — output constraint by pscale level. BSP walk at target pscale unfolds API params + prompt harness.",
+  "_": "harness — output constraint by pscale level. BSP walk at target pscale unfolds API params + prompt harness.",
   "1": {
     "_": "P-4: word — 1-3 tokens",
     "1": {

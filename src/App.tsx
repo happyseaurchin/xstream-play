@@ -185,13 +185,13 @@ The player is thinking: "${text}"
 
 Help them think. Be vivid and brief (1-3 sentences). Don't narrate — suggest, provoke, or clarify. Second person present tense.`
 
-      const softAperture = {
+      const softHarness = {
         max_tokens: 256,
         temperature: 0.7,
         constraint: '',
         few_shot: [],
       }
-      const response = await callClaude(apiKey, 'claude-haiku-4-5-20251001', '', prompt, softAperture)
+      const response = await callClaude(apiKey, 'claude-haiku-4-5-20251001', '', prompt, softHarness)
 
       setSoftResponse({
         id: Date.now().toString(),

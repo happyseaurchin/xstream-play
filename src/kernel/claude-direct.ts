@@ -2,28 +2,28 @@
  * Direct browser-to-Anthropic API call.
  * The API key never leaves the browser. Our server never sees it.
  *
- * Now with proper system/user message split and aperture control.
+ * Now with proper system/user message split and harness control.
  * Constraint instruction appended to user message.
  * Few-shot examples appended to system prompt.
  */
 
-import type { ApertureConfig } from './aperture';
+import type { HarnessConfig } from './harness';
 
 export async function callClaude(
   apiKey: string,
   model: string,
   systemPrompt: string,
   userPrompt: string,
-  aperture: ApertureConfig
+  harness: HarnessConfig
 ): Promise<string> {
   // Build system with few-shot examples appended
-  const system = aperture.few_shot.length > 0
-    ? `${systemPrompt}\n\n${aperture.few_shot.join('\n\n')}`
+  const system = harness.few_shot.length > 0
+    ? `${systemPrompt}\n\n${harness.few_shot.join('\n\n')}`
     : systemPrompt;
 
   // Append constraint to user prompt
-  const message = aperture.constraint
-    ? `${userPrompt}\n\n${aperture.constraint}`
+  const message = harness.constraint
+    ? `${userPrompt}\n\n${harness.constraint}`
     : userPrompt;
 
   const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -36,8 +36,8 @@ export async function callClaude(
     },
     body: JSON.stringify({
       model,
-      max_tokens: aperture.max_tokens,
-      temperature: aperture.temperature,
+      max_tokens: harness.max_tokens,
+      temperature: harness.temperature,
       system,
       messages: [{ role: 'user', content: message }],
     }),
