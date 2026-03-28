@@ -65,8 +65,8 @@ export function createBlock(
     status: 'idle',
     last_seen: {},
 
-    // Hard-LLM state
-    frame: null,
+    // Perception (pscale block from BSP walks)
+    perception: null,
     spatial_address: '111',  // default: Salted Dog main room
     familiarity: {},
     event_log: [],

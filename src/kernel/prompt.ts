@@ -1,51 +1,19 @@
 /**
- * Medium-LLM prompt composition — BSP walks of medium-agent.json.
+ * Medium-LLM prompt composition — BSP walks of medium-agent.json + perception block.
  *
- * The block holds the tested prompt text from the Python kernel.
- * This function walks it and assembles the context window.
- * Same output as kernel.py build_medium_prompt, different source.
+ * The medium-agent block holds the tested prompt text.
+ * The perception block holds the world state (built by BSP walks, no LLM).
+ * This function walks both and assembles the context window.
  */
 
-import type { Block, Frame } from './types';
+import type { Block } from './types';
 import { bsp } from './bsp';
 import type { DirResult, SpindleResult } from './bsp';
 import mediumAgent from '../../blocks/xstream/medium-agent.json';
 import { resolveHarness } from './harness';
 
-/**
- * Format a Hard-LLM frame into text for Medium's context window.
- * The frame replaces the static scene string.
- */
-export function formatFrame(frame: Frame): string {
-  const sections = [
-    `LOCATION: ${frame.location}`,
-    `VISIBLE: ${frame.visible.join('. ')}`,
-    `AUDIBLE: ${frame.audible.join('. ')}`,
-    `ATMOSPHERE: ${frame.atmosphere}`,
-  ];
-
-  if (frame.characters_present.length > 0) {
-    sections.push(`CHARACTERS PRESENT:\n${frame.characters_present
-      .map(c => `- ${c.description}. ${c.current_activity}`)
-      .join('\n')}`);
-  }
-
-  if (frame.recent_traces.length > 0) {
-    sections.push(`RECENT TRACES: ${frame.recent_traces.join('. ')}`);
-  }
-
-  if (frame.applicable_rules.length > 0) {
-    sections.push(`RULES IN EFFECT:\n${frame.applicable_rules
-      .map(r => `- ${r}`)
-      .join('\n')}`);
-  }
-
-  sections.push(`EXITS: ${frame.exits
-    .map(e => `${e.direction} — ${e.description}`)
-    .join('. ')}`);
-
-  return sections.join('\n\n');
-}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type PscaleNode = string | { [key: string]: any };
 
 /**
  * Flatten a pscale subtree into lines of text.
@@ -64,6 +32,42 @@ function flattenNode(node: unknown): string[] {
   return lines;
 }
 
+/**
+ * Walk the perception pscale block into text for Medium's context.
+ * The block shape: _ = location, 1 = visible, 2 = characters, 3 = exits, 4 = rules, 5 = events.
+ * Medium sees everything including rules and events.
+ */
+function formatPerception(perception: Record<string, unknown>): string {
+  const sections: string[] = [];
+
+  // Location from underscore
+  if (typeof perception._ === 'string') {
+    sections.push(`LOCATION: ${perception._}`);
+  }
+
+  // Walk each numbered section
+  const labels: [string, string][] = [
+    ['1', 'VISIBLE'],
+    ['2', 'CHARACTERS PRESENT'],
+    ['3', 'EXITS'],
+    ['4', 'RULES IN EFFECT'],
+    ['5', 'RECENT EVENTS'],
+  ];
+
+  for (const [key, label] of labels) {
+    if (key in perception) {
+      const lines = flattenNode(perception[key]);
+      if (lines.length > 1) {
+        sections.push(`${label}:\n${lines.slice(1).map(l => `- ${l}`).join('\n')}`);
+      } else if (lines.length === 1) {
+        sections.push(`${label}: ${lines[0]}`);
+      }
+    }
+  }
+
+  return sections.join('\n\n');
+}
+
 export function buildMediumPrompt(
   block: Block,
   triggerType: 'commit' | 'domino',
@@ -73,12 +77,12 @@ export function buildMediumPrompt(
   const name = char.name;
 
   // ── Role: spindle root ──
-  const roleResult = bsp(mediumAgent, 0) as SpindleResult;
+  const roleResult = bsp(mediumAgent as PscaleNode, 0) as SpindleResult;
   const role = roleResult.nodes[0].text.replace(/{name}/g, name);
 
-  // ── Scene: use Hard frame when available, fallback to static scene ──
-  const sceneSection = block.frame
-    ? formatFrame(block.frame)
+  // ── Scene: perception block or static fallback ──
+  const sceneSection = block.perception
+    ? formatPerception(block.perception as Record<string, unknown>)
     : `SCENE:\n${block.scene}`;
 
   // ── Character ──
@@ -115,14 +119,14 @@ export function buildMediumPrompt(
   }
 
   // ── Rules: dir walk of section 1 → header + ring of constraints ──
-  const rulesDir = bsp(mediumAgent, 0.1, 'dir') as DirResult;
+  const rulesDir = bsp(mediumAgent as PscaleNode, 0.1, 'dir') as DirResult;
   const rulesLines = flattenNode(rulesDir.subtree);
   const rules = rulesLines[0] + '\n' + rulesLines.slice(1)
     .map(line => `- ${line}`)
     .join('\n');
 
   // ── Produce: dir walk of section 2 → header + ring of output fields ──
-  const produceDir = bsp(mediumAgent, 0.2, 'dir') as DirResult;
+  const produceDir = bsp(mediumAgent as PscaleNode, 0.2, 'dir') as DirResult;
   const produceLines = flattenNode(produceDir.subtree);
   let produce = produceLines.join('\n');
 
@@ -136,7 +140,7 @@ export function buildMediumPrompt(
   }
 
   // ── Format: point at section 3 ──
-  const formatResult = bsp(mediumAgent, 0.3) as SpindleResult;
+  const formatResult = bsp(mediumAgent as PscaleNode, 0.3) as SpindleResult;
   const format = formatResult.nodes[formatResult.nodes.length - 1].text;
 
   // ── Few-shot examples from harness ──

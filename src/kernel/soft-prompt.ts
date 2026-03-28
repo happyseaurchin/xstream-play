@@ -1,11 +1,12 @@
 /**
- * Soft-LLM prompt composition — BSP walks of soft-agent.json.
+ * Soft-LLM prompt composition — BSP walks of soft-agent.json + perception block.
  *
- * Soft receives a restricted view: only what the character perceives.
- * No applicable_rules, no recent_traces the character wouldn't know about.
+ * Soft receives a restricted view of perception: location, visible,
+ * characters, exits. No rules, no event traces the character wouldn't
+ * consciously know about.
  */
 
-import type { Block, Frame } from './types';
+import type { Block } from './types';
 import { bsp } from './bsp';
 import type { DirResult, SpindleResult } from './bsp';
 import softAgent from '../../blocks/xstream/soft-agent.json';
@@ -27,26 +28,33 @@ function flattenNode(node: unknown): string[] {
 }
 
 /**
- * Format frame for soft — restricted to what the character perceives.
- * No rules, no traces the character wouldn't consciously know.
+ * Walk perception block — restricted for Soft.
+ * Only: location (_), visible (1), characters (2), exits (3).
+ * Omits: rules (4), recent events (5).
  */
-function formatFrameForSoft(frame: Frame): string {
-  const sections = [
-    `LOCATION: ${frame.location}`,
-    `VISIBLE: ${frame.visible.join('. ')}`,
-    `AUDIBLE: ${frame.audible.join('. ')}`,
-    `ATMOSPHERE: ${frame.atmosphere}`,
-  ];
+function formatPerceptionForSoft(perception: Record<string, unknown>): string {
+  const sections: string[] = [];
 
-  if (frame.characters_present.length > 0) {
-    sections.push(`CHARACTERS PRESENT:\n${frame.characters_present
-      .map(c => `- ${c.description}. ${c.current_activity}`)
-      .join('\n')}`);
+  if (typeof perception._ === 'string') {
+    sections.push(`LOCATION: ${perception._}`);
   }
 
-  sections.push(`EXITS: ${frame.exits
-    .map(e => `${e.direction} — ${e.description}`)
-    .join('. ')}`);
+  const labels: [string, string][] = [
+    ['1', 'VISIBLE'],
+    ['2', 'CHARACTERS PRESENT'],
+    ['3', 'EXITS'],
+  ];
+
+  for (const [key, label] of labels) {
+    if (key in perception) {
+      const lines = flattenNode(perception[key]);
+      if (lines.length > 1) {
+        sections.push(`${label}:\n${lines.slice(1).map(l => `- ${l}`).join('\n')}`);
+      } else if (lines.length === 1) {
+        sections.push(`${label}: ${lines[0]}`);
+      }
+    }
+  }
 
   return sections.join('\n\n');
 }
@@ -77,9 +85,9 @@ export function buildSoftPrompt(block: Block, playerMessage: string): string {
   const formatLines = flattenNode(formatDir.subtree);
   const format = formatLines.join('\n');
 
-  // Scene: restricted frame or fallback to static scene
-  const sceneSection = block.frame
-    ? formatFrameForSoft(block.frame)
+  // Scene: restricted perception or fallback
+  const sceneSection = block.perception
+    ? formatPerceptionForSoft(block.perception as Record<string, unknown>)
     : `SCENE:\n${block.scene}`;
 
   // Character state

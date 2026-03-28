@@ -11,7 +11,7 @@
 
 import { callClaude } from './claude-direct';
 import { buildMediumPrompt } from './prompt';
-import { runHard } from './hard';
+import { buildPerception } from './perception';
 import type { Block, MediumResult, AccumulatedEvent, DominoSignal } from './types';
 
 // ============================================================
@@ -179,8 +179,8 @@ function processMediumOutput(block: Block, result: MediumResult, triggerType: st
       type: 'arrival',
     });
 
-    // Force Hard rebuild on next cycle
-    block.frame = null;
+    // Force perception rebuild on next cycle
+    block.perception = null;
   }
 
   // Add to own solid history
@@ -280,24 +280,19 @@ export class Kernel {
     this.cycling = true;
 
     try {
-      // ── STEP 0: Check if Hard should run ──
+      // ── STEP 0: Build perception from BSP walks (no LLM) ──
       const peerBlocks = await readPeerBlocks(this.gameId, this.block.character.id);
-      const shouldRunHard =
-        this.block.frame === null ||                                          // first run
+      const shouldRebuild =
+        this.block.perception === null ||                                     // first run
         this.block.spatial_address !== this.lastSpatialAddress;               // location changed
 
-      if (shouldRunHard) {
-        this.callbacks.onLog('  🌍 Hard-LLM: rebuilding perception frame...');
-        try {
-          const frame = await runHard(this.block, peerBlocks);
-          this.block.frame = frame;
-          this.lastSpatialAddress = this.block.spatial_address;
-          this.callbacks.onLog(`  🌍 Frame built: ${frame.location.slice(0, 60)}`);
-          await writeBlock(this.gameId, this.block.character.id, this.block);
-        } catch (e) {
-          console.error('[kernel] Hard-LLM failed:', e);
-          this.callbacks.onLog('  ⚠️ Hard-LLM failed, using existing frame');
-        }
+      if (shouldRebuild) {
+        const perception = buildPerception(this.block, peerBlocks);
+        this.block.perception = perception;
+        this.lastSpatialAddress = this.block.spatial_address;
+        const location = typeof perception._ === 'string' ? perception._.slice(0, 60) : '?';
+        this.callbacks.onLog(`  🌍 Perception built: ${location}`);
+        await writeBlock(this.gameId, this.block.character.id, this.block);
       }
 
       // ── STEP 1: Poll peers ──

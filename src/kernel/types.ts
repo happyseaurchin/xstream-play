@@ -3,32 +3,6 @@
  * Layer 2 (designer-editable) + Layer 0 (kernel-managed runtime).
  */
 
-// ── Hard-LLM Frame types ──
-
-export interface Frame {
-  location: string;
-  visible: string[];
-  audible: string[];
-  atmosphere: string;
-  characters_present: FrameCharacter[];
-  recent_traces: string[];
-  applicable_rules: string[];
-  exits: FrameExit[];
-}
-
-export interface FrameCharacter {
-  id: string;
-  description: string;
-  current_activity: string;
-  familiarity: number;
-}
-
-export interface FrameExit {
-  direction: string;
-  description: string;
-  spatial_address: string;
-}
-
 export interface GameEvent {
   S: string;      // spatial address
   T: number;      // temporal index
@@ -81,8 +55,8 @@ export interface Block {
   // ── Harness ──
   harness_pscale?: number;  // pscale level for solid output constraint, default -2 (paragraph)
 
-  // ── Hard-LLM state ──
-  frame: Frame | null;
+  // ── Perception (pscale block built from BSP walks) ──
+  perception: Record<string, unknown> | null;
   spatial_address: string;
   familiarity: Record<string, number>;
   event_log: GameEvent[];
