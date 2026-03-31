@@ -251,6 +251,8 @@ export class Kernel {
     this.block.pending_liquid = text;
     this.block.status = 'waiting';
     this.callbacks.onLog(`  ✏️  Liquid: ${text.slice(0, 60)}...`);
+    // Write immediately so peers can see the forming intention
+    writeBlock(this.gameId, this.block.character.id, this.block);
   }
 
   // Player hits commit
