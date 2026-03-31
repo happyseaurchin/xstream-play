@@ -81,4 +81,14 @@ export function generateGameCode(): string {
   return code;
 }
 
+// Generate a 4-character opaque character ID (no name leakage)
+export function generateCharId(): string {
+  const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
+  let id = '';
+  for (let i = 0; i < 4; i++) {
+    id += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return id;
+}
+
 export { DEFAULT_SCENE };

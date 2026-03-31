@@ -213,6 +213,7 @@ export interface KernelCallbacks {
   onStatusChange: (status: string) => void;
   onAccumulate: (source: string, count: number) => void;
   onDomino: (source: string, context: string) => void;
+  onPeerLiquid: (peers: { id: string; liquid: string }[]) => void;
   onError: (error: string) => void;
   onLog: (message: string) => void;
 }
@@ -282,6 +283,12 @@ export class Kernel {
 
       // ── STEP 1: Poll peers ──
       const { newEvents, newDominos } = pollPeers(this.block, peerBlocks);
+
+      // Surface peer liquid (forming intentions at same location)
+      const peerLiquid = peerBlocks
+        .filter(p => p.spatial_address === this.block.spatial_address && p.pending_liquid)
+        .map(p => ({ id: p.character.id, liquid: p.pending_liquid! }));
+      this.callbacks.onPeerLiquid(peerLiquid);
 
       // Accumulate events + check for introductions
       for (const ev of newEvents) {

@@ -15,7 +15,7 @@ import { VapourZone } from './components/xstream/VapourZone'
 import { DraggableSeparator } from './components/DraggableSeparator'
 import { ConstructionButton } from './components/xstream/ConstructionButton'
 import { Kernel } from './kernel/kernel'
-import { createBlock, generateGameCode } from './kernel/block-factory'
+import { createBlock, generateGameCode, generateCharId } from './kernel/block-factory'
 import { callClaude } from './kernel/claude-direct'
 import { buildSoftPrompt } from './kernel/soft-prompt'
 import type { SolidBlock, LiquidCard } from './types/xstream'
@@ -99,6 +99,19 @@ export default function App() {
     onDomino: (source: string, context: string) => {
       setKernelLogs(prev => [...prev.slice(-50), `💥 Domino from ${source}: ${context.slice(0, 80)}`])
     },
+    onPeerLiquid: (peers: { id: string; liquid: string }[]) => {
+      setLiquidCards(prev => {
+        const selfCards = prev.filter(c => c.userId === 'self')
+        const peerCards = peers.map(p => ({
+          id: `peer-${p.id}`,
+          userId: p.id,
+          userName: p.id,
+          content: p.liquid,
+          timestamp: Date.now(),
+        }))
+        return [...selfCards, ...peerCards]
+      })
+    },
     onError: (error: string) => {
       console.error('[kernel]', error)
       setKernelLogs(prev => [...prev.slice(-50), `❌ ${error}`])
@@ -120,7 +133,7 @@ export default function App() {
     const code = generateGameCode()
     setGameCode(code)
 
-    const charId = name.toLowerCase().replace(/[^a-z0-9]/g, '')
+    const charId = generateCharId()
     const block = createBlock(charId, name, state || `${name}. A newcomer.`, scene, key)
 
     const kernel = new Kernel(block, code, makeKernelCallbacks())
@@ -150,7 +163,7 @@ export default function App() {
         }
       }
 
-      const charId = name.toLowerCase().replace(/[^a-z0-9]/g, '')
+      const charId = generateCharId()
       const block = createBlock(charId, name, state || `${name}. A newcomer.`, scene, key)
 
       const kernel = new Kernel(block, code, makeKernelCallbacks())

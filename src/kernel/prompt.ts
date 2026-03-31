@@ -200,6 +200,16 @@ export function buildMediumPrompt(
     }
   }
 
+  // ── Nearby intentions: peer liquid at same location ──
+  if (peerBlocks) {
+    const nearbyLiquid = present
+      .filter(p => p.pending_liquid)
+      .map(p => `- [${p.character.id}] is forming: "${p.pending_liquid}"`);
+    if (nearbyLiquid.length > 0) {
+      intentSection += `\n\nNEARBY INTENTIONS:\n${nearbyLiquid.join('\n')}`;
+    }
+  }
+
   // ── Rules: dir walk of section 1 ──
   const rulesDir = bsp(mediumAgent as PscaleNode, 0.1, 'dir') as DirResult;
   const rulesLines = flattenNode(rulesDir.subtree);
