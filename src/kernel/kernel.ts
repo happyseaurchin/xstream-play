@@ -11,7 +11,6 @@
 
 import { callClaude } from './claude-direct';
 import { buildMediumPrompt } from './prompt';
-import { buildPerception } from './perception';
 import type { Block, MediumResult, AccumulatedEvent, DominoSignal } from './types';
 
 // ============================================================
@@ -44,9 +43,10 @@ async function readPeerBlocks(gameId: string, myCharId: string): Promise<Block[]
 async function callMedium(
   block: Block,
   triggerType: 'commit' | 'domino',
-  dominoContext?: string
+  dominoContext?: string,
+  peerBlocks?: Block[]
 ): Promise<MediumResult | null> {
-  const prompt = buildMediumPrompt(block, triggerType, dominoContext);
+  const prompt = buildMediumPrompt(block, triggerType, dominoContext, peerBlocks);
   const config = block.medium;
 
   try {
@@ -179,8 +179,6 @@ function processMediumOutput(block: Block, result: MediumResult, triggerType: st
       type: 'arrival',
     });
 
-    // Force perception rebuild on next cycle
-    block.perception = null;
   }
 
   // Add to own solid history
@@ -225,7 +223,6 @@ export class Kernel {
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private callbacks: KernelCallbacks;
   private running = false;
-  private lastSpatialAddress: string | null = null;
 
   constructor(block: Block, gameId: string, callbacks: KernelCallbacks) {
     this.block = block;
@@ -280,20 +277,8 @@ export class Kernel {
     this.cycling = true;
 
     try {
-      // ── STEP 0: Build perception from BSP walks (no LLM) ──
+      // ── STEP 0: Read peers ──
       const peerBlocks = await readPeerBlocks(this.gameId, this.block.character.id);
-      const shouldRebuild =
-        this.block.perception === null ||                                     // first run
-        this.block.spatial_address !== this.lastSpatialAddress;               // location changed
-
-      if (shouldRebuild) {
-        const perception = buildPerception(this.block, peerBlocks);
-        this.block.perception = perception;
-        this.lastSpatialAddress = this.block.spatial_address;
-        const location = typeof perception._ === 'string' ? perception._.slice(0, 60) : '?';
-        this.callbacks.onLog(`  🌍 Perception built: ${location}`);
-        await writeBlock(this.gameId, this.block.character.id, this.block);
-      }
 
       // ── STEP 1: Poll peers ──
       const { newEvents, newDominos } = pollPeers(this.block, peerBlocks);
@@ -332,7 +317,7 @@ export class Kernel {
           );
           this.callbacks.onStatusChange('domino_responding');
 
-          const result = await callMedium(this.block, 'domino', domino.context);
+          const result = await callMedium(this.block, 'domino', domino.context, peerBlocks);
           if (result) {
             processMediumOutput(this.block, result, 'domino');
             this.callbacks.onSolid(result.solid ?? '');
@@ -351,7 +336,7 @@ export class Kernel {
       if (this.block.status === 'resolving' && this.block.pending_liquid) {
         this.callbacks.onLog(`  🎯 Player committed. Firing medium...`);
 
-        const result = await callMedium(this.block, 'commit');
+        const result = await callMedium(this.block, 'commit', undefined, peerBlocks);
         if (result) {
           processMediumOutput(this.block, result, 'commit');
           this.callbacks.onSolid(result.solid ?? '');

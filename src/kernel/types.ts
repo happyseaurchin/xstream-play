@@ -55,8 +55,7 @@ export interface Block {
   // ── Harness ──
   harness_pscale?: number;  // pscale level for solid output constraint, default -2 (paragraph)
 
-  // ── Perception (pscale block built from BSP walks) ──
-  perception: Record<string, unknown> | null;
+  // ── Spatial ──
   spatial_address: string;
   familiarity: Record<string, number>;
   event_log: GameEvent[];

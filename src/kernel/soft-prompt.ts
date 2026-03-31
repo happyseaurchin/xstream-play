@@ -1,15 +1,17 @@
 /**
- * Soft-LLM prompt composition — BSP walks of soft-agent.json + perception block.
+ * Soft-LLM prompt composition — BSP walks of soft-agent.json.
  *
- * Soft receives a restricted view of perception: location, visible,
- * characters, exits. No rules, no event traces the character wouldn't
- * consciously know about.
+ * Star references in soft-agent's hidden directory name which
+ * world blocks to walk. Soft gets a restricted view: spatial only,
+ * no rules block. Runtime peer data not included — soft knows
+ * only what the character perceives directly.
  */
 
 import type { Block } from './types';
-import { bsp } from './bsp';
-import type { DirResult, SpindleResult } from './bsp';
+import { bsp, collectUnderscore } from './bsp';
+import type { DirResult, SpindleResult, StarResult, RingResult } from './bsp';
 import softAgent from '../../blocks/xstream/soft-agent.json';
+import { blockRegistry } from './block-registry';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type PscaleNode = string | { [key: string]: any };
@@ -28,31 +30,44 @@ function flattenNode(node: unknown): string[] {
 }
 
 /**
- * Walk perception block — restricted for Soft.
- * Only: location (_), visible (1), characters (2), exits (3).
- * Omits: rules (4), recent events (5).
+ * Follow star references from soft-agent to compose scene context.
+ * Soft only gets spatial — no rules.
  */
-function formatPerceptionForSoft(perception: Record<string, unknown>): string {
+function buildSceneForSoft(block: Block): string {
+  const addr = block.spatial_address;
+  const star = bsp(softAgent as PscaleNode, 0, '*') as StarResult;
   const sections: string[] = [];
 
-  if (typeof perception._ === 'string') {
-    sections.push(`LOCATION: ${perception._}`);
-  }
+  if (star.hidden) {
+    for (const key of Object.keys(star.hidden).sort()) {
+      const ref = star.hidden[key];
+      if (typeof ref !== 'string') continue;
 
-  const labels: [string, string][] = [
-    ['1', 'VISIBLE'],
-    ['2', 'CHARACTERS PRESENT'],
-    ['3', 'EXITS'],
-  ];
+      const worldBlock = blockRegistry[ref];
+      if (!worldBlock) continue;
 
-  for (const [key, label] of labels) {
-    if (key in perception) {
-      const lines = flattenNode(perception[key]);
-      if (lines.length > 1) {
-        sections.push(`${label}:\n${lines.slice(1).map(l => `- ${l}`).join('\n')}`);
-      } else if (lines.length === 1) {
-        sections.push(`${label}: ${lines[0]}`);
+      if (ref.startsWith('spatial-')) {
+        const spindle = bsp(worldBlock as PscaleNode, addr) as SpindleResult;
+        sections.push(`LOCATION: ${spindle.nodes.map(n => n.text).join(' — ')}`);
+
+        const dir = bsp(worldBlock as PscaleNode, addr, 'dir') as DirResult;
+        if (dir.subtree) {
+          const contents = flattenNode(dir.subtree).slice(1);
+          if (contents.length > 0) {
+            sections.push(`VISIBLE:\n${contents.map(c => `- ${c}`).join('\n')}`);
+          }
+        }
+
+        const ring = bsp(worldBlock as PscaleNode, addr, 'ring') as RingResult;
+        if (ring.siblings.length > 0) {
+          const exits = ring.siblings.map(s => {
+            const exitAddr = addr.slice(0, -1) + s.digit;
+            return `- [${exitAddr}] ${s.text ?? 'unexplored'}`;
+          });
+          sections.push(`EXITS:\n${exits.join('\n')}`);
+        }
       }
+      // Soft does NOT follow rules- references
     }
   }
 
@@ -62,8 +77,8 @@ function formatPerceptionForSoft(perception: Record<string, unknown>): string {
 export function buildSoftPrompt(block: Block, playerMessage: string): string {
   const name = block.character.name;
 
-  // 0._ = identity (spindle root)
-  const identity = (bsp(softAgent as PscaleNode, 0) as SpindleResult).nodes[0].text;
+  // Identity via collectUnderscore (follows nested chain)
+  const identity = collectUnderscore(softAgent as PscaleNode)?.replace(/{name}/g, name) ?? '';
 
   // 0.1 = role (dir walk)
   const roleDir = bsp(softAgent as PscaleNode, 0.1, 'dir') as DirResult;
@@ -85,21 +100,16 @@ export function buildSoftPrompt(block: Block, playerMessage: string): string {
   const formatLines = flattenNode(formatDir.subtree);
   const format = formatLines.join('\n');
 
-  // Scene: restricted perception or fallback
-  const sceneSection = block.perception
-    ? formatPerceptionForSoft(block.perception as Record<string, unknown>)
-    : `SCENE:\n${block.scene}`;
+  // Scene: star-walked spatial block or fallback
+  const sceneSection = buildSceneForSoft(block) || `SCENE:\n${block.scene}`;
 
-  // Character state
   const charSection = `CHARACTER — ${name}:\n${block.character.state}`;
 
-  // Recent solid history (last 3)
   const history = block.character.solid_history.slice(-3);
   const historySection = history.length > 0
     ? `RECENT EXPERIENCE:\n${history.map(s => `• ${s}`).join('\n')}`
     : '';
 
-  // Player message
   const messageSection = `PLAYER IS THINKING: "${playerMessage}"`;
 
   const prompt = `${identity}

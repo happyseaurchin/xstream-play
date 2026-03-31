@@ -1,24 +1,21 @@
 /**
- * Medium-LLM prompt composition — BSP walks of medium-agent.json + perception block.
+ * Medium-LLM prompt composition — BSP walks of medium-agent.json.
  *
- * The medium-agent block holds the tested prompt text.
- * The perception block holds the world state (built by BSP walks, no LLM).
- * This function walks both and assembles the context window.
+ * Star references in the agent block's hidden directory name which
+ * world blocks to walk. The kernel follows stars via the block registry.
+ * Runtime data (peers, events, familiarity) stays as kernel code.
  */
 
-import type { Block } from './types';
-import { bsp } from './bsp';
-import type { DirResult, SpindleResult } from './bsp';
+import type { Block, GameEvent } from './types';
+import { bsp, collectUnderscore } from './bsp';
+import type { DirResult, SpindleResult, StarResult, RingResult } from './bsp';
 import mediumAgent from '../../blocks/xstream/medium-agent.json';
+import { blockRegistry } from './block-registry';
 import { resolveHarness } from './harness';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type PscaleNode = string | { [key: string]: any };
 
-/**
- * Flatten a pscale subtree into lines of text.
- * Underscore first, then digits 1-9, recursively.
- */
 function flattenNode(node: unknown): string[] {
   if (typeof node === 'string') return [node];
   if (!node || typeof node !== 'object') return [];
@@ -33,36 +30,99 @@ function flattenNode(node: unknown): string[] {
 }
 
 /**
- * Walk the perception pscale block into text for Medium's context.
- * The block shape: _ = location, 1 = visible, 2 = characters, 3 = exits, 4 = rules, 5 = events.
- * Medium sees everything including rules and events.
+ * Follow star references from an agent block to compose scene context.
+ * Star references name blocks in the registry. The kernel walks them
+ * at the character's spatial_address.
  */
-function formatPerception(perception: Record<string, unknown>): string {
+function buildSceneFromStars(block: Block, peerBlocks: Block[]): string {
+  const addr = block.spatial_address;
+  const star = bsp(mediumAgent as PscaleNode, 0, '*') as StarResult;
   const sections: string[] = [];
 
-  // Location from underscore
-  if (typeof perception._ === 'string') {
-    sections.push(`LOCATION: ${perception._}`);
-  }
+  if (star.hidden) {
+    for (const key of Object.keys(star.hidden).sort()) {
+      const ref = star.hidden[key];
+      if (typeof ref !== 'string') continue;
 
-  // Walk each numbered section
-  const labels: [string, string][] = [
-    ['1', 'VISIBLE'],
-    ['2', 'CHARACTERS PRESENT'],
-    ['3', 'EXITS'],
-    ['4', 'RULES IN EFFECT'],
-    ['5', 'RECENT EVENTS'],
-  ];
+      const worldBlock = blockRegistry[ref];
+      if (!worldBlock) continue;
 
-  for (const [key, label] of labels) {
-    if (key in perception) {
-      const lines = flattenNode(perception[key]);
-      if (lines.length > 1) {
-        sections.push(`${label}:\n${lines.slice(1).map(l => `- ${l}`).join('\n')}`);
-      } else if (lines.length === 1) {
-        sections.push(`${label}: ${lines[0]}`);
+      if (ref.startsWith('spatial-')) {
+        // Spindle → location context (broad to specific)
+        const spindle = bsp(worldBlock as PscaleNode, addr) as SpindleResult;
+        sections.push(`LOCATION: ${spindle.nodes.map(n => n.text).join(' — ')}`);
+
+        // Dir → room contents
+        const dir = bsp(worldBlock as PscaleNode, addr, 'dir') as DirResult;
+        if (dir.subtree) {
+          const contents = flattenNode(dir.subtree).slice(1);
+          if (contents.length > 0) {
+            sections.push(`VISIBLE:\n${contents.map(c => `- ${c}`).join('\n')}`);
+          }
+        }
+
+        // Ring → exits with BSP addresses
+        const ring = bsp(worldBlock as PscaleNode, addr, 'ring') as RingResult;
+        if (ring.siblings.length > 0) {
+          const exits = ring.siblings.map(s => {
+            const exitAddr = addr.slice(0, -1) + s.digit;
+            return `- [${exitAddr}] ${s.text ?? 'unexplored'}`;
+          });
+          sections.push(`EXITS:\n${exits.join('\n')}`);
+        }
+      } else if (ref.startsWith('rules-')) {
+        // Rules: location-specific + perception
+        const ruleLines: string[] = [];
+        const spatialPrefix = addr.slice(0, 2);
+        if (spatialPrefix === '11') {
+          const norms = bsp(worldBlock as PscaleNode, 0.11, 'dir') as DirResult;
+          if (norms.subtree) ruleLines.push(...flattenNode(norms.subtree));
+        } else if (spatialPrefix === '12' || spatialPrefix === '13') {
+          const norms = bsp(worldBlock as PscaleNode, 0.12, 'dir') as DirResult;
+          if (norms.subtree) ruleLines.push(...flattenNode(norms.subtree));
+        }
+        if (addr.startsWith('2') || spatialPrefix === '12') {
+          const terrain = bsp(worldBlock as PscaleNode, 0.13, 'dir') as DirResult;
+          if (terrain.subtree) ruleLines.push(...flattenNode(terrain.subtree));
+        }
+        const perception = bsp(worldBlock as PscaleNode, 0.3, 'dir') as DirResult;
+        if (perception.subtree) ruleLines.push(...flattenNode(perception.subtree));
+        if (ruleLines.length > 0) {
+          sections.push(`RULES IN EFFECT:\n${ruleLines.map(r => `- ${r}`).join('\n')}`);
+        }
       }
     }
+  }
+
+  // Runtime data: characters present (from peer blocks)
+  const present = peerBlocks.filter(
+    p => p.spatial_address === addr && p.character.id !== block.character.id
+  );
+  if (present.length > 0) {
+    const charLines = present.map(peer => {
+      const peerId = peer.character.id;
+      const fam = block.familiarity[peerId] ?? 0;
+      const name = peer.character.name;
+      const state = peer.character.state;
+      const activity = peer.outbox?.events?.slice(-2).join('. ') || 'present, no recent action';
+      if (fam === 0) return `- [id: ${peerId}] ${state}. Currently: ${activity}. (stranger)`;
+      if (fam === 1) return `- [id: ${peerId}] ${name}. ${state}. Currently: ${activity}. (introduced)`;
+      return `- [id: ${peerId}] ${name}. ${state}. Currently: ${activity}. (known)`;
+    });
+    sections.push(`CHARACTERS PRESENT:\n${charLines.join('\n')}`);
+  }
+
+  // Runtime data: recent events at this location
+  const allEvents: GameEvent[] = [];
+  for (const e of block.event_log) { if (e.S === addr) allEvents.push(e); }
+  for (const peer of peerBlocks) {
+    if (!peer.event_log) continue;
+    for (const e of peer.event_log) { if (e.S === addr) allEvents.push(e); }
+  }
+  allEvents.sort((a, b) => b.T - a.T);
+  const recent = allEvents.slice(0, 15);
+  if (recent.length > 0) {
+    sections.push(`RECENT EVENTS:\n${recent.map(e => `- [${e.type}] ${e.text}`).join('\n')}`);
   }
 
   return sections.join('\n\n');
@@ -71,18 +131,18 @@ function formatPerception(perception: Record<string, unknown>): string {
 export function buildMediumPrompt(
   block: Block,
   triggerType: 'commit' | 'domino',
-  dominoContext?: string
+  dominoContext?: string,
+  peerBlocks?: Block[]
 ): string {
   const char = block.character;
   const name = char.name;
 
-  // ── Role: spindle root ──
-  const roleResult = bsp(mediumAgent as PscaleNode, 0) as SpindleResult;
-  const role = roleResult.nodes[0].text.replace(/{name}/g, name);
+  // ── Role: spindle root (collectUnderscore follows nested chain) ──
+  const role = collectUnderscore(mediumAgent as PscaleNode)?.replace(/{name}/g, name) ?? '';
 
-  // ── Scene: perception block or static fallback ──
-  const sceneSection = block.perception
-    ? formatPerception(block.perception as Record<string, unknown>)
+  // ── Scene: star-walked world blocks or static fallback ──
+  const sceneSection = peerBlocks
+    ? buildSceneFromStars(block, peerBlocks)
     : `SCENE:\n${block.scene}`;
 
   // ── Character ──
@@ -118,19 +178,19 @@ export function buildMediumPrompt(
     }
   }
 
-  // ── Rules: dir walk of section 1 → header + ring of constraints ──
+  // ── Rules: dir walk of section 1 ──
   const rulesDir = bsp(mediumAgent as PscaleNode, 0.1, 'dir') as DirResult;
   const rulesLines = flattenNode(rulesDir.subtree);
   const rules = rulesLines[0] + '\n' + rulesLines.slice(1)
     .map(line => `- ${line}`)
     .join('\n');
 
-  // ── Produce: dir walk of section 2 → header + ring of output fields ──
+  // ── Produce: dir walk of section 2 ──
   const produceDir = bsp(mediumAgent as PscaleNode, 0.2, 'dir') as DirResult;
   const produceLines = flattenNode(produceDir.subtree);
   let produce = produceLines.join('\n');
 
-  // ── Harness: inject solid constraint from pscale level ──
+  // ── Harness: inject solid constraint ──
   const harness = resolveHarness(block.harness_pscale ?? -2);
   if (harness.constraint) {
     produce = produce.replace(
@@ -143,12 +203,11 @@ export function buildMediumPrompt(
   const formatResult = bsp(mediumAgent as PscaleNode, 0.3) as SpindleResult;
   const format = formatResult.nodes[formatResult.nodes.length - 1].text;
 
-  // ── Few-shot examples from harness ──
+  // ── Few-shot from harness ──
   const fewShotSection = harness.few_shot.length > 0
     ? harness.few_shot.join('\n\n')
     : '';
 
-  // Substitute {name} in rules and produce
   const prompt = `${role}
 ${fewShotSection ? `\n${fewShotSection}\n` : ''}
 ${sceneSection}

@@ -57,7 +57,63 @@ export interface DiscResult {
   nodes: { path: string; text: string | null }[];
 }
 
-type BspResult = SpindleResult | RingResult | DirResult | PointResult | DiscResult;
+export interface StarResult {
+  mode: 'star';
+  address: string;
+  semantic: string | null;
+  hidden: Record<string, PscaleNode> | null;
+}
+
+type BspResult = SpindleResult | RingResult | DirResult | PointResult | DiscResult | StarResult;
+
+/**
+ * Follow the _._ chain to find the semantic text string.
+ * If _ is a string: return it. If _ is an object with its own _: recurse.
+ * If _ is an object with no _: return null (zero-position interior).
+ */
+export function collectUnderscore(node: PscaleNode): string | null {
+  if (!node || typeof node !== 'object' || !('_' in (node as PscaleBlock))) return null;
+  const val = (node as PscaleBlock)._;
+  if (typeof val === 'string') return val;
+  if (val && typeof val === 'object' && '_' in (val as PscaleBlock)) {
+    return collectUnderscore(val);
+  }
+  return null;
+}
+
+/**
+ * Follow the underscore chain to find the deepest level with digit children.
+ * Returns the object containing hidden content, or null.
+ */
+function findHiddenLevel(node: PscaleNode): PscaleBlock | null {
+  if (!node || typeof node !== 'object' || !('_' in (node as PscaleBlock))) return null;
+  const val = (node as PscaleBlock)._;
+  if (!val || typeof val !== 'object') return null;
+  let current = val as PscaleBlock;
+  while (current && typeof current === 'object') {
+    if ('123456789'.split('').some(k => k in current)) return current;
+    if ('_' in current && current._ && typeof current._ === 'object') {
+      current = current._ as PscaleBlock;
+    } else {
+      break;
+    }
+  }
+  return null;
+}
+
+/**
+ * Extract hidden directory contents from a node's underscore chain.
+ * Returns {digit: content} or null if no hidden directory.
+ */
+function getHiddenDirectory(node: PscaleNode): Record<string, PscaleNode> | null {
+  const level = findHiddenLevel(node);
+  if (!level) return null;
+  const result: Record<string, PscaleNode> = {};
+  for (const k of '123456789') {
+    if (k in level) result[k] = level[k];
+  }
+  return Object.keys(result).length > 0 ? result : null;
+}
 
 function floorDepth(block: PscaleNode): number {
   let node = block;
@@ -85,12 +141,9 @@ function walk(block: PscaleNode, digits: string[]): WalkResult {
   let lastKey: string | null = null;
   const depth = 0;
 
-  // Collect root text: follow underscore chain to the floor string.
-  if (node && typeof node === 'object' && '_' in node) {
-    let inner: PscaleNode = (node as PscaleBlock)._;
-    while (inner && typeof inner === 'object' && '_' in inner) inner = (inner as PscaleBlock)._;
-    if (typeof inner === 'string') chain.push({ text: inner, depth });
-  }
+  // Collect root text via collectUnderscore (handles nested _._ chains).
+  const rootText = collectUnderscore(node);
+  if (rootText !== null) chain.push({ text: rootText, depth });
 
   let currentDepth = 0;
   for (const d of digits) {
@@ -107,8 +160,9 @@ function walk(block: PscaleNode, digits: string[]): WalkResult {
       chain.push({ text: node, depth: currentDepth });
       break;
     }
-    if (node && typeof node === 'object' && typeof (node as PscaleBlock)._ === 'string') {
-      chain.push({ text: (node as PscaleBlock)._ as string, depth: currentDepth });
+    const text = collectUnderscore(node);
+    if (text !== null) {
+      chain.push({ text, depth: currentDepth });
     }
   }
 
@@ -164,6 +218,18 @@ export function bsp(
 
   function pscaleAt(depth: number): number {
     return (fl - 1) - depth;
+  }
+
+  // Star — hidden directory at terminal
+  if (point === '*') {
+    const hd = getHiddenDirectory(terminal);
+    const semantic = (typeof terminal === 'object') ? collectUnderscore(terminal) : null;
+    return {
+      mode: 'star',
+      address: String(number),
+      semantic,
+      hidden: hd,
+    };
   }
 
   // Ring
