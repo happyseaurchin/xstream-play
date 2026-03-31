@@ -39,6 +39,11 @@ function buildSceneFromStars(block: Block, peerBlocks: Block[]): string {
   const star = bsp(mediumAgent as PscaleNode, 0, '*') as StarResult;
   const sections: string[] = [];
 
+  // Compute present peers early — needed for S×I familiarity gating
+  const present = peerBlocks.filter(
+    p => p.spatial_address === addr && p.character.id !== block.character.id
+  );
+
   if (star.hidden) {
     for (const key of Object.keys(star.hidden).sort()) {
       const ref = star.hidden[key];
@@ -73,16 +78,14 @@ function buildSceneFromStars(block: Block, peerBlocks: Block[]): string {
       // Follow star refs at the walk address (room-level hidden directories)
       const spatialStar = bsp(worldBlock as PscaleNode, addr, '*') as StarResult;
       if (spatialStar.hidden) {
-        // S×I: knowledge overlay gated by familiarity (hidden key "1")
+        // S×I: knowledge overlay gated by familiarity depth (hidden key "1")
+        // Depth 0 = stranger (root only), 1 = introduced, 2+ = known
         const knowledgeOverlay = spatialStar.hidden['1'];
         if (knowledgeOverlay && typeof knowledgeOverlay === 'object') {
-          const knowledgeLines: string[] = [];
-          // Walk depth 1 (common knowledge) always included
-          const obj = knowledgeOverlay as Record<string, unknown>;
-          for (let d = 1; d <= 9; d++) {
-            const val = obj[String(d)];
-            if (typeof val === 'string') knowledgeLines.push(val);
-          }
+          const maxFam = Math.max(0, ...present.map(p => block.familiarity[p.character.id] ?? 0));
+          const depthAddr = '1'.repeat(Math.min(maxFam, 2));
+          const knowledgeSpindle = bsp(knowledgeOverlay as PscaleNode, depthAddr || 0) as SpindleResult;
+          const knowledgeLines = knowledgeSpindle.nodes.map(n => n.text);
           if (knowledgeLines.length > 0) {
             sections.push(`KNOWN ABOUT THIS PLACE:\n${knowledgeLines.map(k => `- ${k}`).join('\n')}`);
           }
@@ -117,9 +120,6 @@ function buildSceneFromStars(block: Block, peerBlocks: Block[]): string {
   }
 
   // Runtime data: characters present (from peer blocks)
-  const present = peerBlocks.filter(
-    p => p.spatial_address === addr && p.character.id !== block.character.id
-  );
   if (present.length > 0) {
     const charLines = present.map(peer => {
       const peerId = peer.character.id;

@@ -8,10 +8,11 @@
         "_": {
           "_": "Main room — low ceiling, stone hearth at the far wall, bar of dark oak running the length of the right side. Six tables, none matching. The floor is flagstone worn smooth by centuries of boots. A wooden partition screens the corner table from the rest of the room. The front door is heavy oak with iron studs, visible from the bar and from behind the bar but not from behind the partition. Whale-oil lamps hang from iron hooks. The fire is always lit.",
           "1": {
-            "_": "What is known about this room.",
-            "1": "The main room of the Salted Dog. Thornkeep's only tavern. Open to anyone with coin.",
-            "2": "Essa runs this room. Has done for thirty years. Drawing a weapon inside loses your welcome — and losing your welcome at the only tavern in Thornkeep is a real consequence. Off-duty guards unbuckle sword belts as custom.",
-            "3": "The wooden partition hides the corner table from the front door — Essa uses this for private meetings with traders she trusts. The trapdoor behind the bar connects to a lower storage cellar with a hatch that also opens into the back room."
+            "_": "The main room of the Salted Dog. Thornkeep's only tavern. Open to anyone with coin.",
+            "1": {
+              "_": "Essa runs this room. Has done for thirty years. Drawing a weapon inside loses your welcome — and losing your welcome at the only tavern in Thornkeep is a real consequence. Off-duty guards unbuckle sword belts as custom.",
+              "1": "The wooden partition hides the corner table from the front door — Essa uses this for private meetings with traders she trusts. The trapdoor behind the bar connects to a lower storage cellar with a hatch that also opens into the back room."
+            }
           },
           "2": "events-111",
           "3": "rules-thornkeep"
