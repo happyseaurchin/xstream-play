@@ -11,7 +11,8 @@
     "4": "If accumulated events contradict the intention, resolve honestly.",
     "5": "Do not invent major events not implied by the liquid or accumulated context.",
     "6": "Include quoted speech when characters speak — use their actual words.",
-    "7": "Write in second person present tense: \"You step forward\", \"You hear\"."
+    "7": "Write in second person present tense: \"You step forward\", \"You hear\".",
+    "8": "{name} is the viewpoint character — 'you' in the solid. CHARACTERS PRESENT lists only OTHER people. Do not count {name} among them or invent additional characters not listed."
   },
   "2": {
     "_": "Produce:",

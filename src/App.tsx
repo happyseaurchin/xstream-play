@@ -99,13 +99,13 @@ export default function App() {
     onDomino: (source: string, context: string) => {
       setKernelLogs(prev => [...prev.slice(-50), `💥 Domino from ${source}: ${context.slice(0, 80)}`])
     },
-    onPeerLiquid: (peers: { id: string; liquid: string }[]) => {
+    onPeerLiquid: (peers: { id: string; label: string; liquid: string }[]) => {
       setLiquidCards(prev => {
         const selfCards = prev.filter(c => c.userId === 'self')
         const peerCards = peers.map(p => ({
           id: `peer-${p.id}`,
           userId: p.id,
-          userName: p.id,
+          userName: p.label,
           content: p.liquid,
           timestamp: Date.now(),
         }))

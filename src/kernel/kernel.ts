@@ -191,15 +191,8 @@ function processMediumOutput(block: Block, result: MediumResult, triggerType: st
   // Clear accumulated (it's been incorporated)
   block.accumulated = [];
 
-  // Clear liquid if it was a commit
-  if (triggerType === 'commit') {
-    block.pending_liquid = null;
-  }
-
-  // If liquid was overridden by domino, clear it
-  if (triggerType === 'domino' && result.liquid_status === 'overridden') {
-    block.pending_liquid = null;
-  }
+  // Clear liquid after any successful medium call — it's been consumed
+  block.pending_liquid = null;
 
   block.status = 'idle';
 }
@@ -213,7 +206,7 @@ export interface KernelCallbacks {
   onStatusChange: (status: string) => void;
   onAccumulate: (source: string, count: number) => void;
   onDomino: (source: string, context: string) => void;
-  onPeerLiquid: (peers: { id: string; liquid: string }[]) => void;
+  onPeerLiquid: (peers: { id: string; label: string; liquid: string }[]) => void;
   onError: (error: string) => void;
   onLog: (message: string) => void;
 }
@@ -285,9 +278,14 @@ export class Kernel {
       const { newEvents, newDominos } = pollPeers(this.block, peerBlocks);
 
       // Surface peer liquid (forming intentions at same location)
+      // Display label follows S×I pattern: familiarity gates what you see
       const peerLiquid = peerBlocks
         .filter(p => p.spatial_address === this.block.spatial_address && p.pending_liquid)
-        .map(p => ({ id: p.character.id, liquid: p.pending_liquid! }));
+        .map(p => {
+          const fam = this.block.familiarity[p.character.id] ?? 0;
+          const label = fam > 0 ? p.character.name : (p.character.state || 'a stranger');
+          return { id: p.character.id, label, liquid: p.pending_liquid! };
+        });
       this.callbacks.onPeerLiquid(peerLiquid);
 
       // Accumulate events + check for introductions
