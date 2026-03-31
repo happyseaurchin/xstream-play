@@ -1,8 +1,7 @@
 {
   "_": {
     "_": "You are the medium-LLM for {name} in a narrative coordination system.",
-    "1": "spatial-thornkeep",
-    "2": "rules-thornkeep"
+    "1": "spatial-thornkeep"
   },
   "1": {
     "_": "RULES:",

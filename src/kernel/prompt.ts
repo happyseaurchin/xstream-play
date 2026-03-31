@@ -47,48 +47,70 @@ function buildSceneFromStars(block: Block, peerBlocks: Block[]): string {
       const worldBlock = blockRegistry[ref];
       if (!worldBlock) continue;
 
-      if (ref.startsWith('spatial-')) {
-        // Spindle → location context (broad to specific)
-        const spindle = bsp(worldBlock as PscaleNode, addr) as SpindleResult;
-        sections.push(`LOCATION: ${spindle.nodes.map(n => n.text).join(' — ')}`);
+      // Spindle → location context (broad to specific)
+      const spindle = bsp(worldBlock as PscaleNode, addr) as SpindleResult;
+      sections.push(`LOCATION: ${spindle.nodes.map(n => n.text).join(' — ')}`);
 
-        // Dir → room contents
-        const dir = bsp(worldBlock as PscaleNode, addr, 'dir') as DirResult;
-        if (dir.subtree) {
-          const contents = flattenNode(dir.subtree).slice(1);
-          if (contents.length > 0) {
-            sections.push(`VISIBLE:\n${contents.map(c => `- ${c}`).join('\n')}`);
+      // Dir → room contents
+      const dir = bsp(worldBlock as PscaleNode, addr, 'dir') as DirResult;
+      if (dir.subtree) {
+        const contents = flattenNode(dir.subtree).slice(1);
+        if (contents.length > 0) {
+          sections.push(`VISIBLE:\n${contents.map(c => `- ${c}`).join('\n')}`);
+        }
+      }
+
+      // Ring → exits with BSP addresses
+      const ring = bsp(worldBlock as PscaleNode, addr, 'ring') as RingResult;
+      if (ring.siblings.length > 0) {
+        const exits = ring.siblings.map(s => {
+          const exitAddr = addr.slice(0, -1) + s.digit;
+          return `- [${exitAddr}] ${s.text ?? 'unexplored'}`;
+        });
+        sections.push(`EXITS:\n${exits.join('\n')}`);
+      }
+
+      // Follow star refs at the walk address (room-level hidden directories)
+      const spatialStar = bsp(worldBlock as PscaleNode, addr, '*') as StarResult;
+      if (spatialStar.hidden) {
+        // S×I: knowledge overlay gated by familiarity (hidden key "1")
+        const knowledgeOverlay = spatialStar.hidden['1'];
+        if (knowledgeOverlay && typeof knowledgeOverlay === 'object') {
+          const knowledgeLines: string[] = [];
+          // Walk depth 1 (common knowledge) always included
+          const obj = knowledgeOverlay as Record<string, unknown>;
+          for (let d = 1; d <= 9; d++) {
+            const val = obj[String(d)];
+            if (typeof val === 'string') knowledgeLines.push(val);
+          }
+          if (knowledgeLines.length > 0) {
+            sections.push(`KNOWN ABOUT THIS PLACE:\n${knowledgeLines.map(k => `- ${k}`).join('\n')}`);
           }
         }
 
-        // Ring → exits with BSP addresses
-        const ring = bsp(worldBlock as PscaleNode, addr, 'ring') as RingResult;
-        if (ring.siblings.length > 0) {
-          const exits = ring.siblings.map(s => {
-            const exitAddr = addr.slice(0, -1) + s.digit;
-            return `- [${exitAddr}] ${s.text ?? 'unexplored'}`;
-          });
-          sections.push(`EXITS:\n${exits.join('\n')}`);
-        }
-      } else if (ref.startsWith('rules-')) {
-        // Rules: location-specific + perception
-        const ruleLines: string[] = [];
-        const spatialPrefix = addr.slice(0, 2);
-        if (spatialPrefix === '11') {
-          const norms = bsp(worldBlock as PscaleNode, 0.11, 'dir') as DirResult;
-          if (norms.subtree) ruleLines.push(...flattenNode(norms.subtree));
-        } else if (spatialPrefix === '12' || spatialPrefix === '13') {
-          const norms = bsp(worldBlock as PscaleNode, 0.12, 'dir') as DirResult;
-          if (norms.subtree) ruleLines.push(...flattenNode(norms.subtree));
-        }
-        if (addr.startsWith('2') || spatialPrefix === '12') {
-          const terrain = bsp(worldBlock as PscaleNode, 0.13, 'dir') as DirResult;
-          if (terrain.subtree) ruleLines.push(...flattenNode(terrain.subtree));
-        }
-        const perception = bsp(worldBlock as PscaleNode, 0.3, 'dir') as DirResult;
-        if (perception.subtree) ruleLines.push(...flattenNode(perception.subtree));
-        if (ruleLines.length > 0) {
-          sections.push(`RULES IN EFFECT:\n${ruleLines.map(r => `- ${r}`).join('\n')}`);
+        // S×rules: follow block reference (hidden key "3" or any string ref)
+        for (const sk of Object.keys(spatialStar.hidden).sort()) {
+          const ref = spatialStar.hidden[sk];
+          if (typeof ref !== 'string') continue;
+          const rulesBlock = blockRegistry[ref];
+          if (!rulesBlock) continue;
+
+          // Spindle at same spatial address → location-specific rules
+          const rulesSpindle = bsp(rulesBlock as PscaleNode, addr) as SpindleResult;
+          const ruleLines = rulesSpindle.nodes.map(n => n.text);
+
+          // Hidden directory at rules root → universal detail (perception, conflict, time)
+          const rulesRootStar = bsp(rulesBlock as PscaleNode, 0, '*') as StarResult;
+          if (rulesRootStar.hidden) {
+            for (const rk of Object.keys(rulesRootStar.hidden).sort()) {
+              const detail = rulesRootStar.hidden[rk];
+              if (detail && typeof detail === 'object') ruleLines.push(...flattenNode(detail));
+            }
+          }
+
+          if (ruleLines.length > 0) {
+            sections.push(`RULES IN EFFECT:\n${ruleLines.map(r => `- ${r}`).join('\n')}`);
+          }
         }
       }
     }
