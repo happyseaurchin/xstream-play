@@ -224,7 +224,7 @@ blocks/
     spatial-thornkeep.json  # World spatial block. BSP addresses are locations.
     rules-thornkeep.json    # World rules block. Location-specific + perception.
     harness.json        # Solid output constraint levels (P-4 through P0).
-    identity-*.json     # Character identity blocks.
+    character-*.json    # Character blocks (NPC descriptions, player template).
 ```
 
 ### Key principle: the kernel/ directory is the engine. Everything else is UI or blocks.
