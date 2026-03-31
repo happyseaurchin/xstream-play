@@ -202,8 +202,8 @@ export function buildMediumPrompt(
 
   // ── Nearby intentions: peer liquid at same location ──
   if (peerBlocks) {
-    const nearbyLiquid = present
-      .filter(p => p.pending_liquid)
+    const nearbyLiquid = peerBlocks
+      .filter(p => p.spatial_address === block.spatial_address && p.pending_liquid && p.character.id !== block.character.id)
       .map(p => `- [${p.character.id}] is forming: "${p.pending_liquid}"`);
     if (nearbyLiquid.length > 0) {
       intentSection += `\n\nNEARBY INTENTIONS:\n${nearbyLiquid.join('\n')}`;
