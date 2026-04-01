@@ -299,6 +299,10 @@ export class Kernel {
   private running = false;
   private lastHardRun = 0;          // timestamp of last Hard reconciliation
   private hardEventsProcessed = 0;  // events seen at last Hard run
+  private _lastPeerBlocks: Block[] = [];
+
+  /** Last-read peer blocks from relay (updated each cycle) */
+  get lastPeerBlocks(): Block[] { return this._lastPeerBlocks; }
 
   constructor(block: Block, gameId: string, callbacks: KernelCallbacks) {
     this.block = block;
@@ -358,6 +362,7 @@ export class Kernel {
     try {
       // ── STEP 0: Read peers ──
       const peerBlocks = await readPeerBlocks(this.gameId, this.block.character.id);
+      this._lastPeerBlocks = peerBlocks;
 
       // ── STEP 1: Poll peers ──
       const { newEvents, newDominos } = pollPeers(this.block, peerBlocks);

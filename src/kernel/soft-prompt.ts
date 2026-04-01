@@ -10,7 +10,7 @@ import type { Block } from './types';
 import type { Face } from '../types/xstream';
 import { bsp, collectUnderscore } from './bsp';
 import type { DirResult, SpindleResult, StarResult, RingResult } from './bsp';
-import { getBlock } from './block-store';
+import { getBlock, listBlocks } from './block-store';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type PscaleNode = string | { [key: string]: any };
@@ -70,8 +70,8 @@ function buildSceneForCharacter(block: Block): string {
   return sections.join('\n\n');
 }
 
-/** Author face: block content at edit address */
-function buildContextForAuthor(block: Block): string {
+/** Author face: block content at edit address + nearby author activity */
+function buildContextForAuthor(block: Block, peerBlocks?: Block[]): string {
   const editTarget = block.edit_target ?? 'spatial-thornkeep';
   const editAddr = block.edit_address ?? block.spatial_address;
   const targetBlock = getBlock(editTarget);
@@ -92,6 +92,23 @@ function buildContextForAuthor(block: Block): string {
   if (ring.siblings.length > 0) {
     const sibs = ring.siblings.map(s => `  [${s.digit}] ${s.text ?? '(branch)'}${s.branch ? ' +' : ''}`);
     sections.push(`SIBLINGS:\n${sibs.join('\n')}`);
+  }
+
+  // Nearby author activity from peers
+  if (peerBlocks && peerBlocks.length > 0) {
+    const nearby = peerBlocks.filter(p => {
+      if (!p.pending_liquid || p.edit_target !== editTarget) return false;
+      const peerAddr = p.edit_address ?? '';
+      return editAddr.startsWith(peerAddr) || peerAddr.startsWith(editAddr);
+    });
+    if (nearby.length > 0) {
+      const lines = nearby.map(p => {
+        const fam = block.familiarity[p.character.id] ?? 0;
+        const who = fam > 0 ? p.character.name : 'another author';
+        return `  ${who} at ${p.edit_address ?? '?'}: "${p.pending_liquid}"`;
+      });
+      sections.push(`NEARBY AUTHORS:\n${lines.join('\n')}`);
+    }
   }
 
   return sections.join('\n\n');
@@ -115,13 +132,29 @@ function buildContextForDesigner(block: Block): string {
     sections.push(`CURRENT CONTENT:\n${JSON.stringify(dir.subtree, null, 2).slice(0, 1000)}`);
   }
 
-  // Also show star refs if present
+  // Star refs at edit address
   const star = bsp(targetBlock as PscaleNode, editAddr, '*') as StarResult;
   if (star.hidden) {
     const refs = Object.entries(star.hidden).map(([k, v]) =>
       `  ${k}: ${typeof v === 'string' ? v : '(embedded)'}`
     );
     sections.push(`STAR REFERENCES:\n${refs.join('\n')}`);
+  }
+
+  // Reverse star lookup: which blocks reference the edit target?
+  const referencedBy: string[] = [];
+  for (const name of listBlocks()) {
+    if (name === editTarget) continue;
+    const b = getBlock(name);
+    if (!b) continue;
+    const rootStar = bsp(b as PscaleNode, 0, '*') as StarResult;
+    if (rootStar.hidden) {
+      const refs = Object.values(rootStar.hidden);
+      if (refs.includes(editTarget)) referencedBy.push(name);
+    }
+  }
+  if (referencedBy.length > 0) {
+    sections.push(`REFERENCED BY:\n${referencedBy.map(n => `  ${n}`).join('\n')}`);
   }
 
   return sections.join('\n\n');
@@ -136,7 +169,7 @@ function getSoftAgentName(face: Face): string {
   }
 }
 
-export function buildSoftPrompt(block: Block, playerMessage: string, face: Face = 'character'): string {
+export function buildSoftPrompt(block: Block, playerMessage: string, face: Face = 'character', peerBlocks?: Block[]): string {
   const name = block.character.name;
   const agentName = getSoftAgentName(face);
   const softAgent = getBlock(agentName);
@@ -168,7 +201,7 @@ export function buildSoftPrompt(block: Block, playerMessage: string, face: Face 
   // Context section: face-dependent
   let contextSection: string;
   if (face === 'author') {
-    contextSection = buildContextForAuthor(block);
+    contextSection = buildContextForAuthor(block, peerBlocks);
   } else if (face === 'designer') {
     contextSection = buildContextForDesigner(block);
   } else {

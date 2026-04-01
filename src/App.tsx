@@ -213,7 +213,8 @@ export default function App() {
         block.edit_target = editTarget
         block.edit_address = editAddress
       }
-      const prompt = buildSoftPrompt(block, text, face)
+      const peers = kernelRef.current.lastPeerBlocks
+      const prompt = buildSoftPrompt(block, text, face, peers)
       const response = await callClaude(apiKey, 'claude-haiku-4-5-20251001', prompt, 256)
 
       setSoftResponse({
@@ -231,13 +232,13 @@ export default function App() {
         originalInput: text,
         text: `Error: ${msg}`,
         softType: 'info',
-        face: 'character',
+        face,
         frameId: null,
       })
     } finally {
       setSoftLoading(false)
     }
-  }, [apiKey, characterName])
+  }, [apiKey, face, editTarget, editAddress])
 
   // --- SUBMIT to Liquid ---
   const handleSubmit = useCallback((text: string) => {
