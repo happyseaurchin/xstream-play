@@ -59,6 +59,10 @@ export interface Block {
   spatial_address: string;
   familiarity: Record<string, number>;
   event_log: GameEvent[];
+
+  // ── Author/Designer attention ──
+  edit_address?: string;   // BSP address the player is attending to
+  edit_target?: string;    // block name being edited (e.g. 'spatial-thornkeep')
 }
 
 export interface DominoOut {
@@ -75,6 +79,18 @@ export interface MediumResult {
   internal?: string;
   liquid_status?: string;
   location_change?: string;
+}
+
+export interface AuthorResult {
+  edit?: {
+    block: string;
+    address: string;
+    operation: 'add' | 'replace' | 'delete';
+    key?: string;
+    content?: unknown;
+  };
+  summary?: string;
+  preview?: string;
 }
 
 export interface AccumulatedEvent {

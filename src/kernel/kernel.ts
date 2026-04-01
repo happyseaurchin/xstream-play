@@ -10,8 +10,10 @@
  */
 
 import { callClaude } from './claude-direct';
-import { buildMediumPrompt } from './prompt';
-import type { Block, MediumResult, AccumulatedEvent, DominoSignal } from './types';
+import { buildMediumPrompt, buildAuthorPrompt } from './prompt';
+import { applyBlockEdit } from './block-store';
+import type { Block, MediumResult, AuthorResult, AccumulatedEvent, DominoSignal } from './types';
+import type { Face } from '../types/xstream';
 
 // ============================================================
 // RELAY ABSTRACTION — swap backing store here only
@@ -60,6 +62,33 @@ async function callMedium(
     return JSON.parse(cleaned);
   } catch (e) {
     console.error('[kernel] Medium call failed:', e);
+    return null;
+  }
+}
+
+// ============================================================
+// AUTHOR-MEDIUM CALL — author face commit
+// ============================================================
+
+async function callAuthorMedium(
+  block: Block,
+  peerBlocks?: Block[]
+): Promise<AuthorResult | null> {
+  const prompt = buildAuthorPrompt(block, peerBlocks);
+  const config = block.medium;
+
+  try {
+    // Author edits need Sonnet for structured output precision
+    const model = 'claude-sonnet-4-20250514';
+    const text = await callClaude(config.api_key, model, prompt, config.max_tokens);
+    const cleaned = text.trim()
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/\s*```$/, '')
+      .trim();
+    return JSON.parse(cleaned);
+  } catch (e) {
+    console.error('[kernel] Author medium call failed:', e);
     return null;
   }
 }
@@ -214,6 +243,7 @@ export interface KernelCallbacks {
 export class Kernel {
   block: Block;
   gameId: string;
+  face: Face = 'character';
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private callbacks: KernelCallbacks;
   private running = false;
@@ -256,13 +286,14 @@ export class Kernel {
   }
 
   // Player hits commit
-  commit(): void {
+  commit(face?: Face): void {
     if (!this.block.pending_liquid) {
       this.callbacks.onLog('  ⚠️  Nothing to commit');
       return;
     }
+    if (face) this.face = face;
     this.block.status = 'resolving';
-    this.callbacks.onLog('  ⚡ Commit — medium will fire on next cycle');
+    this.callbacks.onLog(`  ⚡ Commit (${this.face}) — medium will fire on next cycle`);
     this.callbacks.onStatusChange('resolving');
   }
 
@@ -341,29 +372,59 @@ export class Kernel {
 
       // ── STEP 3: Process player commit ──
       if (this.block.status === 'resolving' && this.block.pending_liquid) {
-        this.callbacks.onLog(`  🎯 Player committed. Firing medium...`);
+        if (this.face === 'author') {
+          // ── AUTHOR FACE: produce block edit ──
+          this.callbacks.onLog(`  🎯 Author committed. Firing author-medium...`);
 
-        const result = await callMedium(this.block, 'commit', undefined, peerBlocks);
-        if (result) {
-          processMediumOutput(this.block, result, 'commit');
-          this.callbacks.onSolid(result.solid ?? '');
-          this.callbacks.onStatusChange('idle');
-          this.callbacks.onLog(
-            `  ✅ Solid: ${(result.solid ?? '').slice(0, 80)}...`
-          );
-          this.callbacks.onLog(
-            `     Events: ${(result.events ?? []).length} deposited`
-          );
-          const dominoTargets = (result.domino ?? [])
-            .map((d: { target?: string }) => d.target ?? '?');
-          if (dominoTargets.length > 0) {
-            this.callbacks.onLog(`     Domino targets: ${dominoTargets.join(', ')}`);
+          const result = await callAuthorMedium(this.block, peerBlocks);
+          if (result?.edit) {
+            const applied = applyBlockEdit({
+              block: result.edit.block,
+              address: result.edit.address,
+              operation: result.edit.operation,
+              key: result.edit.key,
+              content: result.edit.content as string,
+            });
+            const summary = result.summary ?? (applied ? 'Edit applied.' : 'Edit failed.');
+            this.callbacks.onSolid(`[author] ${summary}`);
+            this.callbacks.onLog(`  ✏️  ${applied ? 'Applied' : 'Failed'}: ${summary}`);
+          } else {
+            const summary = result?.summary ?? 'No edit produced.';
+            this.callbacks.onSolid(`[author] ${summary}`);
+            this.callbacks.onLog(`  ⚠️  Author result: ${summary}`);
           }
-          await writeBlock(this.gameId, this.block.character.id, this.block);
-        } else {
+
+          this.block.pending_liquid = null;
           this.block.status = 'idle';
           this.callbacks.onStatusChange('idle');
-          this.callbacks.onError('Medium call failed');
+          await writeBlock(this.gameId, this.block.character.id, this.block);
+
+        } else {
+          // ── CHARACTER FACE: produce narrative ──
+          this.callbacks.onLog(`  🎯 Player committed. Firing medium...`);
+
+          const result = await callMedium(this.block, 'commit', undefined, peerBlocks);
+          if (result) {
+            processMediumOutput(this.block, result, 'commit');
+            this.callbacks.onSolid(result.solid ?? '');
+            this.callbacks.onStatusChange('idle');
+            this.callbacks.onLog(
+              `  ✅ Solid: ${(result.solid ?? '').slice(0, 80)}...`
+            );
+            this.callbacks.onLog(
+              `     Events: ${(result.events ?? []).length} deposited`
+            );
+            const dominoTargets = (result.domino ?? [])
+              .map((d: { target?: string }) => d.target ?? '?');
+            if (dominoTargets.length > 0) {
+              this.callbacks.onLog(`     Domino targets: ${dominoTargets.join(', ')}`);
+            }
+            await writeBlock(this.gameId, this.block.character.id, this.block);
+          } else {
+            this.block.status = 'idle';
+            this.callbacks.onStatusChange('idle');
+            this.callbacks.onError('Medium call failed');
+          }
         }
       }
     } catch (e) {

@@ -19,6 +19,7 @@ import { createBlock, generateGameCode, generateCharId } from './kernel/block-fa
 import { callClaude } from './kernel/claude-direct'
 import { buildSoftPrompt } from './kernel/soft-prompt'
 import type { SolidBlock, LiquidCard } from './types/xstream'
+import type { Face } from './types/xstream'
 import type { SoftLLMResponse } from './types'
 import './App.css'
 
@@ -50,9 +51,12 @@ export default function App() {
   const [accumulatedCount, setAccumulatedCount] = useState(0)
   const [dominoMode, setDominoMode] = useState<'auto' | 'informed' | 'silent'>('auto')
 
-  // Theme
+  // Theme + Face
   const [theme, setTheme] = useState<Theme>(() =>
     (localStorage.getItem('xstream-theme') as Theme) || 'dark'
+  )
+  const [face, setFace] = useState<Face>(() =>
+    (localStorage.getItem('xstream-face') as Face) || 'character'
   )
 
   // Zone heights (proportional)
@@ -62,6 +66,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('xstream-theme', theme)
   }, [theme])
+
+  useEffect(() => {
+    localStorage.setItem('xstream-face', face)
+  }, [face])
 
   // Cleanup kernel on unmount
   useEffect(() => {
@@ -224,18 +232,22 @@ export default function App() {
       timestamp: Date.now(),
     }
     setLiquidCards(prev => [...prev, card])
-    // Also set as pending liquid in kernel
+    // Set edit context for author/designer face
+    if (face !== 'character') {
+      kernelRef.current.block.edit_target = 'spatial-thornkeep'
+      kernelRef.current.block.edit_address = kernelRef.current.block.spatial_address
+    }
     kernelRef.current.submitLiquid(text)
-  }, [characterName])
+  }, [characterName, face])
 
   // --- COMMIT (fires kernel, which fires medium on next cycle) ---
   const handleCommit = useCallback((_cardId: string) => {
     if (!kernelRef.current) return
     setSynthesising(true)
-    kernelRef.current.commit()
+    kernelRef.current.commit(face)
     // Clear liquid cards — kernel will handle the rest
     setLiquidCards([])
-  }, [])
+  }, [face])
 
   // --- Copy liquid card text back to vapor input ---
   const handleCopyToVapor = useCallback((text: string) => {
@@ -283,10 +295,20 @@ export default function App() {
   }
 
   return (
-    <div className="app" data-theme={theme} data-face="character">
+    <div className="app" data-theme={theme} data-face={face}>
       {/* Header */}
       <div className="flex items-center gap-3 px-4 h-[44px] border-b border-border/50 text-sm shrink-0">
         <span className="text-face-accent font-medium">{characterName}</span>
+        <select
+          value={face}
+          onChange={e => setFace(e.target.value as Face)}
+          className="text-xs bg-transparent border border-border/50 rounded px-1 py-0.5 text-face-accent cursor-pointer"
+          title="Switch face"
+        >
+          <option value="character">character</option>
+          <option value="author">author</option>
+          <option value="designer">designer</option>
+        </select>
         <span className="text-muted-foreground text-xs font-mono"
               style={{ cursor: 'pointer' }}
               title="Click to copy game code"

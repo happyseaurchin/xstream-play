@@ -7,7 +7,7 @@
 
 import { bsp } from './bsp';
 import type { DirResult } from './bsp';
-import harnessBlock from '../../blocks/xstream/harness.json';
+import { getBlock } from './block-store';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type PscaleNode = string | { [key: string]: any };
@@ -46,6 +46,8 @@ export function resolveHarness(pscale: number): HarnessConfig {
   const key = PSCALE_TO_KEY[pscale];
   if (key == null) return DEFAULT;
 
+  const harnessBlock = getBlock('harness');
+  if (!harnessBlock) return DEFAULT;
   const dirResult = bsp(harnessBlock as PscaleNode, `0.${key}`, 'dir') as DirResult;
   const node = dirResult.subtree;
   if (!node || typeof node !== 'object') return DEFAULT;

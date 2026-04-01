@@ -10,8 +10,7 @@
 import type { Block } from './types';
 import { bsp, collectUnderscore } from './bsp';
 import type { DirResult, SpindleResult, StarResult, RingResult } from './bsp';
-import softAgent from '../../blocks/xstream/soft-agent.json';
-import { blockRegistry } from './block-registry';
+import { getBlock } from './block-store';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type PscaleNode = string | { [key: string]: any };
@@ -35,6 +34,8 @@ function flattenNode(node: unknown): string[] {
  */
 function buildSceneForSoft(block: Block): string {
   const addr = block.spatial_address;
+  const softAgent = getBlock('soft-agent');
+  if (!softAgent) return '';
   const star = bsp(softAgent as PscaleNode, 0, '*') as StarResult;
   const sections: string[] = [];
 
@@ -43,7 +44,7 @@ function buildSceneForSoft(block: Block): string {
       const ref = star.hidden[key];
       if (typeof ref !== 'string') continue;
 
-      const worldBlock = blockRegistry[ref];
+      const worldBlock = getBlock(ref);
       if (!worldBlock) continue;
 
       if (ref.startsWith('spatial-')) {
@@ -76,6 +77,8 @@ function buildSceneForSoft(block: Block): string {
 
 export function buildSoftPrompt(block: Block, playerMessage: string): string {
   const name = block.character.name;
+  const softAgent = getBlock('soft-agent');
+  if (!softAgent) return '';
 
   // Identity via collectUnderscore (follows nested chain)
   const identity = collectUnderscore(softAgent as PscaleNode)?.replace(/{name}/g, name) ?? '';
