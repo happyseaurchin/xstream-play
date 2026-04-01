@@ -29,6 +29,7 @@ import softDesignerAgent from '../../blocks/xstream/soft-designer-agent.json';
 import hardAuthorAgent from '../../blocks/xstream/hard-author-agent.json';
 import hardDesignerAgent from '../../blocks/xstream/hard-designer-agent.json';
 import convergence from '../../blocks/xstream/convergence.json';
+import systemicKernel from '../../blocks/xstream/systemic-kernel.json';
 import { saveBlock } from './persistence';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -55,6 +56,7 @@ const seeds: Record<string, PscaleNode> = {
   'hard-author-agent': hardAuthorAgent,
   'hard-designer-agent': hardDesignerAgent,
   'convergence': convergence,
+  'systemic-kernel': systemicKernel,
 };
 
 for (const [name, block] of Object.entries(seeds)) {
