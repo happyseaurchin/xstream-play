@@ -1,7 +1,25 @@
 {
-  "_": "Rules for Thornkeep — what constrains action, how conflicts resolve, and what social norms apply. These are read by the hard-LLM and included in the perception frame as applicable_rules. The medium-LLM respects them when producing narrative.",
+  "_": {
+    "_": "Rules constraining action on the Broken Coast. Perception is physical: vision requires line of sight and sufficient light, sound carries through stone but muffled, smell and temperature carry through open spaces, touch and proprioception are immediate. Conflict resolves by narrative judgment — competence, position, physical reality determine outcomes honestly. One commit covers one natural beat of action: seconds in a fight, a minute in conversation, longer for travel. No turns, no initiative order — commit timing is itself a meaningful choice.",
+    "1": {
+      "_": "Perception detail — vision requires line of sight and sufficient light. The wooden partition in the Salted Dog blocks vision to the corner table. The back room is not visible from the main room unless the curtain is open.",
+      "1": "Sound carries through stone walls but is muffled. Conversation in the back room is inaudible from the main room unless raised to shouting. The creak of the stairs is audible from the back room and faintly from the main room.",
+      "2": "Smell and temperature carry through open spaces. The draught from the front door reaches the hearth. Smoke from the fire permeates everything. A new smell — wet wool, perfume, blood — is noticeable to anyone in the room.",
+      "3": "Touch and proprioception are immediate. You feel the temperature change when the door opens. You feel someone grab your arm. You feel the floor vibrate when something heavy falls nearby."
+    },
+    "2": {
+      "_": "Conflict resolution — the medium-LLM judges outcomes based on character capabilities, position, physical reality, and narrative coherence. No dice, no numbers unless designer enables them. The world is realistic and the LLM is honest about what would happen.",
+      "1": "A trained guard draws faster than a merchant. A barkeeper who has broken up hundreds of fights reads the room faster than a young guard. Competence is derived from character state, not stats. Position matters more than skill — the person closer to the door reaches it first.",
+      "2": "Domino physics: direct physical contact or immediate threat generates a domino. Drawing a weapon near someone. Throwing something. Grabbing an arm. Blocking a doorway. Indirect effects — speaking, entering, looking — produce events that accumulate, not dominos.",
+      "3": "Optional dice: when enabled, contested actions include mechanical resolution. Target number set by difficulty, modified by competence. Results injected as accumulated context. Dice never override narrative impossibility."
+    },
+    "3": {
+      "_": "Time and pacing — multiple characters at different pscales coexist naturally. Faster characters produce more events; slower characters incorporate them on next commit.",
+      "1": "The game does not have turns. There is no initiative order. Commit when ready. The timing of the commit is itself a meaningful choice — early for influence, late for information."
+    }
+  },
   "1": {
-    "_": "Social norms — the unwritten rules that govern behaviour in Thornkeep.",
+    "_": "Thornkeep village norms — a community of two hundred where social consequences outweigh legal authority. Guards patrol in pairs but the village self-polices through reputation, exclusion, and thirty years of memory. Hostility to strangers harms trade; trade sustains the village.",
     "1": {
       "_": "The Salted Dog — Essa's house, Essa's rules. Drawing a weapon inside is a serious transgression. The barkeeper has authority to eject anyone and has done so for thirty years. Guards who cause trouble inside lose their welcome, and losing your welcome at the only tavern in Thornkeep is a real consequence.",
       "1": "Weapons may be carried but not drawn. Sword belts unbuckled and placed on furniture is the local custom for off-duty guards — it signals 'not working, not threatening.'",
@@ -14,42 +32,16 @@
       "2": "The market corner is public by day, empty by night. Goods left unattended are not stolen — Thornkeep is small enough that theft has social consequences that outweigh the gain."
     },
     "3": {
-      "_": "The harbour and cliffs — dangerous terrain. Falls kill. The harbour steps are slippery. The cliff path is exposed. Weather matters.",
-      "1": "Rain makes stone surfaces treacherous. Any physical action on wet stone has a higher chance of failure or complication. The medium-LLM should reflect this — a chase on wet harbour steps is not the same as a chase on dry cobbles.",
-      "2": "The sea is cold. Falling in means hypothermia within minutes. Swimming is not a casual option."
+      "_": "The guard station — primary authority point for Thornkeep. Guards log all arrivals and departures. The watch room overlooks the harbour road. Off-duty guards frequently found at the Salted Dog.",
+      "1": "The lockup is rarely used. Confinement is a last resort in a village this small — social pressure is the usual enforcement mechanism."
     }
   },
   "2": {
-    "_": "Conflict resolution — how the medium-LLM determines outcomes when actions are contested.",
-    "1": {
-      "_": "Default: narrative resolution. The medium-LLM judges outcomes based on character capabilities, position, physical reality, and narrative coherence. No dice, no numbers. The world is realistic and the LLM is honest about what would happen.",
-      "1": "A trained guard draws faster than a merchant. A barkeeper who has broken up hundreds of fights reads the room faster than a young guard. A merchant recognises trade goods that others miss. Competence is derived from character state, not stats.",
-      "2": "Position matters more than skill in many situations. The person closer to the door reaches it first. The person facing the threat sees it first. The person behind the bar has elevation. Physical reality constrains action."
-    },
-    "2": {
-      "_": "Optional: dice evaluation. When enabled by the designer, contested actions can include a mechanical resolution step. The dice block defines the system — currently simple, expandable.",
-      "1": "Roll format: target number set by difficulty, modified by character competence. Higher is better. The result is a skeleton that the medium-LLM narrates around.",
-      "2": "Dice results are injected into the medium's context as accumulated context: 'Stealth check: rolled 4 against difficulty 6. Failed narrowly.' The medium narrates the failure in character-appropriate terms.",
-      "3": "Dice never override narrative impossibility. You cannot succeed at picking a lock if you have no lockpicking tools, regardless of the roll. The dice resolve uncertain outcomes within the space of what is physically possible."
-    },
-    "3": {
-      "_": "Domino physics — when one action forces another character to respond.",
-      "1": "Direct physical contact or immediate threat generates a domino. Drawing a weapon near someone. Throwing something at someone. Grabbing someone's arm. Blocking a doorway someone is moving toward.",
-      "2": "Indirect effects do not generate dominos. Speaking across the room. Entering a building. Looking at someone. These produce events that accumulate; they do not force response.",
-      "3": "Area effects — kicking over a table, starting a fire, shouting — may domino multiple characters if they are within the affected area. The medium-LLM judges who is close enough to be directly affected."
-    }
+    "_": "The headland — dangerous terrain where the rules are physical, not social. Falls kill. The cliff path is exposed to weather. The sea is cold enough to kill within minutes. Rain makes stone surfaces treacherous — any physical action on wet stone has a higher chance of failure.",
+    "1": "The lighthouse keeper has been there longer than most villagers remember. The keeper's territory is respected by custom, not law. Few visit uninvited."
   },
   "3": {
-    "_": "Perception rules — what characters can and cannot detect.",
-    "1": "Vision requires line of sight and sufficient light. The wooden partition in the Salted Dog blocks vision to the corner table. The back room is not visible from the main room unless the curtain is open.",
-    "2": "Sound carries through stone walls but is muffled. Conversation in the back room is inaudible from the main room unless raised to shouting. The creak of the stairs is audible from the back room and faintly from the main room.",
-    "3": "Smell and temperature carry through open spaces. The draught from the front door reaches the hearth. Smoke from the fire permeates everything. A new smell — wet wool, perfume, blood — is noticeable to anyone in the room.",
-    "4": "Touch and proprioception are immediate. You feel the temperature change when the door opens. You feel someone grab your arm. You feel the floor vibrate when something heavy falls nearby."
-  },
-  "4": {
-    "_": "Time and pacing — how the game handles the passage of time.",
-    "1": "One commit covers roughly one natural beat of action — a few seconds in a fight, a minute in conversation, longer for travel or waiting. The medium-LLM judges the appropriate duration from the nature of the action.",
-    "2": "Multiple characters at different pscales coexist. One character in rapid combat (fine pscale, seconds per commit) while another is studying a map (coarse pscale, minutes per commit). The accumulation model handles this naturally — faster characters produce more events that the slower character incorporates on their next commit.",
-    "3": "The game does not have turns. There is no initiative order. Commit when ready. The timing of the commit is itself a meaningful choice — early for influence, late for information."
+    "_": "The southern road — trade route rules. Tolls at the Greymarch crossing have increased recently, affecting merchant traffic. The guild mark on toll receipts is distinctive bronze-work. Travellers on the road are subject to weather and distance, not village social norms.",
+    "1": "Two days' travel to the crossing. Camping overnight is common. Bandits are rare but not unknown — the road is too economically important to be left unpatrolled, but patrols thin beyond a day's ride from Thornkeep."
   }
 }

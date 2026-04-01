@@ -15,10 +15,13 @@ import { VapourZone } from './components/xstream/VapourZone'
 import { DraggableSeparator } from './components/DraggableSeparator'
 import { ConstructionButton } from './components/xstream/ConstructionButton'
 import { Kernel } from './kernel/kernel'
-import { createBlock, generateGameCode } from './kernel/block-factory'
+import { createBlock, generateGameCode, generateCharId } from './kernel/block-factory'
 import { callClaude } from './kernel/claude-direct'
+import { buildSoftPrompt } from './kernel/soft-prompt'
 import type { SolidBlock, LiquidCard } from './types/xstream'
+import type { Face } from './types/xstream'
 import type { SoftLLMResponse } from './types'
+import { listBlocks } from './kernel/block-store'
 import './App.css'
 
 type AppPhase = 'setup' | 'loading' | 'ready'
@@ -36,8 +39,19 @@ export default function App() {
   // Kernel
   const kernelRef = useRef<Kernel | null>(null)
 
-  // UI data
-  const [solidBlocks, setSolidBlocks] = useState<SolidBlock[]>([])
+  // Theme + Face (declared early — solidBlocks depends on face)
+  const [theme, setTheme] = useState<Theme>(() =>
+    (localStorage.getItem('xstream-theme') as Theme) || 'dark'
+  )
+  const [face, setFace] = useState<Face>(() =>
+    (localStorage.getItem('xstream-face') as Face) || 'character'
+  )
+
+  // UI data — solid blocks scoped per face
+  const [characterSolids, setCharacterSolids] = useState<SolidBlock[]>([])
+  const [authorSolids, setAuthorSolids] = useState<SolidBlock[]>([])
+  const [designerSolids, setDesignerSolids] = useState<SolidBlock[]>([])
+  const solidBlocks = face === 'author' ? authorSolids : face === 'designer' ? designerSolids : characterSolids
   const [liquidCards, setLiquidCards] = useState<LiquidCard[]>([])
   const [softResponse, setSoftResponse] = useState<SoftLLMResponse | null>(null)
   const [synthesising, setSynthesising] = useState(false)
@@ -49,11 +63,6 @@ export default function App() {
   const [accumulatedCount, setAccumulatedCount] = useState(0)
   const [dominoMode, setDominoMode] = useState<'auto' | 'informed' | 'silent'>('auto')
 
-  // Theme
-  const [theme, setTheme] = useState<Theme>(() =>
-    (localStorage.getItem('xstream-theme') as Theme) || 'dark'
-  )
-
   // Zone heights (proportional)
   const [solidHeight, setSolidHeight] = useState(() => window.innerHeight * 0.35)
   const [liquidHeight, setLiquidHeight] = useState(() => window.innerHeight * 0.30)
@@ -61,6 +70,18 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('xstream-theme', theme)
   }, [theme])
+
+  useEffect(() => {
+    localStorage.setItem('xstream-face', face)
+    // Set sensible edit defaults when switching face
+    if (face === 'author') {
+      setEditTarget('spatial-thornkeep')
+      setEditAddress(kernelRef.current?.block.spatial_address ?? '111')
+    } else if (face === 'designer') {
+      setEditTarget('rules-thornkeep')
+      setEditAddress('0')
+    }
+  }, [face])
 
   // Cleanup kernel on unmount
   useEffect(() => {
@@ -81,11 +102,12 @@ export default function App() {
   const makeKernelCallbacks = useCallback(() => ({
     onSolid: (solid: string) => {
       if (!solid) return
-      setSolidBlocks(prev => [...prev, {
-        id: Date.now().toString(),
-        content: solid,
-        timestamp: Date.now(),
-      }])
+      const entry = { id: Date.now().toString(), content: solid, timestamp: Date.now() }
+      // Route to the face that produced this solid
+      const f = kernelRef.current?.face ?? 'character'
+      if (f === 'author') setAuthorSolids(prev => [...prev, entry])
+      else if (f === 'designer') setDesignerSolids(prev => [...prev, entry])
+      else setCharacterSolids(prev => [...prev, entry])
       setSynthesising(false)
     },
     onStatusChange: (status: string) => {
@@ -97,6 +119,19 @@ export default function App() {
     },
     onDomino: (source: string, context: string) => {
       setKernelLogs(prev => [...prev.slice(-50), `💥 Domino from ${source}: ${context.slice(0, 80)}`])
+    },
+    onPeerLiquid: (peers: { id: string; label: string; liquid: string }[]) => {
+      setLiquidCards(prev => {
+        const selfCards = prev.filter(c => c.userId === 'self')
+        const peerCards = peers.map(p => ({
+          id: `peer-${p.id}`,
+          userId: p.id,
+          userName: p.label,
+          content: p.liquid,
+          timestamp: Date.now(),
+        }))
+        return [...selfCards, ...peerCards]
+      })
     },
     onError: (error: string) => {
       console.error('[kernel]', error)
@@ -119,7 +154,7 @@ export default function App() {
     const code = generateGameCode()
     setGameCode(code)
 
-    const charId = name.toLowerCase().replace(/[^a-z0-9]/g, '')
+    const charId = generateCharId()
     const block = createBlock(charId, name, state || `${name}. A newcomer.`, scene, key)
 
     const kernel = new Kernel(block, code, makeKernelCallbacks())
@@ -149,7 +184,7 @@ export default function App() {
         }
       }
 
-      const charId = name.toLowerCase().replace(/[^a-z0-9]/g, '')
+      const charId = generateCharId()
       const block = createBlock(charId, name, state || `${name}. A newcomer.`, scene, key)
 
       const kernel = new Kernel(block, code, makeKernelCallbacks())
@@ -173,18 +208,12 @@ export default function App() {
 
     try {
       const block = kernelRef.current.block
-      const recentSolid = block.character.solid_history.slice(-1)[0] || ''
-      const scene = block.scene || ''
-
-      const prompt = `You are a thinking partner for ${characterName} in this scene:
-${scene}
-
-Recent narrative: ${recentSolid}
-
-The player is thinking: "${text}"
-
-Help them think. Be vivid and brief (1-3 sentences). Don't narrate — suggest, provoke, or clarify. Second person present tense.`
-
+      // Sync edit context before building prompt
+      if (face !== 'character') {
+        block.edit_target = editTarget
+        block.edit_address = editAddress
+      }
+      const prompt = buildSoftPrompt(block, text, face)
       const response = await callClaude(apiKey, 'claude-haiku-4-5-20251001', prompt, 256)
 
       setSoftResponse({
@@ -192,7 +221,7 @@ Help them think. Be vivid and brief (1-3 sentences). Don't narrate — suggest, 
         originalInput: text,
         text: response,
         softType: 'refine',
-        face: 'character',
+        face,
         frameId: null,
       })
     } catch (err: unknown) {
@@ -221,25 +250,29 @@ Help them think. Be vivid and brief (1-3 sentences). Don't narrate — suggest, 
       timestamp: Date.now(),
     }
     setLiquidCards(prev => [...prev, card])
-    // Also set as pending liquid in kernel
+    // Sync edit context to kernel block
+    if (face !== 'character') {
+      kernelRef.current.block.edit_target = editTarget
+      kernelRef.current.block.edit_address = editAddress
+    }
     kernelRef.current.submitLiquid(text)
-  }, [characterName])
+  }, [characterName, face])
 
   // --- COMMIT (fires kernel, which fires medium on next cycle) ---
   const handleCommit = useCallback((_cardId: string) => {
     if (!kernelRef.current) return
     setSynthesising(true)
-    kernelRef.current.commit()
+    kernelRef.current.commit(face)
     // Clear liquid cards — kernel will handle the rest
     setLiquidCards([])
-  }, [])
+  }, [face])
 
   // --- Copy liquid card text back to vapor input ---
   const handleCopyToVapor = useCallback((text: string) => {
     setVaporText(text)
   }, [])
 
-  // --- Domino mode toggle ---
+  // --- Domino mode toggle (character face) ---
   const handleDominoModeToggle = useCallback(() => {
     const modes: Array<'auto' | 'informed' | 'silent'> = ['auto', 'informed', 'silent']
     const next = modes[(modes.indexOf(dominoMode) + 1) % modes.length]
@@ -249,12 +282,29 @@ Help them think. Be vivid and brief (1-3 sentences). Don't narrate — suggest, 
     }
   }, [dominoMode])
 
+  // --- Edit target/address (author/designer shelf) ---
+  const [editTarget, setEditTarget] = useState('spatial-thornkeep')
+  const [editAddress, setEditAddress] = useState('111')
+
+  // --- Commit mode toggle (all faces) ---
+  const [commitMode, setCommitMode] = useState<'auto' | 'manual' | 'informed'>('manual')
+  const handleCommitModeToggle = useCallback(() => {
+    const modes: Array<'auto' | 'manual' | 'informed'> = ['manual', 'informed', 'auto']
+    const next = modes[(modes.indexOf(commitMode) + 1) % modes.length]
+    setCommitMode(next)
+    if (kernelRef.current?.block.face_commit_mode) {
+      kernelRef.current.block.face_commit_mode[face] = next
+    }
+  }, [commitMode, face])
+
   // --- Reset ---
   const handleReset = useCallback(() => {
     kernelRef.current?.stop()
     kernelRef.current = null
     setPhase('setup')
-    setSolidBlocks([])
+    setCharacterSolids([])
+    setAuthorSolids([])
+    setDesignerSolids([])
     setLiquidCards([])
     setSoftResponse(null)
     setVaporText('')
@@ -280,10 +330,20 @@ Help them think. Be vivid and brief (1-3 sentences). Don't narrate — suggest, 
   }
 
   return (
-    <div className="app" data-theme={theme} data-face="character">
+    <div className="app" data-theme={theme} data-face={face}>
       {/* Header */}
       <div className="flex items-center gap-3 px-4 h-[44px] border-b border-border/50 text-sm shrink-0">
         <span className="text-face-accent font-medium">{characterName}</span>
+        <select
+          value={face}
+          onChange={e => setFace(e.target.value as Face)}
+          className="text-xs bg-transparent border border-border/50 rounded px-1 py-0.5 text-face-accent cursor-pointer"
+          title="Switch face"
+        >
+          <option value="character">character</option>
+          <option value="author">author</option>
+          <option value="designer">designer</option>
+        </select>
         <span className="text-muted-foreground text-xs font-mono"
               style={{ cursor: 'pointer' }}
               title="Click to copy game code"
@@ -293,14 +353,25 @@ Help them think. Be vivid and brief (1-3 sentences). Don't narrate — suggest, 
         <span className="text-xs" style={{ opacity: 0.5 }}>
           {kernelStatus === 'idle' ? '🟢' : kernelStatus === 'resolving' ? '🟡' : kernelStatus === 'domino_responding' ? '💥' : '⚪'}
         </span>
-        <button
-          onClick={handleDominoModeToggle}
-          className="text-xs"
-          style={{ opacity: 0.7, cursor: 'pointer', background: 'none', border: 'none', color: 'inherit', padding: '2px 4px' }}
-          title={`Domino mode: ${dominoMode}. Click to cycle.`}
-        >
-          {dominoMode === 'auto' ? '🔄auto' : dominoMode === 'informed' ? '👁️watch' : '🔇silent'}
-        </button>
+        {face === 'character' ? (
+          <button
+            onClick={handleDominoModeToggle}
+            className="text-xs"
+            style={{ opacity: 0.7, cursor: 'pointer', background: 'none', border: 'none', color: 'inherit', padding: '2px 4px' }}
+            title={`Domino mode: ${dominoMode}. Click to cycle.`}
+          >
+            {dominoMode === 'auto' ? '🔄auto' : dominoMode === 'informed' ? '👁️watch' : '🔇silent'}
+          </button>
+        ) : (
+          <button
+            onClick={handleCommitModeToggle}
+            className="text-xs"
+            style={{ opacity: 0.7, cursor: 'pointer', background: 'none', border: 'none', color: 'inherit', padding: '2px 4px' }}
+            title={`Commit mode: ${commitMode}. Click to cycle.`}
+          >
+            {commitMode === 'manual' ? '✋manual' : commitMode === 'informed' ? '👁️informed' : '⚡auto'}
+          </button>
+        )}
         {accumulatedCount > 0 && (
           <span className="text-xs text-face-accent" title="Accumulated peer events">
             📥 {accumulatedCount}
@@ -320,6 +391,36 @@ Help them think. Be vivid and brief (1-3 sentences). Don't narrate — suggest, 
 
       {statusMessage && (
         <div className="px-4 py-2 text-xs text-face-accent bg-accent/10">{statusMessage}</div>
+      )}
+
+      {/* Shelf: block navigator for author/designer */}
+      {face !== 'character' && kernelRef.current && (
+        <div className="flex items-center gap-2 px-4 py-1.5 border-b border-border/30 text-xs bg-accent/5">
+          <span className="text-muted-foreground">target:</span>
+          <select
+            value={editTarget}
+            onChange={e => {
+              setEditTarget(e.target.value)
+              if (kernelRef.current) kernelRef.current.block.edit_target = e.target.value
+            }}
+            className="bg-transparent border border-border/50 rounded px-1 py-0.5 text-face-accent cursor-pointer"
+          >
+            {listBlocks().map(name => (
+              <option key={name} value={name}>{name}</option>
+            ))}
+          </select>
+          <span className="text-muted-foreground">@</span>
+          <input
+            type="text"
+            value={editAddress}
+            onChange={e => {
+              setEditAddress(e.target.value)
+              if (kernelRef.current) kernelRef.current.block.edit_address = e.target.value
+            }}
+            className="bg-transparent border border-border/50 rounded px-1 py-0.5 w-16 text-face-accent font-mono"
+            title="BSP address"
+          />
+        </div>
       )}
 
       {/* Three zones with draggable separators */}

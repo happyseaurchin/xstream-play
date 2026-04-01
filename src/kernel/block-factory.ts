@@ -50,7 +50,7 @@ export function createBlock(
     medium: {
       model,
       api_key: apiKey,
-      max_tokens: 800,
+      max_tokens: 2048,
     },
     prompt_template: { ...DEFAULT_PROMPT_TEMPLATE },
     pending_liquid: null,
@@ -64,6 +64,16 @@ export function createBlock(
     },
     status: 'idle',
     last_seen: {},
+
+    spatial_address: '111',  // default: Salted Dog main room
+    familiarity: {},
+    event_log: [],
+
+    face_commit_mode: {
+      character: 'manual',
+      author: 'manual',
+      designer: 'manual',
+    },
   };
 }
 
@@ -75,6 +85,16 @@ export function generateGameCode(): string {
     code += chars[Math.floor(Math.random() * chars.length)];
   }
   return code;
+}
+
+// Generate a 4-character opaque character ID (no name leakage)
+export function generateCharId(): string {
+  const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
+  let id = '';
+  for (let i = 0; i < 4; i++) {
+    id += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return id;
 }
 
 export { DEFAULT_SCENE };

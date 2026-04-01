@@ -3,6 +3,16 @@
  * Layer 2 (designer-editable) + Layer 0 (kernel-managed runtime).
  */
 
+export interface GameEvent {
+  S: string;      // spatial address
+  T: number;      // temporal index
+  I: string;      // identity — who did it / who it's about
+  text: string;
+  type: 'action' | 'arrival' | 'departure' | 'state_change' | 'atmosphere';
+}
+
+// ── Block ──
+
 export interface Block {
   // ── Layer 2: Content (designer-editable) ──
   character: {
@@ -41,6 +51,25 @@ export interface Block {
   };
   status: 'idle' | 'waiting' | 'resolving' | 'domino_responding';
   last_seen: Record<string, number>;
+
+  // ── Harness ──
+  harness_pscale?: number;  // pscale level for solid output constraint, default -2 (paragraph)
+
+  // ── Spatial ──
+  spatial_address: string;
+  familiarity: Record<string, number>;
+  event_log: GameEvent[];
+
+  // ── Author/Designer attention ──
+  edit_address?: string;   // BSP address the player is attending to
+  edit_target?: string;    // block name being edited (e.g. 'spatial-thornkeep')
+
+  // ── Commit mode per face ──
+  face_commit_mode?: {
+    character: 'auto' | 'manual' | 'informed';
+    author: 'auto' | 'manual' | 'informed';
+    designer: 'auto' | 'manual' | 'informed';
+  };
 }
 
 export interface DominoOut {
@@ -52,9 +81,48 @@ export interface DominoOut {
 export interface MediumResult {
   solid?: string;
   events?: string[];
+  structured_events?: GameEvent[];
   domino?: DominoOut[];
   internal?: string;
   liquid_status?: string;
+  location_change?: string;
+}
+
+export interface AuthorResult {
+  edit?: {
+    block: string;
+    address: string;
+    operation: 'add' | 'replace' | 'delete';
+    key?: string;
+    content?: unknown;
+  };
+  summary?: string;
+  preview?: string;
+}
+
+export interface HardResult {
+  edit?: {
+    block: string;
+    address: string;
+    operation: 'add' | 'replace' | 'delete';
+    key?: string;
+    content?: unknown;
+  };
+  summary?: string;
+  events_reviewed?: number;
+}
+
+export interface DesignerResult {
+  edit?: {
+    block: string;
+    address: string;
+    operation: 'add' | 'replace' | 'delete';
+    key?: string;
+    content?: unknown;
+  };
+  summary?: string;
+  rationale?: string;
+  preview?: string;
 }
 
 export interface AccumulatedEvent {

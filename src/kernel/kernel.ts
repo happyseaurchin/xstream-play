@@ -10,8 +10,23 @@
  */
 
 import { callClaude } from './claude-direct';
-import { buildMediumPrompt } from './prompt';
-import type { Block, MediumResult, AccumulatedEvent, DominoSignal } from './types';
+import { buildMediumPrompt, buildAuthorPrompt, buildDesignerPrompt, buildHardPrompt } from './prompt';
+import { applyBlockEdit } from './block-store';
+import type { Block, GameEvent, MediumResult, AuthorResult, DesignerResult, HardResult, AccumulatedEvent, DominoSignal } from './types';
+import type { Face } from '../types/xstream';
+
+// ============================================================
+// UTILITIES
+// ============================================================
+
+/** Strip markdown fences from LLM JSON output */
+function cleanJson(text: string): string {
+  return text.trim()
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/\s*```$/, '')
+    .trim();
+}
 
 // ============================================================
 // RELAY ABSTRACTION — swap backing store here only
@@ -43,24 +58,101 @@ async function readPeerBlocks(gameId: string, myCharId: string): Promise<Block[]
 async function callMedium(
   block: Block,
   triggerType: 'commit' | 'domino',
-  dominoContext?: string
+  dominoContext?: string,
+  peerBlocks?: Block[]
 ): Promise<MediumResult | null> {
-  const prompt = buildMediumPrompt(block, triggerType, dominoContext);
+  const prompt = buildMediumPrompt(block, triggerType, dominoContext, peerBlocks);
   const config = block.medium;
 
   try {
     const text = await callClaude(config.api_key, config.model, prompt, config.max_tokens);
     // Parse JSON from response — strip markdown fences if present
-    const cleaned = text.trim()
-      .replace(/^```json\s*/i, '')
-      .replace(/^```\s*/i, '')
-      .replace(/\s*```$/, '')
-      .trim();
-    return JSON.parse(cleaned);
+    return JSON.parse(cleanJson(text));
   } catch (e) {
     console.error('[kernel] Medium call failed:', e);
     return null;
   }
+}
+
+// ============================================================
+// AUTHOR-MEDIUM CALL — author face commit
+// ============================================================
+
+async function callAuthorMedium(
+  block: Block,
+  peerBlocks?: Block[]
+): Promise<AuthorResult | null> {
+  const prompt = buildAuthorPrompt(block, peerBlocks);
+  const config = block.medium;
+
+  try {
+    // Author edits need Sonnet for structured output precision
+    const model = 'claude-sonnet-4-20250514';
+    const text = await callClaude(config.api_key, model, prompt, config.max_tokens);
+    return JSON.parse(cleanJson(text));
+  } catch (e) {
+    console.error('[kernel] Author medium call failed:', e);
+    return null;
+  }
+}
+
+// ============================================================
+// DESIGNER-MEDIUM CALL — designer face commit
+// ============================================================
+
+async function callDesignerMedium(
+  block: Block,
+  peerBlocks?: Block[]
+): Promise<DesignerResult | null> {
+  const prompt = buildDesignerPrompt(block, peerBlocks);
+  const config = block.medium;
+
+  try {
+    const model = 'claude-sonnet-4-20250514';
+    const text = await callClaude(config.api_key, model, prompt, config.max_tokens);
+    return JSON.parse(cleanJson(text));
+  } catch (e) {
+    console.error('[kernel] Designer medium call failed:', e);
+    return null;
+  }
+}
+
+// ============================================================
+// HARD-LLM CALL — world consistency reconciliation
+// ============================================================
+
+async function callHard(
+  block: Block,
+  address: string,
+  events: GameEvent[]
+): Promise<HardResult | null> {
+  const prompt = buildHardPrompt(block, address, events);
+  const config = block.medium;
+
+  try {
+    const model = 'claude-sonnet-4-20250514';
+    const text = await callClaude(config.api_key, model, prompt, config.max_tokens);
+    return JSON.parse(cleanJson(text));
+  } catch (e) {
+    console.error('[kernel] Hard call failed:', e);
+    return null;
+  }
+}
+
+// ============================================================
+// FAMILIARITY DETECTION — scan events for introduction patterns
+// ============================================================
+
+const INTRO_PATTERNS = [
+  /introduces?\s+(himself|herself|themselves|themself)\s+as\s+/i,
+  /tells?\s+you\s+(his|her|their)\s+name\s+is\s+/i,
+  /my\s+name\s+is\s+/i,
+  /I'm\s+[A-Z]/,
+  /call\s+me\s+[A-Z]/i,
+];
+
+function checkIntroduction(events: string[]): boolean {
+  return events.some(e => INTRO_PATTERNS.some(p => p.test(e)));
 }
 
 // ============================================================
@@ -126,6 +218,44 @@ function processMediumOutput(block: Block, result: MediumResult, triggerType: st
   block.outbox.sequence += 1;
   block.outbox.timestamp = new Date().toISOString();
 
+  // ── Event filing: tag events with S × T × I coordinates ──
+  if (result.events) {
+    for (const eventText of result.events) {
+      block.event_log.push({
+        S: block.spatial_address,
+        T: block.event_log.length + 1,
+        I: block.character.id,
+        text: eventText,
+        type: 'action',
+      });
+    }
+  }
+
+  // ── Movement: handle location_change ──
+  if (result.location_change) {
+    // File departure at old location
+    block.event_log.push({
+      S: block.spatial_address,
+      T: block.event_log.length + 1,
+      I: block.character.id,
+      text: `${block.character.name} leaves.`,
+      type: 'departure',
+    });
+
+    // Update address
+    block.spatial_address = result.location_change;
+
+    // File arrival at new location
+    block.event_log.push({
+      S: block.spatial_address,
+      T: block.event_log.length + 1,
+      I: block.character.id,
+      text: `${block.character.name} arrives.`,
+      type: 'arrival',
+    });
+
+  }
+
   // Add to own solid history
   if (result.solid) {
     block.character.solid_history.push(result.solid);
@@ -136,15 +266,8 @@ function processMediumOutput(block: Block, result: MediumResult, triggerType: st
   // Clear accumulated (it's been incorporated)
   block.accumulated = [];
 
-  // Clear liquid if it was a commit
-  if (triggerType === 'commit') {
-    block.pending_liquid = null;
-  }
-
-  // If liquid was overridden by domino, clear it
-  if (triggerType === 'domino' && result.liquid_status === 'overridden') {
-    block.pending_liquid = null;
-  }
+  // Clear liquid after any successful medium call — it's been consumed
+  block.pending_liquid = null;
 
   block.status = 'idle';
 }
@@ -158,16 +281,24 @@ export interface KernelCallbacks {
   onStatusChange: (status: string) => void;
   onAccumulate: (source: string, count: number) => void;
   onDomino: (source: string, context: string) => void;
+  onPeerLiquid: (peers: { id: string; label: string; liquid: string }[]) => void;
   onError: (error: string) => void;
   onLog: (message: string) => void;
 }
 
+// Hard reconciler config
+const HARD_EVENT_THRESHOLD = 5;     // events at an address before Hard triggers
+const HARD_FALLBACK_INTERVAL = 60;  // seconds between periodic Hard checks
+
 export class Kernel {
   block: Block;
   gameId: string;
+  face: Face = 'character';
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private callbacks: KernelCallbacks;
   private running = false;
+  private lastHardRun = 0;          // timestamp of last Hard reconciliation
+  private hardEventsProcessed = 0;  // events seen at last Hard run
 
   constructor(block: Block, gameId: string, callbacks: KernelCallbacks) {
     this.block = block;
@@ -202,16 +333,19 @@ export class Kernel {
     this.block.pending_liquid = text;
     this.block.status = 'waiting';
     this.callbacks.onLog(`  ✏️  Liquid: ${text.slice(0, 60)}...`);
+    // Write immediately so peers can see the forming intention
+    writeBlock(this.gameId, this.block.character.id, this.block);
   }
 
   // Player hits commit
-  commit(): void {
+  commit(face?: Face): void {
     if (!this.block.pending_liquid) {
       this.callbacks.onLog('  ⚠️  Nothing to commit');
       return;
     }
+    if (face) this.face = face;
     this.block.status = 'resolving';
-    this.callbacks.onLog('  ⚡ Commit — medium will fire on next cycle');
+    this.callbacks.onLog(`  ⚡ Commit (${this.face}) — medium will fire on next cycle`);
     this.callbacks.onStatusChange('resolving');
   }
 
@@ -222,11 +356,38 @@ export class Kernel {
     this.cycling = true;
 
     try {
-      // ── STEP 1: Poll peers ──
+      // ── STEP 0: Read peers ──
       const peerBlocks = await readPeerBlocks(this.gameId, this.block.character.id);
+
+      // ── STEP 1: Poll peers ──
       const { newEvents, newDominos } = pollPeers(this.block, peerBlocks);
 
-      // Accumulate events
+      // Surface peer liquid — proximity-scoped by face
+      const peerLiquid = peerBlocks
+        .filter(p => {
+          if (!p.pending_liquid) return false;
+          if (this.face === 'character') {
+            // Same room
+            return p.spatial_address === this.block.spatial_address;
+          }
+          if (this.face === 'author') {
+            // Same edit target + shared address prefix (spindle overlap)
+            if (p.edit_target !== this.block.edit_target) return false;
+            const myAddr = this.block.edit_address ?? '';
+            const peerAddr = p.edit_address ?? '';
+            return myAddr.startsWith(peerAddr) || peerAddr.startsWith(myAddr);
+          }
+          // Designer: same edit target
+          return p.edit_target === this.block.edit_target;
+        })
+        .map(p => {
+          const fam = this.block.familiarity[p.character.id] ?? 0;
+          const label = fam > 0 ? p.character.name : (p.character.state || 'a stranger');
+          return { id: p.character.id, label, liquid: p.pending_liquid! };
+        });
+      this.callbacks.onPeerLiquid(peerLiquid);
+
+      // Accumulate events + check for introductions
       for (const ev of newEvents) {
         this.block.accumulated.push({
           source: ev.source,
@@ -236,6 +397,17 @@ export class Kernel {
         this.callbacks.onLog(
           `  📥 Events from ${ev.source}: ${ev.events.length} accumulated`
         );
+
+        // Familiarity gating: detect introductions in peer events
+        if (checkIntroduction(ev.events)) {
+          const currentFam = this.block.familiarity[ev.source] ?? 0;
+          if (currentFam < 1) {
+            this.block.familiarity[ev.source] = 1;
+            this.callbacks.onLog(
+              `  👋 Introduction detected from ${ev.source} — familiarity → 1`
+            );
+          }
+        }
       }
 
       // ── STEP 2: Process dominos ──
@@ -249,7 +421,7 @@ export class Kernel {
           );
           this.callbacks.onStatusChange('domino_responding');
 
-          const result = await callMedium(this.block, 'domino', domino.context);
+          const result = await callMedium(this.block, 'domino', domino.context, peerBlocks);
           if (result) {
             processMediumOutput(this.block, result, 'domino');
             this.callbacks.onSolid(result.solid ?? '');
@@ -266,30 +438,97 @@ export class Kernel {
 
       // ── STEP 3: Process player commit ──
       if (this.block.status === 'resolving' && this.block.pending_liquid) {
-        this.callbacks.onLog(`  🎯 Player committed. Firing medium...`);
+        if (this.face === 'author' || this.face === 'designer') {
+          // ── AUTHOR/DESIGNER FACE: produce block edit ──
+          const label = this.face;
+          this.callbacks.onLog(`  🎯 ${label} committed. Firing ${label}-medium...`);
 
-        const result = await callMedium(this.block, 'commit');
-        if (result) {
-          processMediumOutput(this.block, result, 'commit');
-          this.callbacks.onSolid(result.solid ?? '');
-          this.callbacks.onStatusChange('idle');
-          this.callbacks.onLog(
-            `  ✅ Solid: ${(result.solid ?? '').slice(0, 80)}...`
-          );
-          this.callbacks.onLog(
-            `     Events: ${(result.events ?? []).length} deposited`
-          );
-          const dominoTargets = (result.domino ?? [])
-            .map((d: { target?: string }) => d.target ?? '?');
-          if (dominoTargets.length > 0) {
-            this.callbacks.onLog(`     Domino targets: ${dominoTargets.join(', ')}`);
+          const result = this.face === 'designer'
+            ? await callDesignerMedium(this.block, peerBlocks)
+            : await callAuthorMedium(this.block, peerBlocks);
+
+          if (result?.edit) {
+            const applied = applyBlockEdit({
+              block: result.edit.block,
+              address: result.edit.address,
+              operation: result.edit.operation,
+              key: result.edit.key,
+              content: result.edit.content as string,
+            });
+            const summary = result.summary ?? (applied ? 'Edit applied.' : 'Edit failed.');
+            const rationale = 'rationale' in result && result.rationale ? ` (${result.rationale})` : '';
+            this.callbacks.onSolid(`[${label}] ${summary}${rationale}`);
+            this.callbacks.onLog(`  ✏️  ${applied ? 'Applied' : 'Failed'}: ${summary}`);
+          } else {
+            const summary = result?.summary ?? 'No edit produced.';
+            this.callbacks.onSolid(`[${label}] ${summary}`);
+            this.callbacks.onLog(`  ⚠️  ${label} result: ${summary}`);
           }
-          await writeBlock(this.gameId, this.block.character.id, this.block);
-        } else {
+
+          this.block.pending_liquid = null;
           this.block.status = 'idle';
           this.callbacks.onStatusChange('idle');
-          this.callbacks.onError('Medium call failed');
+          await writeBlock(this.gameId, this.block.character.id, this.block);
+
+        } else {
+          // ── CHARACTER FACE: produce narrative ──
+          this.callbacks.onLog(`  🎯 Player committed. Firing medium...`);
+
+          const result = await callMedium(this.block, 'commit', undefined, peerBlocks);
+          if (result) {
+            processMediumOutput(this.block, result, 'commit');
+            this.callbacks.onSolid(result.solid ?? '');
+            this.callbacks.onStatusChange('idle');
+            this.callbacks.onLog(
+              `  ✅ Solid: ${(result.solid ?? '').slice(0, 80)}...`
+            );
+            this.callbacks.onLog(
+              `     Events: ${(result.events ?? []).length} deposited`
+            );
+            const dominoTargets = (result.domino ?? [])
+              .map((d: { target?: string }) => d.target ?? '?');
+            if (dominoTargets.length > 0) {
+              this.callbacks.onLog(`     Domino targets: ${dominoTargets.join(', ')}`);
+            }
+            await writeBlock(this.gameId, this.block.character.id, this.block);
+          } else {
+            this.block.status = 'idle';
+            this.callbacks.onStatusChange('idle');
+            this.callbacks.onError('Medium call failed');
+          }
         }
+      }
+      // ── STEP 4: Hard reconciliation ──
+      // Triggered by event density threshold OR periodic fallback
+      const addr = this.block.spatial_address;
+      const eventsAtAddr = this.block.event_log.filter(e => e.S === addr);
+      const newEventCount = eventsAtAddr.length - this.hardEventsProcessed;
+      const elapsed = (Date.now() - this.lastHardRun) / 1000;
+      const shouldRunHard = (newEventCount >= HARD_EVENT_THRESHOLD) ||
+                            (elapsed >= HARD_FALLBACK_INTERVAL && eventsAtAddr.length > this.hardEventsProcessed);
+
+      if (shouldRunHard && eventsAtAddr.length > 0 && this.block.status === 'idle') {
+        this.callbacks.onLog(`  🔧 Hard reconciler: ${newEventCount} new events at ${addr}`);
+
+        const result = await callHard(this.block, addr, eventsAtAddr.slice(-15));
+        if (result?.edit) {
+          const applied = applyBlockEdit({
+            block: result.edit.block,
+            address: result.edit.address,
+            operation: result.edit.operation,
+            key: result.edit.key,
+            content: result.edit.content as string,
+          });
+          this.callbacks.onLog(`  🔧 Hard: ${applied ? 'Applied' : 'Failed'}: ${result.summary ?? ''}`);
+          if (applied) {
+            this.callbacks.onSolid(`[hard] ${result.summary ?? 'World updated.'}`);
+          }
+        } else if (result?.summary) {
+          this.callbacks.onLog(`  🔧 Hard: ${result.summary}`);
+        }
+
+        this.lastHardRun = Date.now();
+        this.hardEventsProcessed = eventsAtAddr.length;
       }
     } catch (e) {
       console.error('[kernel] Cycle error:', e);
