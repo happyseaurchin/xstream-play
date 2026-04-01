@@ -28,6 +28,7 @@ import softAuthorAgent from '../../blocks/xstream/soft-author-agent.json';
 import softDesignerAgent from '../../blocks/xstream/soft-designer-agent.json';
 import hardAuthorAgent from '../../blocks/xstream/hard-author-agent.json';
 import hardDesignerAgent from '../../blocks/xstream/hard-designer-agent.json';
+import convergence from '../../blocks/xstream/convergence.json';
 import { saveBlock } from './persistence';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -53,6 +54,7 @@ const seeds: Record<string, PscaleNode> = {
   'soft-designer-agent': softDesignerAgent,
   'hard-author-agent': hardAuthorAgent,
   'hard-designer-agent': hardDesignerAgent,
+  'convergence': convergence,
 };
 
 for (const [name, block] of Object.entries(seeds)) {
