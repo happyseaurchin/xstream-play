@@ -197,15 +197,15 @@ If a character has submitted liquid (intention) but not committed, and a domino 
 ```
 src/
   kernel/
-    kernel.ts           # The loop. Polls, triggers, calls medium.
+    kernel.ts           # The loop. Polls, triggers, calls medium/author/designer/hard.
     block-factory.ts    # Creates fresh character blocks with defaults.
-    prompt.ts           # Medium-LLM prompt via BSP walks of medium-agent.json.
+    block-store.ts      # Mutable block store. getBlock/setBlock/applyBlockEdit.
+    prompt.ts           # Prompt builders: medium, author, designer, hard. BSP walks.
     soft-prompt.ts      # Soft-LLM prompt via BSP walks of soft-agent.json.
     bsp.ts              # BSP walk function. Spindle, ring, dir, point, disc, star.
-    block-registry.ts   # Name → block import map (10 lines). Add blocks here.
     harness.ts          # Resolves solid output constraint from harness.json.
     claude-direct.ts    # Browser → Anthropic API.
-    types.ts            # Block structure. L0/L2 split documented.
+    types.ts            # Block, BlockEdit, Face, MediumResult, AuthorResult, etc.
   components/
     SetupScreen.tsx     # API key + Create/Join game flow
     xstream/            # UI components (zones, separators, themes)
@@ -218,9 +218,11 @@ api/
 
 blocks/
   xstream/
-    medium-agent.json   # Medium-LLM agent block. Star-wired to spatial + rules.
-    soft-agent.json     # Soft-LLM agent block. Star-wired to spatial only.
-    hard-agent.json     # Hard-LLM agent block (mechanical — BSP only, no LLM).
+    medium-agent.json   # Character narrative. 1 star ref (spatial).
+    soft-agent.json     # Character inner voice. 1 star ref (spatial).
+    hard-agent.json     # Reconciler. 2 star refs (spatial, rules). Event→BlockEdit.
+    author-agent.json   # Author editing. 1 star ref (spatial). Produces BlockEdits.
+    designer-agent.json # Designer editing. 4 star refs (all agents + rules).
     spatial-thornkeep.json  # World spatial block. BSP addresses are locations.
     rules-thornkeep.json    # World rules block. Location-specific + perception.
     harness.json        # Solid output constraint levels (P-4 through P0).
@@ -233,24 +235,23 @@ blocks/
 
 ## WHAT NEEDS TO HAPPEN NEXT
 
-### Priority 1: Verify gameplay on branch preview
-Test that star-walked scene context works in practice:
-- Scene should describe location from spatial-thornkeep BSP walks
-- Exits should show BSP addresses (e.g. `[112]`)
-- Soft LLM should get spatial only (no rules)
-- Moving between locations should update spatial context
+### Priority 1: Live-test Jump 4 faces
+The spec test: start as character → switch to author → type edit → commit → switch back → character sees the change. All 8 steps are structurally complete but untested with real LLM calls.
 
-### Priority 2: Fix filmstrip 500 error
-`api/filmstrip.ts` posts to Supabase. The table has NOT NULL columns (game_id, char_id, llm_role) but `callClaude` doesn't send them. Either make those columns nullable in Supabase, or thread the values through. Fire-and-forget so doesn't block gameplay.
+### Priority 2: Tune author/designer agent blocks
+The LLM must produce valid BlockEdits (correct block name, valid BSP address, appropriate operation). Few-shot examples in agent blocks may need adjustment after live testing. Sonnet minimum for structured edit output.
 
-### Priority 3: Harness verification
-Verify the solid output constraint in `harness.json` is working — medium solid should respect paragraph-level constraint (P-2) by default.
+### Priority 3: Wire character blocks
+character-essa.json etc. are in the store but no agent block references them. Soft/medium don't walk character blocks for NPC descriptions. Wire via star refs at spatial addresses.
 
-### Priority 4: Designer face
-Let the player switch to designer mode and edit layer 2 content: prompt templates, scene descriptions, rules, domino behaviour. All through the same UI, writing to blocks that the kernel reads.
+### Priority 4: Block persistence
+Block edits live in memory only. Author/designer work is lost on page close. Path: write edited blocks to relay for persistence and multi-player visibility.
 
 ### Priority 5: Multi-world support
-Currently hard-wired to Thornkeep. A different game setting = different spatial + rules blocks. Agent blocks would reference different block names. Block-registry gets new entries. No kernel code changes.
+A different game setting = different spatial + rules blocks. Agent blocks reference different block names via star. Block store loads different seeds. No kernel code changes.
+
+### Priority 6: Fix filmstrip 500 error
+`api/filmstrip.ts` posts to Supabase. The table has NOT NULL columns (game_id, char_id, llm_role) but `callClaude` doesn't send them. Non-blocking.
 
 ---
 
