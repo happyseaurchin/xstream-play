@@ -289,7 +289,7 @@ export function buildAuthorPrompt(
   if (targetBlock) {
     // Spindle → context chain (broad to specific)
     const spindle = bsp(targetBlock as PscaleNode, editAddr) as SpindleResult;
-    contentSections.push(`TARGET: ${editTarget} at address ${editAddr}`);
+    contentSections.push(`TARGET BLOCK: "${editTarget}" at address "${editAddr}"\n(Use these exact values in your edit.block and edit.address fields.)`);
     contentSections.push(`CONTEXT CHAIN:\n${spindle.nodes.map(n => `  [${n.pscale}] ${n.text}`).join('\n')}`);
 
     // Dir → current contents at this address
@@ -403,7 +403,7 @@ export function buildDesignerPrompt(
   const targetBlock = getBlock(editTarget);
   if (targetBlock) {
     const spindle = bsp(targetBlock as PscaleNode, editAddr) as SpindleResult;
-    contentSections.push(`EDIT TARGET: ${editTarget} at address ${editAddr}\nCONTEXT CHAIN:\n${spindle.nodes.map(n => `  [${n.pscale}] ${n.text}`).join('\n')}`);
+    contentSections.push(`EDIT TARGET: "${editTarget}" at address "${editAddr}"\n(Use these exact values in your edit.block and edit.address fields.)\nCONTEXT CHAIN:\n${spindle.nodes.map(n => `  [${n.pscale}] ${n.text}`).join('\n')}`);
 
     const dir = bsp(targetBlock as PscaleNode, editAddr, 'dir') as DirResult;
     if (dir.subtree && typeof dir.subtree === 'object') {

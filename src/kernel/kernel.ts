@@ -12,8 +12,21 @@
 import { callClaude } from './claude-direct';
 import { buildMediumPrompt, buildAuthorPrompt, buildDesignerPrompt, buildHardPrompt } from './prompt';
 import { applyBlockEdit } from './block-store';
-import type { Block, MediumResult, AuthorResult, DesignerResult, HardResult, AccumulatedEvent, DominoSignal } from './types';
+import type { Block, GameEvent, MediumResult, AuthorResult, DesignerResult, HardResult, AccumulatedEvent, DominoSignal } from './types';
 import type { Face } from '../types/xstream';
+
+// ============================================================
+// UTILITIES
+// ============================================================
+
+/** Strip markdown fences from LLM JSON output */
+function cleanJson(text: string): string {
+  return text.trim()
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/\s*```$/, '')
+    .trim();
+}
 
 // ============================================================
 // RELAY ABSTRACTION — swap backing store here only
@@ -54,12 +67,7 @@ async function callMedium(
   try {
     const text = await callClaude(config.api_key, config.model, prompt, config.max_tokens);
     // Parse JSON from response — strip markdown fences if present
-    const cleaned = text.trim()
-      .replace(/^```json\s*/i, '')
-      .replace(/^```\s*/i, '')
-      .replace(/\s*```$/, '')
-      .trim();
-    return JSON.parse(cleaned);
+    return JSON.parse(cleanJson(text));
   } catch (e) {
     console.error('[kernel] Medium call failed:', e);
     return null;
@@ -81,12 +89,7 @@ async function callAuthorMedium(
     // Author edits need Sonnet for structured output precision
     const model = 'claude-sonnet-4-20250514';
     const text = await callClaude(config.api_key, model, prompt, config.max_tokens);
-    const cleaned = text.trim()
-      .replace(/^```json\s*/i, '')
-      .replace(/^```\s*/i, '')
-      .replace(/\s*```$/, '')
-      .trim();
-    return JSON.parse(cleaned);
+    return JSON.parse(cleanJson(text));
   } catch (e) {
     console.error('[kernel] Author medium call failed:', e);
     return null;
@@ -107,12 +110,7 @@ async function callDesignerMedium(
   try {
     const model = 'claude-sonnet-4-20250514';
     const text = await callClaude(config.api_key, model, prompt, config.max_tokens);
-    const cleaned = text.trim()
-      .replace(/^```json\s*/i, '')
-      .replace(/^```\s*/i, '')
-      .replace(/\s*```$/, '')
-      .trim();
-    return JSON.parse(cleaned);
+    return JSON.parse(cleanJson(text));
   } catch (e) {
     console.error('[kernel] Designer medium call failed:', e);
     return null;
@@ -126,7 +124,7 @@ async function callDesignerMedium(
 async function callHard(
   block: Block,
   address: string,
-  events: import('./types').GameEvent[]
+  events: GameEvent[]
 ): Promise<HardResult | null> {
   const prompt = buildHardPrompt(block, address, events);
   const config = block.medium;
@@ -134,12 +132,7 @@ async function callHard(
   try {
     const model = 'claude-sonnet-4-20250514';
     const text = await callClaude(config.api_key, model, prompt, config.max_tokens);
-    const cleaned = text.trim()
-      .replace(/^```json\s*/i, '')
-      .replace(/^```\s*/i, '')
-      .replace(/\s*```$/, '')
-      .trim();
-    return JSON.parse(cleaned);
+    return JSON.parse(cleanJson(text));
   } catch (e) {
     console.error('[kernel] Hard call failed:', e);
     return null;

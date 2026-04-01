@@ -80,9 +80,15 @@ export interface BlockEdit {
 /**
  * Walk a BSP address to find the target node.
  * Returns the node at that address, or null.
+ * Address "0" or "" returns the root block itself.
+ * Decimal points are notation, not structure — stripped before walking.
+ * Digit 0 maps to key '_' (underscore spine).
  */
 function walkToNode(block: PscaleNode, address: string): PscaleNode | null {
-  const digits = address.replace('.', '').replace(/0+$/, '').split('');
+  const cleaned = address.replace('.', '');
+  // Empty address or "0" alone = root node
+  if (!cleaned || cleaned === '0') return block;
+  const digits = cleaned.split('');
   let node = block;
   for (const d of digits) {
     const key = d === '0' ? '_' : d;

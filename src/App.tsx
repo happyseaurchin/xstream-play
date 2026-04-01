@@ -70,6 +70,14 @@ export default function App() {
 
   useEffect(() => {
     localStorage.setItem('xstream-face', face)
+    // Set sensible edit defaults when switching face
+    if (face === 'author') {
+      setEditTarget('spatial-thornkeep')
+      setEditAddress(kernelRef.current?.block.spatial_address ?? '111')
+    } else if (face === 'designer') {
+      setEditTarget('rules-thornkeep')
+      setEditAddress('0')
+    }
   }, [face])
 
   // Cleanup kernel on unmount
@@ -233,13 +241,10 @@ export default function App() {
       timestamp: Date.now(),
     }
     setLiquidCards(prev => [...prev, card])
-    // Set edit context for author/designer face
-    if (face === 'author') {
-      kernelRef.current.block.edit_target = 'spatial-thornkeep'
-      kernelRef.current.block.edit_address = kernelRef.current.block.spatial_address
-    } else if (face === 'designer') {
-      kernelRef.current.block.edit_target = 'rules-thornkeep'
-      kernelRef.current.block.edit_address = '0'
+    // Sync edit context to kernel block
+    if (face !== 'character') {
+      kernelRef.current.block.edit_target = editTarget
+      kernelRef.current.block.edit_address = editAddress
     }
     kernelRef.current.submitLiquid(text)
   }, [characterName, face])
@@ -267,6 +272,10 @@ export default function App() {
       kernelRef.current.block.trigger.domino_mode = next
     }
   }, [dominoMode])
+
+  // --- Edit target/address (author/designer shelf) ---
+  const [editTarget, setEditTarget] = useState('spatial-thornkeep')
+  const [editAddress, setEditAddress] = useState('111')
 
   // --- Commit mode toggle (all faces) ---
   const [commitMode, setCommitMode] = useState<'auto' | 'manual' | 'informed'>('manual')
@@ -378,8 +387,11 @@ export default function App() {
         <div className="flex items-center gap-2 px-4 py-1.5 border-b border-border/30 text-xs bg-accent/5">
           <span className="text-muted-foreground">target:</span>
           <select
-            value={kernelRef.current.block.edit_target ?? 'spatial-thornkeep'}
-            onChange={e => { if (kernelRef.current) kernelRef.current.block.edit_target = e.target.value }}
+            value={editTarget}
+            onChange={e => {
+              setEditTarget(e.target.value)
+              if (kernelRef.current) kernelRef.current.block.edit_target = e.target.value
+            }}
             className="bg-transparent border border-border/50 rounded px-1 py-0.5 text-face-accent cursor-pointer"
           >
             {listBlocks().map(name => (
@@ -389,8 +401,11 @@ export default function App() {
           <span className="text-muted-foreground">@</span>
           <input
             type="text"
-            value={kernelRef.current.block.edit_address ?? '0'}
-            onChange={e => { if (kernelRef.current) kernelRef.current.block.edit_address = e.target.value }}
+            value={editAddress}
+            onChange={e => {
+              setEditAddress(e.target.value)
+              if (kernelRef.current) kernelRef.current.block.edit_address = e.target.value
+            }}
             className="bg-transparent border border-border/50 rounded px-1 py-0.5 w-16 text-face-accent font-mono"
             title="BSP address"
           />
