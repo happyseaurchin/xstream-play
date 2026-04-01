@@ -7,6 +7,9 @@
  *
  * All blocks are mutable at runtime: author edits, designer
  * rule changes, and Hard reconciliation write here.
+ *
+ * Write-through: when a block changes, that one block saves
+ * to localStorage. No wholesale dumps.
  */
 
 import spatialThornkeep from '../../blocks/xstream/spatial-thornkeep.json';
@@ -25,6 +28,7 @@ import softAuthorAgent from '../../blocks/xstream/soft-author-agent.json';
 import softDesignerAgent from '../../blocks/xstream/soft-designer-agent.json';
 import hardAuthorAgent from '../../blocks/xstream/hard-author-agent.json';
 import hardDesignerAgent from '../../blocks/xstream/hard-designer-agent.json';
+import { saveBlock } from './persistence';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type PscaleNode = string | { [key: string]: any };
@@ -60,7 +64,12 @@ for (const [name, block] of Object.entries(seeds)) {
  * Used when resuming from localStorage or importing a save file.
  */
 export function hydrateFromSaved(blocks: Record<string, PscaleNode>): void {
+  // Start with seeds (so new blocks added since save are present)
   store.clear();
+  for (const [name, block] of Object.entries(seeds)) {
+    store.set(name, structuredClone(block));
+  }
+  // Overlay saved blocks
   for (const [name, block] of Object.entries(blocks)) {
     store.set(name, structuredClone(block));
   }
@@ -72,6 +81,7 @@ export function getBlock(name: string): PscaleNode | null {
 
 export function setBlock(name: string, block: PscaleNode): void {
   store.set(name, block);
+  saveBlock(name, block);
 }
 
 export function listBlocks(): string[] {
@@ -120,6 +130,7 @@ function walkToNode(block: PscaleNode, address: string): PscaleNode | null {
 /**
  * Apply a structured edit to a block in the store.
  * Snapshots before editing for rollback safety.
+ * Write-through: saves just this one block to localStorage on success.
  * Returns true if the edit was applied successfully.
  */
 export function applyBlockEdit(edit: BlockEdit): boolean {
@@ -153,6 +164,8 @@ export function applyBlockEdit(edit: BlockEdit): boolean {
         return false;
     }
 
+    // Write-through: save just this block
+    saveBlock(edit.block, block);
     return true;
   } catch {
     // Rollback on any error

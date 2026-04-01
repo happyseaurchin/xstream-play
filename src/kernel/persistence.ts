@@ -1,24 +1,81 @@
 /**
  * persistence.ts — player-sovereign storage.
  *
- * localStorage auto-save after every commit.
- * Export/import as JSON files.
- * No Supabase. The player owns their data.
+ * Per-block localStorage keys. When an author edits spatial-thornkeep,
+ * only spatial-thornkeep writes. When a character commits, only their
+ * kernel block writes. Two tabs can't overwrite each other's work
+ * because they write to different keys.
+ *
+ * Key scheme:
+ *   xstream:games                          — list of saved games
+ *   xstream:game:{code}:kernel:{charId}    — one character's kernel block
+ *   xstream:game:{code}:block:{blockName}  — one pscale block
  */
 
 import type { Block } from './types';
-import { getBlock, setBlock, listBlocks } from './block-store';
+import { getBlock, listBlocks } from './block-store';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type PscaleNode = string | { [key: string]: any };
 
 const GAMES_KEY = 'xstream:games';
 
-function gameKey(gameId: string, suffix: string): string {
-  return `xstream:game:${gameId}:${suffix}`;
+// ── Current game context (set once on create/join/resume) ──
+
+let currentGameId: string | null = null;
+
+export function setCurrentGame(gameId: string): void {
+  currentGameId = gameId;
 }
 
-// ── Save / Load ──
+// ── Individual saves ──
+
+export function saveKernelBlock(block: Block): void {
+  if (!currentGameId) return;
+  localStorage.setItem(
+    `xstream:game:${currentGameId}:kernel:${block.character.id}`,
+    JSON.stringify(block)
+  );
+  // Update game list
+  updateGameList(currentGameId, block.character.id, block.character.name);
+}
+
+export function saveBlock(name: string, block: PscaleNode): void {
+  if (!currentGameId) return;
+  localStorage.setItem(
+    `xstream:game:${currentGameId}:block:${name}`,
+    JSON.stringify(block)
+  );
+}
+
+// ── Load ──
+
+export function loadKernelBlock(gameId: string, charId: string): Block | null {
+  const json = localStorage.getItem(`xstream:game:${gameId}:kernel:${charId}`);
+  return json ? JSON.parse(json) : null;
+}
+
+export function loadBlock(gameId: string, name: string): PscaleNode | null {
+  const json = localStorage.getItem(`xstream:game:${gameId}:block:${name}`);
+  return json ? JSON.parse(json) : null;
+}
+
+/** Load all individually-saved blocks for a game */
+export function loadAllBlocks(gameId: string): Record<string, PscaleNode> {
+  const result: Record<string, PscaleNode> = {};
+  const prefix = `xstream:game:${gameId}:block:`;
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith(prefix)) {
+      const name = key.slice(prefix.length);
+      const json = localStorage.getItem(key);
+      if (json) result[name] = JSON.parse(json);
+    }
+  }
+  return result;
+}
+
+// ── Game list ──
 
 export interface SavedGame {
   gameId: string;
@@ -27,28 +84,11 @@ export interface SavedGame {
   savedAt: string;
 }
 
-export function saveGameState(gameId: string, block: Block): void {
-  // Save kernel block
-  localStorage.setItem(
-    gameKey(gameId, `kernel:${block.character.id}`),
-    JSON.stringify(block)
-  );
-
-  // Save all blocks from store (may have been edited by author/designer)
-  const allBlocks: Record<string, PscaleNode> = {};
-  for (const name of listBlocks()) {
-    const b = getBlock(name);
-    if (b) allBlocks[name] = b;
-  }
-  localStorage.setItem(gameKey(gameId, 'blocks'), JSON.stringify(allBlocks));
-
-  // Update game list
+function updateGameList(gameId: string, charId: string, charName: string): void {
   const games: SavedGame[] = JSON.parse(localStorage.getItem(GAMES_KEY) || '[]');
-  const existing = games.findIndex(g => g.gameId === gameId && g.charId === block.character.id);
+  const existing = games.findIndex(g => g.gameId === gameId && g.charId === charId);
   const entry: SavedGame = {
-    gameId,
-    charId: block.character.id,
-    charName: block.character.name,
+    gameId, charId, charName,
     savedAt: new Date().toISOString(),
   };
   if (existing >= 0) games[existing] = entry;
@@ -56,46 +96,27 @@ export function saveGameState(gameId: string, block: Block): void {
   localStorage.setItem(GAMES_KEY, JSON.stringify(games));
 }
 
-export function loadGameState(gameId: string, charId: string): {
-  block: Block | null;
-  blocks: Record<string, PscaleNode> | null;
-} {
-  const blockJson = localStorage.getItem(gameKey(gameId, `kernel:${charId}`));
-  const blocksJson = localStorage.getItem(gameKey(gameId, 'blocks'));
-  return {
-    block: blockJson ? JSON.parse(blockJson) : null,
-    blocks: blocksJson ? JSON.parse(blocksJson) : null,
-  };
-}
-
 export function listSavedGames(): SavedGame[] {
   return JSON.parse(localStorage.getItem(GAMES_KEY) || '[]');
 }
 
-export function clearSavedGame(gameId: string, charId: string): void {
-  // Remove kernel + blocks
-  localStorage.removeItem(gameKey(gameId, `kernel:${charId}`));
-  localStorage.removeItem(gameKey(gameId, 'blocks'));
-
-  // Remove from game list
-  const games: SavedGame[] = JSON.parse(localStorage.getItem(GAMES_KEY) || '[]');
-  const filtered = games.filter(g => !(g.gameId === gameId && g.charId === charId));
-  localStorage.setItem(GAMES_KEY, JSON.stringify(filtered));
-}
-
 export function clearAllSaves(): void {
-  const games = listSavedGames();
-  for (const g of games) {
-    localStorage.removeItem(gameKey(g.gameId, `kernel:${g.charId}`));
-    localStorage.removeItem(gameKey(g.gameId, 'blocks'));
+  const toRemove: string[] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && (key.startsWith('xstream:game:') || key === GAMES_KEY)) {
+      toRemove.push(key);
+    }
   }
-  localStorage.removeItem(GAMES_KEY);
+  for (const key of toRemove) {
+    localStorage.removeItem(key);
+  }
 }
 
-// ── Export / Import ──
+// ── Export / Import (still bundles everything — it's a file) ──
 
 interface ExportData {
-  version: 1;
+  version: 2;
   gameId: string;
   charId: string;
   charName: string;
@@ -111,7 +132,7 @@ export function exportGameState(gameId: string, block: Block): string {
     if (b) allBlocks[name] = b;
   }
   const data: ExportData = {
-    version: 1,
+    version: 2,
     gameId,
     charId: block.character.id,
     charName: block.character.name,
@@ -128,8 +149,8 @@ export function importGameState(json: string): {
   block: Block;
   blocks: Record<string, PscaleNode>;
 } {
-  const data = JSON.parse(json) as ExportData;
-  if (data.version !== 1) throw new Error('Unknown save format');
+  const data = JSON.parse(json);
+  if (!data.version || data.version < 1) throw new Error('Unknown save format');
   if (!data.block || !data.blocks) throw new Error('Invalid save file');
   return {
     gameId: data.gameId,

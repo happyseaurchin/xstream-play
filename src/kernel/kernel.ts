@@ -12,7 +12,7 @@
 import { callClaude } from './claude-direct';
 import { buildMediumPrompt, buildAuthorPrompt, buildDesignerPrompt, buildHardPrompt, buildAuthorHardPrompt, buildDesignerHardPrompt } from './prompt';
 import { applyBlockEdit } from './block-store';
-import { saveGameState } from './persistence';
+import { saveKernelBlock, setCurrentGame } from './persistence';
 import type { Block, GameEvent, MediumResult, AuthorResult, DesignerResult, HardResult, AccumulatedEvent, DominoSignal } from './types';
 import type { Face } from '../types/xstream';
 
@@ -314,6 +314,7 @@ export class Kernel {
   start(): void {
     if (this.running) return;
     this.running = true;
+    setCurrentGame(this.gameId);
     const pollInterval = (this.block.trigger?.poll_interval_s ?? 3) * 1000;
 
     this.callbacks.onLog(
@@ -484,7 +485,7 @@ export class Kernel {
           this.block.status = 'idle';
           this.callbacks.onStatusChange('idle');
           await writeBlock(this.gameId, this.block.character.id, this.block);
-          saveGameState(this.gameId, this.block);
+          saveKernelBlock(this.block);
 
         } else {
           // ── CHARACTER FACE: produce narrative ──
@@ -507,7 +508,7 @@ export class Kernel {
               this.callbacks.onLog(`     Domino targets: ${dominoTargets.join(', ')}`);
             }
             await writeBlock(this.gameId, this.block.character.id, this.block);
-            saveGameState(this.gameId, this.block);
+            saveKernelBlock(this.block);
           } else {
             this.block.status = 'idle';
             this.callbacks.onStatusChange('idle');

@@ -21,9 +21,8 @@ import { buildSoftPrompt } from './kernel/soft-prompt'
 import type { SolidBlock, LiquidCard } from './types/xstream'
 import type { Face } from './types/xstream'
 import type { SoftLLMResponse } from './types'
-import { listBlocks } from './kernel/block-store'
-import { hydrateFromSaved } from './kernel/block-store'
-import { loadGameState, exportGameState, importGameState } from './kernel/persistence'
+import { listBlocks, hydrateFromSaved } from './kernel/block-store'
+import { loadKernelBlock, loadAllBlocks, exportGameState, importGameState, setCurrentGame, saveBlock } from './kernel/persistence'
 import type { SavedGame } from './kernel/persistence'
 import './App.css'
 
@@ -209,15 +208,16 @@ export default function App() {
     setPhase('loading')
     setStatusMessage('Resuming game...')
 
-    const { block, blocks } = loadGameState(save.gameId, save.charId)
+    const block = loadKernelBlock(save.gameId, save.charId)
     if (!block) {
       setStatusMessage('Error: save not found')
       setPhase('setup')
       return
     }
 
-    // Hydrate block store with saved blocks (author/designer edits preserved)
-    if (blocks) hydrateFromSaved(blocks)
+    // Hydrate block store with individually-saved blocks
+    const savedBlocks = loadAllBlocks(save.gameId)
+    if (Object.keys(savedBlocks).length > 0) hydrateFromSaved(savedBlocks)
 
     // Update API key in block (may have changed)
     block.medium.api_key = key
@@ -239,7 +239,12 @@ export default function App() {
 
     try {
       const { gameId, block, blocks } = importGameState(json)
+      setCurrentGame(gameId)
       hydrateFromSaved(blocks)
+      // Write each block individually to localStorage
+      for (const [name, b] of Object.entries(blocks)) {
+        saveBlock(name, b)
+      }
       block.medium.api_key = key
       setApiKey(key)
       setCharacterName(block.character.name)
