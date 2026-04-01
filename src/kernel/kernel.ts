@@ -10,9 +10,9 @@
  */
 
 import { callClaude } from './claude-direct';
-import { buildMediumPrompt, buildAuthorPrompt } from './prompt';
+import { buildMediumPrompt, buildAuthorPrompt, buildDesignerPrompt } from './prompt';
 import { applyBlockEdit } from './block-store';
-import type { Block, MediumResult, AuthorResult, AccumulatedEvent, DominoSignal } from './types';
+import type { Block, MediumResult, AuthorResult, DesignerResult, AccumulatedEvent, DominoSignal } from './types';
 import type { Face } from '../types/xstream';
 
 // ============================================================
@@ -89,6 +89,32 @@ async function callAuthorMedium(
     return JSON.parse(cleaned);
   } catch (e) {
     console.error('[kernel] Author medium call failed:', e);
+    return null;
+  }
+}
+
+// ============================================================
+// DESIGNER-MEDIUM CALL — designer face commit
+// ============================================================
+
+async function callDesignerMedium(
+  block: Block,
+  peerBlocks?: Block[]
+): Promise<DesignerResult | null> {
+  const prompt = buildDesignerPrompt(block, peerBlocks);
+  const config = block.medium;
+
+  try {
+    const model = 'claude-sonnet-4-20250514';
+    const text = await callClaude(config.api_key, model, prompt, config.max_tokens);
+    const cleaned = text.trim()
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/\s*```$/, '')
+      .trim();
+    return JSON.parse(cleaned);
+  } catch (e) {
+    console.error('[kernel] Designer medium call failed:', e);
     return null;
   }
 }
@@ -372,11 +398,15 @@ export class Kernel {
 
       // ── STEP 3: Process player commit ──
       if (this.block.status === 'resolving' && this.block.pending_liquid) {
-        if (this.face === 'author') {
-          // ── AUTHOR FACE: produce block edit ──
-          this.callbacks.onLog(`  🎯 Author committed. Firing author-medium...`);
+        if (this.face === 'author' || this.face === 'designer') {
+          // ── AUTHOR/DESIGNER FACE: produce block edit ──
+          const label = this.face;
+          this.callbacks.onLog(`  🎯 ${label} committed. Firing ${label}-medium...`);
 
-          const result = await callAuthorMedium(this.block, peerBlocks);
+          const result = this.face === 'designer'
+            ? await callDesignerMedium(this.block, peerBlocks)
+            : await callAuthorMedium(this.block, peerBlocks);
+
           if (result?.edit) {
             const applied = applyBlockEdit({
               block: result.edit.block,
@@ -386,12 +416,13 @@ export class Kernel {
               content: result.edit.content as string,
             });
             const summary = result.summary ?? (applied ? 'Edit applied.' : 'Edit failed.');
-            this.callbacks.onSolid(`[author] ${summary}`);
+            const rationale = 'rationale' in result && result.rationale ? ` (${result.rationale})` : '';
+            this.callbacks.onSolid(`[${label}] ${summary}${rationale}`);
             this.callbacks.onLog(`  ✏️  ${applied ? 'Applied' : 'Failed'}: ${summary}`);
           } else {
             const summary = result?.summary ?? 'No edit produced.';
-            this.callbacks.onSolid(`[author] ${summary}`);
-            this.callbacks.onLog(`  ⚠️  Author result: ${summary}`);
+            this.callbacks.onSolid(`[${label}] ${summary}`);
+            this.callbacks.onLog(`  ⚠️  ${label} result: ${summary}`);
           }
 
           this.block.pending_liquid = null;

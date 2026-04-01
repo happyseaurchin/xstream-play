@@ -357,3 +357,82 @@ ${produce}
 
 ${format}`.replace(/{name}/g, name);
 }
+
+// ============================================================
+// DESIGNER PROMPT — system rule changes
+// ============================================================
+
+export function buildDesignerPrompt(
+  block: Block,
+  peerBlocks?: Block[]
+): string {
+  const name = block.character.name;
+  const editTarget = block.edit_target ?? 'rules-thornkeep';
+  const editAddr = block.edit_address ?? '0';
+
+  const designerAgent = getBlock('designer-agent');
+  if (!designerAgent) return '';
+
+  // ── Identity from agent root ──
+  const identity = collectUnderscore(designerAgent as PscaleNode)?.replace(/{name}/g, name) ?? '';
+
+  // ── Show all star-referenced system blocks ──
+  const star = bsp(designerAgent as PscaleNode, 0, '*') as StarResult;
+  const contentSections: string[] = [];
+
+  if (star.hidden) {
+    for (const key of Object.keys(star.hidden).sort()) {
+      const ref = star.hidden[key];
+      if (typeof ref !== 'string') continue;
+      const sysBlock = getBlock(ref);
+      if (!sysBlock) continue;
+
+      // Show block overview: root identity + section summaries
+      const blockIdentity = collectUnderscore(sysBlock as PscaleNode) ?? ref;
+      const dir = bsp(sysBlock as PscaleNode, editAddr, 'dir') as DirResult;
+      contentSections.push(`SYSTEM BLOCK "${ref}":\n  ${blockIdentity}\n  Content at ${editAddr}: ${dir.subtree ? JSON.stringify(dir.subtree, null, 2).slice(0, 500) : '(none)'}`);
+    }
+  }
+
+  // ── Target block detail (the one being edited) ──
+  const targetBlock = getBlock(editTarget);
+  if (targetBlock) {
+    const spindle = bsp(targetBlock as PscaleNode, editAddr) as SpindleResult;
+    contentSections.push(`EDIT TARGET: ${editTarget} at address ${editAddr}\nCONTEXT CHAIN:\n${spindle.nodes.map(n => `  [${n.pscale}] ${n.text}`).join('\n')}`);
+
+    const dir = bsp(targetBlock as PscaleNode, editAddr, 'dir') as DirResult;
+    if (dir.subtree && typeof dir.subtree === 'object') {
+      contentSections.push(`CURRENT CONTENT:\n${JSON.stringify(dir.subtree, null, 2)}`);
+    }
+  }
+
+  // ── Designer's intention ──
+  const intention = block.pending_liquid ?? '';
+
+  // ── Rules: dir walk of section 1 ──
+  const rulesDir = bsp(designerAgent as PscaleNode, 0.1, 'dir') as DirResult;
+  const rulesLines = flattenNode(rulesDir.subtree);
+  const rules = rulesLines[0] + '\n' + rulesLines.slice(1).map(l => `- ${l}`).join('\n');
+
+  // ── Produce: dir walk of section 2 ──
+  const produceDir = bsp(designerAgent as PscaleNode, 0.2, 'dir') as DirResult;
+  const produceLines = flattenNode(produceDir.subtree);
+  const produce = produceLines.join('\n');
+
+  // ── Format: spindle of section 3 ──
+  const formatResult = bsp(designerAgent as PscaleNode, 0.3) as SpindleResult;
+  const format = formatResult.nodes[formatResult.nodes.length - 1]?.text ?? '';
+
+  return `${identity}
+
+${contentSections.join('\n\n')}
+
+DESIGNER'S INTENTION:
+${intention}
+
+${rules}
+
+${produce}
+
+${format}`.replace(/{name}/g, name);
+}

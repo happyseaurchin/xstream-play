@@ -93,6 +93,19 @@ export interface AuthorResult {
   preview?: string;
 }
 
+export interface DesignerResult {
+  edit?: {
+    block: string;
+    address: string;
+    operation: 'add' | 'replace' | 'delete';
+    key?: string;
+    content?: unknown;
+  };
+  summary?: string;
+  rationale?: string;
+  preview?: string;
+}
+
 export interface AccumulatedEvent {
   source: string;
   events: string[];

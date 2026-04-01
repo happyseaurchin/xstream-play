@@ -233,9 +233,12 @@ export default function App() {
     }
     setLiquidCards(prev => [...prev, card])
     // Set edit context for author/designer face
-    if (face !== 'character') {
+    if (face === 'author') {
       kernelRef.current.block.edit_target = 'spatial-thornkeep'
       kernelRef.current.block.edit_address = kernelRef.current.block.spatial_address
+    } else if (face === 'designer') {
+      kernelRef.current.block.edit_target = 'rules-thornkeep'
+      kernelRef.current.block.edit_address = '0'
     }
     kernelRef.current.submitLiquid(text)
   }, [characterName, face])
