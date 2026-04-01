@@ -9,7 +9,7 @@
 import type { Block, GameEvent } from './types';
 import { bsp, collectUnderscore } from './bsp';
 import type { DirResult, SpindleResult, StarResult, RingResult } from './bsp';
-import { getBlock } from './block-store';
+import { getBlock, listBlocks } from './block-store';
 import { resolveHarness } from './harness';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -495,6 +495,138 @@ ${contentSections.join('\n\n')}
 
 EVENTS AT ${address} (${events.length} total):
 ${eventLines}
+
+${rules}
+
+${produce}
+
+${format}`;
+}
+
+/**
+ * Author hard — post-edit consistency check.
+ * Fires after an author commit. Shows the edit, siblings, parent context.
+ */
+export function buildAuthorHardPrompt(
+  block: Block,
+  editResult: { block: string; address: string; operation: string; key?: string; content?: unknown }
+): string {
+  const hardAgent = getBlock('hard-author-agent');
+  if (!hardAgent) return '';
+
+  const identity = collectUnderscore(hardAgent as PscaleNode) ?? '';
+
+  // Show the edit that was just applied
+  const editSection = `EDIT APPLIED:\n${JSON.stringify(editResult, null, 2)}`;
+
+  // Walk the edited block at the edit address for context
+  const editTarget = editResult.block;
+  const editAddr = editResult.address;
+  const targetBlock = getBlock(editTarget);
+  const contextSections: string[] = [];
+
+  if (targetBlock) {
+    const spindle = bsp(targetBlock as PscaleNode, editAddr) as SpindleResult;
+    contextSections.push(`PARENT CONTEXT:\n${spindle.nodes.map(n => `  [${n.pscale}] ${n.text}`).join('\n')}`);
+
+    const ring = bsp(targetBlock as PscaleNode, editAddr, 'ring') as RingResult;
+    if (ring.siblings.length > 0) {
+      const sibs = ring.siblings.map(s => `  [${s.digit}] ${s.text ?? '(branch)'}${s.branch ? ' +' : ''}`);
+      contextSections.push(`SIBLINGS:\n${sibs.join('\n')}`);
+    }
+
+    const dir = bsp(targetBlock as PscaleNode, editAddr, 'dir') as DirResult;
+    if (dir.subtree && typeof dir.subtree === 'object') {
+      contextSections.push(`CONTENT AT ADDRESS:\n${JSON.stringify(dir.subtree, null, 2).slice(0, 800)}`);
+    }
+  }
+
+  // Rules + produce + format from agent sections
+  const rulesDir = bsp(hardAgent as PscaleNode, 0.1, 'dir') as DirResult;
+  const rulesLines = flattenNode(rulesDir.subtree);
+  const rules = rulesLines[0] + '\n' + rulesLines.slice(1).map(l => `- ${l}`).join('\n');
+
+  const produceDir = bsp(hardAgent as PscaleNode, 0.2, 'dir') as DirResult;
+  const produce = flattenNode(produceDir.subtree).join('\n');
+
+  const formatResult = bsp(hardAgent as PscaleNode, 0.3) as SpindleResult;
+  const format = formatResult.nodes[formatResult.nodes.length - 1]?.text ?? '';
+
+  return `${identity}
+
+${editSection}
+
+${contextSections.join('\n\n')}
+
+${rules}
+
+${produce}
+
+${format}`;
+}
+
+/**
+ * Designer hard — post-edit blast radius report.
+ * Fires after a designer commit. Shows edit + which blocks reference the target.
+ */
+export function buildDesignerHardPrompt(
+  block: Block,
+  editResult: { block: string; address: string; operation: string; key?: string; content?: unknown }
+): string {
+  const hardAgent = getBlock('hard-designer-agent');
+  if (!hardAgent) return '';
+
+  const identity = collectUnderscore(hardAgent as PscaleNode) ?? '';
+
+  // Show the edit
+  const editSection = `EDIT APPLIED:\n${JSON.stringify(editResult, null, 2)}`;
+
+  // Reverse star lookup: which blocks reference the edited block?
+  const editTarget = editResult.block;
+  const referencedBy: string[] = [];
+  for (const name of listBlocks()) {
+    if (name === editTarget) continue;
+    const b = getBlock(name);
+    if (!b) continue;
+    const rootStar = bsp(b as PscaleNode, 0, '*') as StarResult;
+    if (rootStar.hidden) {
+      const refs = Object.values(rootStar.hidden);
+      if (refs.includes(editTarget)) referencedBy.push(name);
+    }
+  }
+
+  const blastSection = referencedBy.length > 0
+    ? `BLOCKS REFERENCING "${editTarget}":\n${referencedBy.map(n => `  ${n}`).join('\n')}`
+    : `NO BLOCKS REFERENCE "${editTarget}" — isolated change.`;
+
+  // Show content at edit address in the target
+  const targetBlock = getBlock(editTarget);
+  let contentSection = '';
+  if (targetBlock) {
+    const dir = bsp(targetBlock as PscaleNode, editResult.address, 'dir') as DirResult;
+    if (dir.subtree && typeof dir.subtree === 'object') {
+      contentSection = `CONTENT AT ADDRESS:\n${JSON.stringify(dir.subtree, null, 2).slice(0, 800)}`;
+    }
+  }
+
+  // Rules + produce + format
+  const rulesDir = bsp(hardAgent as PscaleNode, 0.1, 'dir') as DirResult;
+  const rulesLines = flattenNode(rulesDir.subtree);
+  const rules = rulesLines[0] + '\n' + rulesLines.slice(1).map(l => `- ${l}`).join('\n');
+
+  const produceDir = bsp(hardAgent as PscaleNode, 0.2, 'dir') as DirResult;
+  const produce = flattenNode(produceDir.subtree).join('\n');
+
+  const formatResult = bsp(hardAgent as PscaleNode, 0.3) as SpindleResult;
+  const format = formatResult.nodes[formatResult.nodes.length - 1]?.text ?? '';
+
+  return `${identity}
+
+${editSection}
+
+${blastSection}
+
+${contentSection}
 
 ${rules}
 

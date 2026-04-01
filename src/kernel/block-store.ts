@@ -23,6 +23,8 @@ import authorAgent from '../../blocks/xstream/author-agent.json';
 import designerAgent from '../../blocks/xstream/designer-agent.json';
 import softAuthorAgent from '../../blocks/xstream/soft-author-agent.json';
 import softDesignerAgent from '../../blocks/xstream/soft-designer-agent.json';
+import hardAuthorAgent from '../../blocks/xstream/hard-author-agent.json';
+import hardDesignerAgent from '../../blocks/xstream/hard-designer-agent.json';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type PscaleNode = string | { [key: string]: any };
@@ -45,6 +47,8 @@ const seeds: Record<string, PscaleNode> = {
   'designer-agent': designerAgent,
   'soft-author-agent': softAuthorAgent,
   'soft-designer-agent': softDesignerAgent,
+  'hard-author-agent': hardAuthorAgent,
+  'hard-designer-agent': hardDesignerAgent,
 };
 
 for (const [name, block] of Object.entries(seeds)) {

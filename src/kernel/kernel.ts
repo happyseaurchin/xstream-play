@@ -10,7 +10,7 @@
  */
 
 import { callClaude } from './claude-direct';
-import { buildMediumPrompt, buildAuthorPrompt, buildDesignerPrompt, buildHardPrompt } from './prompt';
+import { buildMediumPrompt, buildAuthorPrompt, buildDesignerPrompt, buildHardPrompt, buildAuthorHardPrompt, buildDesignerHardPrompt } from './prompt';
 import { applyBlockEdit } from './block-store';
 import { saveGameState } from './persistence';
 import type { Block, GameEvent, MediumResult, AuthorResult, DesignerResult, HardResult, AccumulatedEvent, DominoSignal } from './types';
@@ -443,6 +443,10 @@ export class Kernel {
       }
 
       // ── STEP 3: Process player commit ──
+      // Track edit result for face-aware hard (step 4)
+      let commitFace: Face | null = null;
+      let commitEditResult: { block: string; address: string; operation: string; key?: string; content?: unknown } | null = null;
+
       if (this.block.status === 'resolving' && this.block.pending_liquid) {
         if (this.face === 'author' || this.face === 'designer') {
           // ── AUTHOR/DESIGNER FACE: produce block edit ──
@@ -465,6 +469,11 @@ export class Kernel {
             const rationale = 'rationale' in result && result.rationale ? ` (${result.rationale})` : '';
             this.callbacks.onSolid(`[${label}] ${summary}${rationale}`);
             this.callbacks.onLog(`  ✏️  ${applied ? 'Applied' : 'Failed'}: ${summary}`);
+            // Capture for hard step
+            if (applied) {
+              commitFace = this.face;
+              commitEditResult = result.edit;
+            }
           } else {
             const summary = result?.summary ?? 'No edit produced.';
             this.callbacks.onSolid(`[${label}] ${summary}`);
@@ -506,37 +515,70 @@ export class Kernel {
           }
         }
       }
-      // ── STEP 4: Hard reconciliation ──
-      // Triggered by event density threshold OR periodic fallback
-      const addr = this.block.spatial_address;
-      const eventsAtAddr = this.block.event_log.filter(e => e.S === addr);
-      const newEventCount = eventsAtAddr.length - this.hardEventsProcessed;
-      const elapsed = (Date.now() - this.lastHardRun) / 1000;
-      const shouldRunHard = (newEventCount >= HARD_EVENT_THRESHOLD) ||
-                            (elapsed >= HARD_FALLBACK_INTERVAL && eventsAtAddr.length > this.hardEventsProcessed);
+      // ── STEP 4: Hard reconciliation (face-aware) ──
 
-      if (shouldRunHard && eventsAtAddr.length > 0 && this.block.status === 'idle') {
-        this.callbacks.onLog(`  🔧 Hard reconciler: ${newEventCount} new events at ${addr}`);
-
-        const result = await callHard(this.block, addr, eventsAtAddr.slice(-15));
-        if (result?.edit) {
-          const applied = applyBlockEdit({
-            block: result.edit.block,
-            address: result.edit.address,
-            operation: result.edit.operation,
-            key: result.edit.key,
-            content: result.edit.content as string,
-          });
-          this.callbacks.onLog(`  🔧 Hard: ${applied ? 'Applied' : 'Failed'}: ${result.summary ?? ''}`);
-          if (applied) {
-            this.callbacks.onSolid(`[hard] ${result.summary ?? 'World updated.'}`);
+      if (this.block.status === 'idle') {
+        // Author hard: fires after author commit with edit result
+        if (commitFace === 'author' && commitEditResult) {
+          this.callbacks.onLog(`  🔧 Author hard: checking consistency of edit...`);
+          const prompt = buildAuthorHardPrompt(this.block, commitEditResult);
+          try {
+            const raw = await callClaude(this.block.medium.api_key, 'claude-haiku-4-5-20251001', prompt, 512);
+            const parsed = JSON.parse(raw);
+            const advisory = parsed.advisory ?? parsed.summary ?? 'Check complete.';
+            this.callbacks.onSolid(`[hard] ${advisory}`);
+            this.callbacks.onLog(`  🔧 Author hard: ${advisory}`);
+          } catch (e) {
+            this.callbacks.onLog(`  🔧 Author hard: ${e instanceof Error ? e.message : 'failed'}`);
           }
-        } else if (result?.summary) {
-          this.callbacks.onLog(`  🔧 Hard: ${result.summary}`);
         }
 
-        this.lastHardRun = Date.now();
-        this.hardEventsProcessed = eventsAtAddr.length;
+        // Designer hard: fires after designer commit with edit result
+        if (commitFace === 'designer' && commitEditResult) {
+          this.callbacks.onLog(`  🔧 Designer hard: checking blast radius...`);
+          const prompt = buildDesignerHardPrompt(this.block, commitEditResult);
+          try {
+            const raw = await callClaude(this.block.medium.api_key, 'claude-haiku-4-5-20251001', prompt, 512);
+            const parsed = JSON.parse(raw);
+            const advisory = parsed.advisory ?? parsed.summary ?? 'Check complete.';
+            this.callbacks.onSolid(`[hard] ${advisory}`);
+            this.callbacks.onLog(`  🔧 Designer hard: ${advisory}`);
+          } catch (e) {
+            this.callbacks.onLog(`  🔧 Designer hard: ${e instanceof Error ? e.message : 'failed'}`);
+          }
+        }
+
+        // Character hard: event density threshold OR periodic fallback
+        const addr = this.block.spatial_address;
+        const eventsAtAddr = this.block.event_log.filter(e => e.S === addr);
+        const newEventCount = eventsAtAddr.length - this.hardEventsProcessed;
+        const elapsed = (Date.now() - this.lastHardRun) / 1000;
+        const shouldRunHard = (newEventCount >= HARD_EVENT_THRESHOLD) ||
+                              (elapsed >= HARD_FALLBACK_INTERVAL && eventsAtAddr.length > this.hardEventsProcessed);
+
+        if (shouldRunHard && eventsAtAddr.length > 0) {
+          this.callbacks.onLog(`  🔧 Hard reconciler: ${newEventCount} new events at ${addr}`);
+
+          const result = await callHard(this.block, addr, eventsAtAddr.slice(-15));
+          if (result?.edit) {
+            const applied = applyBlockEdit({
+              block: result.edit.block,
+              address: result.edit.address,
+              operation: result.edit.operation,
+              key: result.edit.key,
+              content: result.edit.content as string,
+            });
+            this.callbacks.onLog(`  🔧 Hard: ${applied ? 'Applied' : 'Failed'}: ${result.summary ?? ''}`);
+            if (applied) {
+              this.callbacks.onSolid(`[hard] ${result.summary ?? 'World updated.'}`);
+            }
+          } else if (result?.summary) {
+            this.callbacks.onLog(`  🔧 Hard: ${result.summary}`);
+          }
+
+          this.lastHardRun = Date.now();
+          this.hardEventsProcessed = eventsAtAddr.length;
+        }
       }
     } catch (e) {
       console.error('[kernel] Cycle error:', e);
