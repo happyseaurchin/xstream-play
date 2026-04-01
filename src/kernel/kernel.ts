@@ -10,9 +10,9 @@
  */
 
 import { callClaude } from './claude-direct';
-import { buildMediumPrompt, buildAuthorPrompt, buildDesignerPrompt } from './prompt';
+import { buildMediumPrompt, buildAuthorPrompt, buildDesignerPrompt, buildHardPrompt } from './prompt';
 import { applyBlockEdit } from './block-store';
-import type { Block, MediumResult, AuthorResult, DesignerResult, AccumulatedEvent, DominoSignal } from './types';
+import type { Block, MediumResult, AuthorResult, DesignerResult, HardResult, AccumulatedEvent, DominoSignal } from './types';
 import type { Face } from '../types/xstream';
 
 // ============================================================
@@ -115,6 +115,33 @@ async function callDesignerMedium(
     return JSON.parse(cleaned);
   } catch (e) {
     console.error('[kernel] Designer medium call failed:', e);
+    return null;
+  }
+}
+
+// ============================================================
+// HARD-LLM CALL — world consistency reconciliation
+// ============================================================
+
+async function callHard(
+  block: Block,
+  address: string,
+  events: import('./types').GameEvent[]
+): Promise<HardResult | null> {
+  const prompt = buildHardPrompt(block, address, events);
+  const config = block.medium;
+
+  try {
+    const model = 'claude-sonnet-4-20250514';
+    const text = await callClaude(config.api_key, model, prompt, config.max_tokens);
+    const cleaned = text.trim()
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/\s*```$/, '')
+      .trim();
+    return JSON.parse(cleaned);
+  } catch (e) {
+    console.error('[kernel] Hard call failed:', e);
     return null;
   }
 }
@@ -266,6 +293,10 @@ export interface KernelCallbacks {
   onLog: (message: string) => void;
 }
 
+// Hard reconciler config
+const HARD_EVENT_THRESHOLD = 5;     // events at an address before Hard triggers
+const HARD_FALLBACK_INTERVAL = 60;  // seconds between periodic Hard checks
+
 export class Kernel {
   block: Block;
   gameId: string;
@@ -273,6 +304,8 @@ export class Kernel {
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private callbacks: KernelCallbacks;
   private running = false;
+  private lastHardRun = 0;          // timestamp of last Hard reconciliation
+  private hardEventsProcessed = 0;  // events seen at last Hard run
 
   constructor(block: Block, gameId: string, callbacks: KernelCallbacks) {
     this.block = block;
@@ -471,6 +504,38 @@ export class Kernel {
             this.callbacks.onError('Medium call failed');
           }
         }
+      }
+      // ── STEP 4: Hard reconciliation ──
+      // Triggered by event density threshold OR periodic fallback
+      const addr = this.block.spatial_address;
+      const eventsAtAddr = this.block.event_log.filter(e => e.S === addr);
+      const newEventCount = eventsAtAddr.length - this.hardEventsProcessed;
+      const elapsed = (Date.now() - this.lastHardRun) / 1000;
+      const shouldRunHard = (newEventCount >= HARD_EVENT_THRESHOLD) ||
+                            (elapsed >= HARD_FALLBACK_INTERVAL && eventsAtAddr.length > this.hardEventsProcessed);
+
+      if (shouldRunHard && eventsAtAddr.length > 0 && this.block.status === 'idle') {
+        this.callbacks.onLog(`  🔧 Hard reconciler: ${newEventCount} new events at ${addr}`);
+
+        const result = await callHard(this.block, addr, eventsAtAddr.slice(-15));
+        if (result?.edit) {
+          const applied = applyBlockEdit({
+            block: result.edit.block,
+            address: result.edit.address,
+            operation: result.edit.operation,
+            key: result.edit.key,
+            content: result.edit.content as string,
+          });
+          this.callbacks.onLog(`  🔧 Hard: ${applied ? 'Applied' : 'Failed'}: ${result.summary ?? ''}`);
+          if (applied) {
+            this.callbacks.onSolid(`[hard] ${result.summary ?? 'World updated.'}`);
+          }
+        } else if (result?.summary) {
+          this.callbacks.onLog(`  🔧 Hard: ${result.summary}`);
+        }
+
+        this.lastHardRun = Date.now();
+        this.hardEventsProcessed = eventsAtAddr.length;
       }
     } catch (e) {
       console.error('[kernel] Cycle error:', e);

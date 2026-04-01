@@ -441,3 +441,64 @@ ${produce}
 
 ${format}`.replace(/{name}/g, name);
 }
+
+// ============================================================
+// HARD PROMPT — world consistency reconciliation
+// ============================================================
+
+export function buildHardPrompt(
+  block: Block,
+  address: string,
+  events: GameEvent[]
+): string {
+  const hardAgent = getBlock('hard-agent');
+  if (!hardAgent) return '';
+
+  // ── Identity ──
+  const identity = collectUnderscore(hardAgent as PscaleNode) ?? '';
+
+  // ── Star-referenced blocks: show content at the target address ──
+  const star = bsp(hardAgent as PscaleNode, 0, '*') as StarResult;
+  const contentSections: string[] = [];
+
+  if (star.hidden) {
+    for (const key of Object.keys(star.hidden).sort()) {
+      const ref = star.hidden[key];
+      if (typeof ref !== 'string') continue;
+      const worldBlock = getBlock(ref);
+      if (!worldBlock) continue;
+
+      const spindle = bsp(worldBlock as PscaleNode, address) as SpindleResult;
+      const dir = bsp(worldBlock as PscaleNode, address, 'dir') as DirResult;
+      contentSections.push(`BLOCK "${ref}" at ${address}:\nContext: ${spindle.nodes.map(n => n.text).join(' — ')}\nContent: ${dir.subtree ? JSON.stringify(dir.subtree, null, 2).slice(0, 800) : '(none)'}`);
+    }
+  }
+
+  // ── Events at this address ──
+  const eventLines = events.map(e => `- [${e.type}] ${e.I}: ${e.text}`).join('\n');
+
+  // ── Rules + produce + format from agent sections ──
+  const rulesDir = bsp(hardAgent as PscaleNode, 0.1, 'dir') as DirResult;
+  const rulesLines = flattenNode(rulesDir.subtree);
+  const rules = rulesLines[0] + '\n' + rulesLines.slice(1).map(l => `- ${l}`).join('\n');
+
+  const produceDir = bsp(hardAgent as PscaleNode, 0.2, 'dir') as DirResult;
+  const produceLines = flattenNode(produceDir.subtree);
+  const produce = produceLines.join('\n');
+
+  const formatResult = bsp(hardAgent as PscaleNode, 0.3) as SpindleResult;
+  const format = formatResult.nodes[formatResult.nodes.length - 1]?.text ?? '';
+
+  return `${identity}
+
+${contentSections.join('\n\n')}
+
+EVENTS AT ${address} (${events.length} total):
+${eventLines}
+
+${rules}
+
+${produce}
+
+${format}`;
+}

@@ -100,6 +100,18 @@ export interface AuthorResult {
   preview?: string;
 }
 
+export interface HardResult {
+  edit?: {
+    block: string;
+    address: string;
+    operation: 'add' | 'replace' | 'delete';
+    key?: string;
+    content?: unknown;
+  };
+  summary?: string;
+  events_reviewed?: number;
+}
+
 export interface DesignerResult {
   edit?: {
     block: string;
