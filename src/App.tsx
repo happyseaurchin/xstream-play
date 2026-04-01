@@ -22,6 +22,9 @@ import type { SolidBlock, LiquidCard } from './types/xstream'
 import type { Face } from './types/xstream'
 import type { SoftLLMResponse } from './types'
 import { listBlocks } from './kernel/block-store'
+import { hydrateFromSaved } from './kernel/block-store'
+import { loadGameState, exportGameState, importGameState } from './kernel/persistence'
+import type { SavedGame } from './kernel/persistence'
 import './App.css'
 
 type AppPhase = 'setup' | 'loading' | 'ready'
@@ -200,6 +203,60 @@ export default function App() {
     }
   }, [makeKernelCallbacks])
 
+  // --- Resume Game ---
+  const handleResumeGame = useCallback((key: string, save: SavedGame) => {
+    setApiKey(key)
+    setPhase('loading')
+    setStatusMessage('Resuming game...')
+
+    const { block, blocks } = loadGameState(save.gameId, save.charId)
+    if (!block) {
+      setStatusMessage('Error: save not found')
+      setPhase('setup')
+      return
+    }
+
+    // Hydrate block store with saved blocks (author/designer edits preserved)
+    if (blocks) hydrateFromSaved(blocks)
+
+    // Update API key in block (may have changed)
+    block.medium.api_key = key
+    setCharacterName(block.character.name)
+    setGameCode(save.gameId)
+
+    const kernel = new Kernel(block, save.gameId, makeKernelCallbacks())
+    kernelRef.current = kernel
+    kernel.start()
+
+    setStatusMessage('')
+    setPhase('ready')
+  }, [makeKernelCallbacks])
+
+  // --- Import Game ---
+  const handleImportGame = useCallback((key: string, json: string) => {
+    setPhase('loading')
+    setStatusMessage('Importing save...')
+
+    try {
+      const { gameId, block, blocks } = importGameState(json)
+      hydrateFromSaved(blocks)
+      block.medium.api_key = key
+      setApiKey(key)
+      setCharacterName(block.character.name)
+      setGameCode(gameId)
+
+      const kernel = new Kernel(block, gameId, makeKernelCallbacks())
+      kernelRef.current = kernel
+      kernel.start()
+
+      setStatusMessage('')
+      setPhase('ready')
+    } catch (err) {
+      setStatusMessage(`Error: ${err instanceof Error ? err.message : 'Import failed'}`)
+      setPhase('setup')
+    }
+  }, [makeKernelCallbacks])
+
   // --- ASK (Soft — direct call, no kernel needed) ---
   const handleQuery = useCallback(async (text: string) => {
     if (!text.trim() || !kernelRef.current) return
@@ -317,7 +374,7 @@ export default function App() {
 
   // --- Render ---
   if (phase === 'setup') {
-    return <SetupScreen onCreateGame={handleCreateGame} onJoinGame={handleJoinGame} />
+    return <SetupScreen onCreateGame={handleCreateGame} onJoinGame={handleJoinGame} onResumeGame={handleResumeGame} onImportGame={handleImportGame} />
   }
 
   if (phase === 'loading') {
@@ -387,6 +444,15 @@ export default function App() {
           a.download = `${characterName.toLowerCase()}-${gameCode}.txt`
           a.click()
         }} className="text-muted-foreground hover:text-foreground text-xs" title="Download story">📜</button>
+        <button onClick={() => {
+          if (!kernelRef.current) return
+          const json = exportGameState(gameCode, kernelRef.current.block)
+          const blob = new Blob([json], { type: 'application/json' })
+          const a = document.createElement('a')
+          a.href = URL.createObjectURL(blob)
+          a.download = `xstream-${characterName.toLowerCase()}-${gameCode}.json`
+          a.click()
+        }} className="text-muted-foreground hover:text-foreground text-xs" title="Export save">💾</button>
         <button onClick={handleReset} className="text-muted-foreground hover:text-foreground text-xs" title="Leave game">🚪</button>
       </div>
 

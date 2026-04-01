@@ -12,6 +12,7 @@
 import { callClaude } from './claude-direct';
 import { buildMediumPrompt, buildAuthorPrompt, buildDesignerPrompt, buildHardPrompt } from './prompt';
 import { applyBlockEdit } from './block-store';
+import { saveGameState } from './persistence';
 import type { Block, GameEvent, MediumResult, AuthorResult, DesignerResult, HardResult, AccumulatedEvent, DominoSignal } from './types';
 import type { Face } from '../types/xstream';
 
@@ -474,6 +475,7 @@ export class Kernel {
           this.block.status = 'idle';
           this.callbacks.onStatusChange('idle');
           await writeBlock(this.gameId, this.block.character.id, this.block);
+          saveGameState(this.gameId, this.block);
 
         } else {
           // ── CHARACTER FACE: produce narrative ──
@@ -496,6 +498,7 @@ export class Kernel {
               this.callbacks.onLog(`     Domino targets: ${dominoTargets.join(', ')}`);
             }
             await writeBlock(this.gameId, this.block.character.id, this.block);
+            saveGameState(this.gameId, this.block);
           } else {
             this.block.status = 'idle';
             this.callbacks.onStatusChange('idle');

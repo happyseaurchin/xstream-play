@@ -51,6 +51,17 @@ for (const [name, block] of Object.entries(seeds)) {
   store.set(name, structuredClone(block));
 }
 
+/**
+ * Replace the block store with saved state.
+ * Used when resuming from localStorage or importing a save file.
+ */
+export function hydrateFromSaved(blocks: Record<string, PscaleNode>): void {
+  store.clear();
+  for (const [name, block] of Object.entries(blocks)) {
+    store.set(name, structuredClone(block));
+  }
+}
+
 export function getBlock(name: string): PscaleNode | null {
   return store.get(name) ?? null;
 }
