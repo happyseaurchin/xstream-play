@@ -336,10 +336,24 @@ export class Kernel {
       // ── STEP 1: Poll peers ──
       const { newEvents, newDominos } = pollPeers(this.block, peerBlocks);
 
-      // Surface peer liquid (forming intentions at same location)
-      // Display label follows S×I pattern: familiarity gates what you see
+      // Surface peer liquid — proximity-scoped by face
       const peerLiquid = peerBlocks
-        .filter(p => p.spatial_address === this.block.spatial_address && p.pending_liquid)
+        .filter(p => {
+          if (!p.pending_liquid) return false;
+          if (this.face === 'character') {
+            // Same room
+            return p.spatial_address === this.block.spatial_address;
+          }
+          if (this.face === 'author') {
+            // Same edit target + shared address prefix (spindle overlap)
+            if (p.edit_target !== this.block.edit_target) return false;
+            const myAddr = this.block.edit_address ?? '';
+            const peerAddr = p.edit_address ?? '';
+            return myAddr.startsWith(peerAddr) || peerAddr.startsWith(myAddr);
+          }
+          // Designer: same edit target
+          return p.edit_target === this.block.edit_target;
+        })
         .map(p => {
           const fam = this.block.familiarity[p.character.id] ?? 0;
           const label = fam > 0 ? p.character.name : (p.character.state || 'a stranger');

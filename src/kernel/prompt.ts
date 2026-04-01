@@ -318,11 +318,16 @@ export function buildAuthorPrompt(
   // ── Author's intention ──
   const intention = block.pending_liquid ?? '';
 
-  // ── Nearby author liquid (peers editing same target) ──
+  // ── Nearby author liquid (peers editing same target, address prefix overlap) ──
   let nearbySection = '';
   if (peerBlocks) {
     const nearbyAuthors = peerBlocks
-      .filter(p => p.edit_target === editTarget && p.pending_liquid && p.character.id !== block.character.id)
+      .filter(p => {
+        if (!p.pending_liquid || p.character.id === block.character.id) return false;
+        if (p.edit_target !== editTarget) return false;
+        const peerAddr = p.edit_address ?? '';
+        return editAddr.startsWith(peerAddr) || peerAddr.startsWith(editAddr);
+      })
       .map(p => `- [${p.character.id}] editing at ${p.edit_address ?? '?'}: "${p.pending_liquid}"`);
     if (nearbyAuthors.length > 0) {
       nearbySection = `\nNEARBY AUTHORS:\n${nearbyAuthors.join('\n')}`;
