@@ -63,6 +63,13 @@ export interface Block {
   // ── Author/Designer attention ──
   edit_address?: string;   // BSP address the player is attending to
   edit_target?: string;    // block name being edited (e.g. 'spatial-thornkeep')
+
+  // ── Commit mode per face ──
+  face_commit_mode?: {
+    character: 'auto' | 'manual' | 'informed';
+    author: 'auto' | 'manual' | 'informed';
+    designer: 'auto' | 'manual' | 'informed';
+  };
 }
 
 export interface DominoOut {

@@ -257,7 +257,7 @@ export default function App() {
     setVaporText(text)
   }, [])
 
-  // --- Domino mode toggle ---
+  // --- Domino mode toggle (character face) ---
   const handleDominoModeToggle = useCallback(() => {
     const modes: Array<'auto' | 'informed' | 'silent'> = ['auto', 'informed', 'silent']
     const next = modes[(modes.indexOf(dominoMode) + 1) % modes.length]
@@ -266,6 +266,17 @@ export default function App() {
       kernelRef.current.block.trigger.domino_mode = next
     }
   }, [dominoMode])
+
+  // --- Commit mode toggle (all faces) ---
+  const [commitMode, setCommitMode] = useState<'auto' | 'manual' | 'informed'>('manual')
+  const handleCommitModeToggle = useCallback(() => {
+    const modes: Array<'auto' | 'manual' | 'informed'> = ['manual', 'informed', 'auto']
+    const next = modes[(modes.indexOf(commitMode) + 1) % modes.length]
+    setCommitMode(next)
+    if (kernelRef.current?.block.face_commit_mode) {
+      kernelRef.current.block.face_commit_mode[face] = next
+    }
+  }, [commitMode, face])
 
   // --- Reset ---
   const handleReset = useCallback(() => {
@@ -321,14 +332,25 @@ export default function App() {
         <span className="text-xs" style={{ opacity: 0.5 }}>
           {kernelStatus === 'idle' ? '🟢' : kernelStatus === 'resolving' ? '🟡' : kernelStatus === 'domino_responding' ? '💥' : '⚪'}
         </span>
-        <button
-          onClick={handleDominoModeToggle}
-          className="text-xs"
-          style={{ opacity: 0.7, cursor: 'pointer', background: 'none', border: 'none', color: 'inherit', padding: '2px 4px' }}
-          title={`Domino mode: ${dominoMode}. Click to cycle.`}
-        >
-          {dominoMode === 'auto' ? '🔄auto' : dominoMode === 'informed' ? '👁️watch' : '🔇silent'}
-        </button>
+        {face === 'character' ? (
+          <button
+            onClick={handleDominoModeToggle}
+            className="text-xs"
+            style={{ opacity: 0.7, cursor: 'pointer', background: 'none', border: 'none', color: 'inherit', padding: '2px 4px' }}
+            title={`Domino mode: ${dominoMode}. Click to cycle.`}
+          >
+            {dominoMode === 'auto' ? '🔄auto' : dominoMode === 'informed' ? '👁️watch' : '🔇silent'}
+          </button>
+        ) : (
+          <button
+            onClick={handleCommitModeToggle}
+            className="text-xs"
+            style={{ opacity: 0.7, cursor: 'pointer', background: 'none', border: 'none', color: 'inherit', padding: '2px 4px' }}
+            title={`Commit mode: ${commitMode}. Click to cycle.`}
+          >
+            {commitMode === 'manual' ? '✋manual' : commitMode === 'informed' ? '👁️informed' : '⚡auto'}
+          </button>
+        )}
         {accumulatedCount > 0 && (
           <span className="text-xs text-face-accent" title="Accumulated peer events">
             📥 {accumulatedCount}

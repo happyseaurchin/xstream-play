@@ -68,6 +68,12 @@ export function createBlock(
     spatial_address: '111',  // default: Salted Dog main room
     familiarity: {},
     event_log: [],
+
+    face_commit_mode: {
+      character: 'manual',
+      author: 'manual',
+      designer: 'manual',
+    },
   };
 }
 
