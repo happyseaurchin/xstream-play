@@ -1,6 +1,6 @@
 # Session 02 Handover — Jump 4: Systemic Faces
 
-**Branch:** `feature/hard-llm` at commit `b289503`
+**Branch:** `feature/hard-llm` at commit `7cb7da8`
 **Date:** 1 April 2026
 **Tag:** `pre-jump4` marks rollback point at `96bc12d`
 
@@ -136,4 +136,74 @@ After step 7:
 5. Wait for Hard reconciler threshold. Hard runs, updates hearth description.
 6. New character joins. Their first scene includes the cold hearth.
 
-**Status: structurally complete, not yet live-tested.**
+**Status: LIVE-TESTED. Author and designer commits fire and produce output. See post-test notes below.**
+
+---
+
+## Post-test feedback and fixes (same session)
+
+David tested on the deployed preview. Author and designer commits both fired successfully. Key findings:
+
+### What worked
+- Face selector switches correctly
+- Author commit fires Sonnet, produces BlockEdit, returns summary in solid zone
+- Designer commit fires, produces rule change
+- The shelf renders with block dropdown and address input
+- Character narrative continues to work as before
+
+### What was wrong (and fixed)
+1. **Soft was face-blind** — always answered as character's inner voice, even in author/designer mode. Fixed: created `soft-author-agent.json` (editing assistant that explains block structure and suggests edits) and `soft-designer-agent.json` (systems analyst that traces rule implications). `buildSoftPrompt` now accepts face parameter and routes to the right agent block.
+
+2. **Solid zone was shared across faces** — author edit summaries mixed with character narrative. Fixed: three separate state arrays (`characterSolids`, `authorSolids`, `designerSolids`). Switching face shows only that face's output. `onSolid` callback reads `kernel.face` to route to correct array.
+
+3. **Temporal dead zone crash** — `face` was used before declaration in component body. Moved face/theme state above solidBlocks.
+
+### What's still wrong (not yet fixed — next session)
+1. **No visibility of actual block changes** — author sees "[author] Added a mysterious stranger" but not the actual content that was added. Author solid zone should show the block content at edit address, not just a summary.
+
+2. **Shelf is cryptic** — block names like `spatial-thornkeep` and addresses like `111` mean nothing without context. Need preview of what's at the address, or at minimum labels.
+
+3. **No dashboard/drawer** — the cogwheel settings infrastructure exists in `AppHeader` and `DirectoryDrawer` but isn't wired. David expected a slide-down panel: character sheet for character, world navigator for author, rules overview for designer.
+
+4. **Can't verify designer changes took effect** — designer said it added a d10 dice roll but no way to check if it actually modified the block. Need a way to inspect block state (filmstrip, log viewer, or block inspector).
+
+5. **Observer/director face** — David noted a fourth face is needed: someone who witnesses and synthesizes across character perspectives without producing. Beyond current scope but follows the same pattern (add a JSON block, add routing).
+
+### Current block inventory (14 blocks)
+
+```
+blocks/xstream/
+  medium-agent.json         # Character narrative. 1 star ref (spatial).
+  soft-agent.json           # Character inner voice. 1 star ref (spatial).
+  soft-author-agent.json    # Author editing assistant. 1 star ref (spatial).
+  soft-designer-agent.json  # Designer systems analyst. 2 star refs (rules, medium).
+  hard-agent.json           # Reconciler. 2 star refs (spatial, rules).
+  author-agent.json         # Author editing. 1 star ref (spatial). Produces BlockEdits.
+  designer-agent.json       # Designer editing. 4 star refs (all agents + rules).
+  spatial-thornkeep.json    # World spatial block.
+  rules-thornkeep.json      # World rules block.
+  harness.json              # Output constraints P-4 through P0.
+  character-essa.json       # NPC.
+  character-harren.json     # NPC.
+  character-kael.json       # NPC.
+  character-template.json   # Template.
+```
+
+---
+
+## What the next session should do
+
+### Priority 1: Author solid = block content
+When in author face, the solid zone should show the actual block content at the edit address — what a spindle walk returns, what the dir shows. The summary line from the author-medium is useful but insufficient. The author needs to SEE the world they're editing.
+
+### Priority 2: Meaningful shelf
+The shelf should show a preview of what's at the current address. When you change the address, you see the content there. Labels for common addresses (111 = "Main room of the Salted Dog"). This is the author's viewport.
+
+### Priority 3: Wire the dashboard
+`DirectoryDrawer` and `AppHeader` settings toggle exist. Wire them: character sheet, world tree for author, rules tree for designer. The cogwheel button is already in the component library.
+
+### Priority 4: Block inspector / verification
+After an author or designer edit, show what changed. Before/after diff, or at minimum a "view block" action that shows current content. This is essential for designer trust — "did my rule change actually land?"
+
+### Priority 5: Character blocks via star refs
+character-essa.json etc. are in the store but still not wired. Medium and soft don't walk them for NPC descriptions. Wire via star refs at spatial addresses — the S×I knowledge overlay should reference character blocks for NPCs at that location.
