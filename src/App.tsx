@@ -21,6 +21,7 @@ import { buildSoftPrompt } from './kernel/soft-prompt'
 import type { SolidBlock, LiquidCard } from './types/xstream'
 import type { Face } from './types/xstream'
 import type { SoftLLMResponse } from './types'
+import { listBlocks } from './kernel/block-store'
 import './App.css'
 
 type AppPhase = 'setup' | 'loading' | 'ready'
@@ -370,6 +371,30 @@ export default function App() {
 
       {statusMessage && (
         <div className="px-4 py-2 text-xs text-face-accent bg-accent/10">{statusMessage}</div>
+      )}
+
+      {/* Shelf: block navigator for author/designer */}
+      {face !== 'character' && kernelRef.current && (
+        <div className="flex items-center gap-2 px-4 py-1.5 border-b border-border/30 text-xs bg-accent/5">
+          <span className="text-muted-foreground">target:</span>
+          <select
+            value={kernelRef.current.block.edit_target ?? 'spatial-thornkeep'}
+            onChange={e => { if (kernelRef.current) kernelRef.current.block.edit_target = e.target.value }}
+            className="bg-transparent border border-border/50 rounded px-1 py-0.5 text-face-accent cursor-pointer"
+          >
+            {listBlocks().map(name => (
+              <option key={name} value={name}>{name}</option>
+            ))}
+          </select>
+          <span className="text-muted-foreground">@</span>
+          <input
+            type="text"
+            value={kernelRef.current.block.edit_address ?? '0'}
+            onChange={e => { if (kernelRef.current) kernelRef.current.block.edit_address = e.target.value }}
+            className="bg-transparent border border-border/50 rounded px-1 py-0.5 w-16 text-face-accent font-mono"
+            title="BSP address"
+          />
+        </div>
       )}
 
       {/* Three zones with draggable separators */}
