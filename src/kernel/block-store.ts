@@ -21,6 +21,8 @@ import characterKael from '../../blocks/xstream/character-kael.json';
 import characterTemplate from '../../blocks/xstream/character-template.json';
 import authorAgent from '../../blocks/xstream/author-agent.json';
 import designerAgent from '../../blocks/xstream/designer-agent.json';
+import softAuthorAgent from '../../blocks/xstream/soft-author-agent.json';
+import softDesignerAgent from '../../blocks/xstream/soft-designer-agent.json';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type PscaleNode = string | { [key: string]: any };
@@ -41,6 +43,8 @@ const seeds: Record<string, PscaleNode> = {
   'character-template': characterTemplate,
   'author-agent': authorAgent,
   'designer-agent': designerAgent,
+  'soft-author-agent': softAuthorAgent,
+  'soft-designer-agent': softDesignerAgent,
 };
 
 for (const [name, block] of Object.entries(seeds)) {

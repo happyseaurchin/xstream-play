@@ -39,8 +39,19 @@ export default function App() {
   // Kernel
   const kernelRef = useRef<Kernel | null>(null)
 
-  // UI data
-  const [solidBlocks, setSolidBlocks] = useState<SolidBlock[]>([])
+  // Theme + Face (declared early — solidBlocks depends on face)
+  const [theme, setTheme] = useState<Theme>(() =>
+    (localStorage.getItem('xstream-theme') as Theme) || 'dark'
+  )
+  const [face, setFace] = useState<Face>(() =>
+    (localStorage.getItem('xstream-face') as Face) || 'character'
+  )
+
+  // UI data — solid blocks scoped per face
+  const [characterSolids, setCharacterSolids] = useState<SolidBlock[]>([])
+  const [authorSolids, setAuthorSolids] = useState<SolidBlock[]>([])
+  const [designerSolids, setDesignerSolids] = useState<SolidBlock[]>([])
+  const solidBlocks = face === 'author' ? authorSolids : face === 'designer' ? designerSolids : characterSolids
   const [liquidCards, setLiquidCards] = useState<LiquidCard[]>([])
   const [softResponse, setSoftResponse] = useState<SoftLLMResponse | null>(null)
   const [synthesising, setSynthesising] = useState(false)
@@ -51,14 +62,6 @@ export default function App() {
   const [kernelLogs, setKernelLogs] = useState<string[]>([])
   const [accumulatedCount, setAccumulatedCount] = useState(0)
   const [dominoMode, setDominoMode] = useState<'auto' | 'informed' | 'silent'>('auto')
-
-  // Theme + Face
-  const [theme, setTheme] = useState<Theme>(() =>
-    (localStorage.getItem('xstream-theme') as Theme) || 'dark'
-  )
-  const [face, setFace] = useState<Face>(() =>
-    (localStorage.getItem('xstream-face') as Face) || 'character'
-  )
 
   // Zone heights (proportional)
   const [solidHeight, setSolidHeight] = useState(() => window.innerHeight * 0.35)
@@ -99,11 +102,12 @@ export default function App() {
   const makeKernelCallbacks = useCallback(() => ({
     onSolid: (solid: string) => {
       if (!solid) return
-      setSolidBlocks(prev => [...prev, {
-        id: Date.now().toString(),
-        content: solid,
-        timestamp: Date.now(),
-      }])
+      const entry = { id: Date.now().toString(), content: solid, timestamp: Date.now() }
+      // Route to the face that produced this solid
+      const f = kernelRef.current?.face ?? 'character'
+      if (f === 'author') setAuthorSolids(prev => [...prev, entry])
+      else if (f === 'designer') setDesignerSolids(prev => [...prev, entry])
+      else setCharacterSolids(prev => [...prev, entry])
       setSynthesising(false)
     },
     onStatusChange: (status: string) => {
@@ -204,7 +208,12 @@ export default function App() {
 
     try {
       const block = kernelRef.current.block
-      const prompt = buildSoftPrompt(block, text)
+      // Sync edit context before building prompt
+      if (face !== 'character') {
+        block.edit_target = editTarget
+        block.edit_address = editAddress
+      }
+      const prompt = buildSoftPrompt(block, text, face)
       const response = await callClaude(apiKey, 'claude-haiku-4-5-20251001', prompt, 256)
 
       setSoftResponse({
@@ -212,7 +221,7 @@ export default function App() {
         originalInput: text,
         text: response,
         softType: 'refine',
-        face: 'character',
+        face,
         frameId: null,
       })
     } catch (err: unknown) {
@@ -293,7 +302,9 @@ export default function App() {
     kernelRef.current?.stop()
     kernelRef.current = null
     setPhase('setup')
-    setSolidBlocks([])
+    setCharacterSolids([])
+    setAuthorSolids([])
+    setDesignerSolids([])
     setLiquidCards([])
     setSoftResponse(null)
     setVaporText('')
