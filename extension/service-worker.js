@@ -380,16 +380,13 @@ async function readMarks(urlHash) {
   }
 }
 
-async function beachOnPageLoad(tabId, url, urlHash, agentId) {
-  // Leave a mark
-  await leaveMark(urlHash, agentId, 'present');
-
-  // Read marks at this URL
+async function beachReadOnly(tabId, url, urlHash, agentId) {
+  // Read marks — no mark is left. Marks happen on intentional action only.
   const { marks, peer_count } = await readMarks(urlHash);
 
-  // Find marks with meaningful purpose (not just "present")
-  const resonant = marks.filter(m =>
-    m.agent !== agentId && m.s && m.s !== 'present' && m.s.length > 3
+  const otherMarks = marks.filter(m => m.agent !== agentId);
+  const meaningfulMarks = otherMarks.filter(m =>
+    m.s && m.s !== 'present' && m.s.length > 3
   );
 
   // Notify content script
@@ -397,24 +394,24 @@ async function beachOnPageLoad(tabId, url, urlHash, agentId) {
     await chrome.tabs.sendMessage(tabId, {
       type: 'BEACH_UPDATE',
       peerCount: peer_count,
-      density: marks.filter(m => m.agent !== agentId).length,
-      resonantMarks: resonant,
+      density: otherMarks.length,
+      meaningfulMarks,
       totalMarks: marks.length,
     });
   } catch { /* tab might be closed */ }
 
-  // If resonant marks found, fire LLM proximity check
-  if (resonant.length > 0) {
+  // If meaningful marks found, fire LLM proximity check
+  if (meaningfulMarks.length > 0) {
     const apiKey = await getApiKey();
     if (apiKey) {
-      const result = await llmProximityCheck(apiKey, url, 'present', resonant);
+      const result = await llmProximityCheck(apiKey, url, 'present', meaningfulMarks);
       if (result?.should_notify) {
         try {
           await chrome.tabs.sendMessage(tabId, {
             type: 'PROXIMITY_MATCH',
             reason: result.reason,
             agents: result.compatible_agents || [],
-            marks: resonant,
+            marks: meaningfulMarks,
           });
         } catch { /* tab might be closed */ }
       }
@@ -496,9 +493,9 @@ async function startKernel(tabId, url, pageSnapshot) {
   // Do an immediate poll
   pollCycle(tabId);
 
-  // Beach: leave mark and check for past visitors
-  beachOnPageLoad(tabId, url, urlHash, anonId).catch(e => {
-    console.warn('[beach] page load error:', e.message);
+  // Beach: read past visitors (no mark left — marks only on intentional action)
+  beachReadOnly(tabId, url, urlHash, anonId).catch(e => {
+    console.warn('[beach] read error:', e.message);
   });
 }
 
@@ -562,6 +559,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (kernel) {
           kernel.block.pending_liquid = msg.text;
           writeBlock(kernel.urlHash, kernel.anonId, kernel.block);
+          // Beach: intentional mark with committed text
+          leaveMark(kernel.urlHash, kernel.anonId, msg.text.slice(0, 200));
         }
       }
       sendResponse({ ok: true });
