@@ -446,8 +446,48 @@ function createWidget() {
   let isOpen = false;
   let liquidItems = [];
   let solidItems = [];
+  let beachMarks = [];
 
   const zones = ['#zone-vapor-input', '#zone-vapor-reply', '#zone-liquid', '#zone-solid'];
+
+  function timeAgo(isoDate) {
+    const diff = Date.now() - new Date(isoDate).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 60) return mins + 'm ago';
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return hours + 'h ago';
+    const days = Math.floor(hours / 24);
+    return days + 'd ago';
+  }
+
+  function escapeHtml(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  function renderBeachMarks() {
+    const solidEl = $('#solid-content');
+    if (beachMarks.length === 0 && solidItems.length === 0) {
+      solidEl.innerHTML =
+        '<div style="font-size:11px;color:rgba(128,128,128,0.5);text-align:center;padding:12px 0;">No activity at this page yet</div>';
+      return;
+    }
+    let html = '';
+    if (beachMarks.length > 0) {
+      html += '<div style="font-size:10px;font-weight:600;color:rgba(128,128,128,0.6);margin-bottom:4px;">Others looked for:</div>';
+      beachMarks.forEach(m => {
+        html += '<div class="card card-peer">' +
+          '<span style="font-size:10px;opacity:0.5;">' + timeAgo(m.t) + '</span> ' +
+          escapeHtml(m.s) +
+          '</div>';
+      });
+    }
+    solidItems.forEach(s => {
+      html += '<div class="card">' + escapeHtml(s) + '</div>';
+    });
+    solidEl.innerHTML = html;
+  }
 
   // ============================================================
   // DRAG LOGIC — ported from ConstructionButton.tsx lines 83-108
@@ -520,7 +560,10 @@ function createWidget() {
     zones.forEach(sel => $(sel).classList.toggle('visible', isOpen));
     queryBtn.classList.toggle('visible', isOpen);
     submitBtn.classList.toggle('visible', isOpen);
-    if (isOpen) setTimeout(() => input.focus(), 100);
+    if (isOpen) {
+      setTimeout(() => input.focus(), 100);
+      renderBeachMarks();
+    }
   }
 
   mainBtn.addEventListener('click', () => {
@@ -642,23 +685,17 @@ function createWidget() {
             () => {
               // After confirmation/execution, show solid result
               solidItems.push(r?.solid || 'Done.');
-              $('#solid-content').innerHTML = solidItems.map(s =>
-                `<div class="card">${s}</div>`
-              ).join('');
+              renderBeachMarks();
             },
             () => {
               // User skipped — show what was skipped
               solidItems.push((r?.solid || 'Done.') + ' (actions skipped)');
-              $('#solid-content').innerHTML = solidItems.map(s =>
-                `<div class="card">${s}</div>`
-              ).join('');
+              renderBeachMarks();
             },
           );
         } else {
           solidItems.push(r?.solid || 'Done.');
-          $('#solid-content').innerHTML = solidItems.map(s =>
-            `<div class="card">${s}</div>`
-          ).join('');
+          renderBeachMarks();
         }
         break;
       }
@@ -670,6 +707,8 @@ function createWidget() {
         } else {
           dot.style.display = 'none';
         }
+        beachMarks = msg.meaningfulMarks || [];
+        if (isOpen) renderBeachMarks();
         break;
       }
       case 'PROXIMITY_MATCH': {
