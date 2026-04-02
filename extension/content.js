@@ -563,6 +563,8 @@ function createWidget() {
     if (isOpen) {
       setTimeout(() => input.focus(), 100);
       renderBeachMarks();
+      // Button press = intentional presence mark
+      chrome.runtime.sendMessage({ type: 'WIDGET_OPENED' });
     }
   }
 

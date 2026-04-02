@@ -531,13 +531,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true; // async startKernel
     }
 
+    case 'WIDGET_OPENED': {
+      // Button press = lightest intentional gesture. Mark "present".
+      if (tabId) {
+        const kernel = kernels.get(tabId);
+        if (kernel) {
+          leaveMark(kernel.urlHash, kernel.anonId, 'present');
+        }
+      }
+      sendResponse({ ok: true });
+      break;
+    }
+
     case 'QUERY_SOFT': {
       if (tabId) {
-        // Beach: update mark with actual purpose
-        const qKernel = kernels.get(tabId);
-        if (qKernel) {
-          leaveMark(qKernel.urlHash, qKernel.anonId, msg.query.slice(0, 200));
-        }
+        // Vapor is private — no beach mark for soft-LLM queries
         querySoft(tabId, msg.query).then(result => {
           console.log('[xstream] soft response:', result?.text?.slice(0, 80));
           chrome.tabs.sendMessage(tabId, { type: 'SOFT_RESPONSE', result });
