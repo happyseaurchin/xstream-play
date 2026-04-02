@@ -159,3 +159,58 @@ export function importGameState(json: string): {
     blocks: data.blocks,
   };
 }
+
+// ── Cloud saves (Supabase) ──
+
+import { getSupabase } from '../lib/supabase';
+
+export async function cloudSave(gameId: string, block: Block): Promise<{ ok: boolean; error?: string }> {
+  const sb = getSupabase();
+  if (!sb) return { ok: false, error: 'Supabase not configured' };
+  const { data: { user } } = await sb.auth.getUser();
+  if (!user) return { ok: false, error: 'Not signed in' };
+
+  const saveData = JSON.parse(exportGameState(gameId, block));
+
+  const { error } = await sb
+    .from('saved_games')
+    .upsert({
+      user_id: user.id,
+      game_id: gameId,
+      char_id: block.character.id,
+      save_data: saveData,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'user_id,game_id,char_id' });
+
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+export interface CloudSaveEntry {
+  game_id: string;
+  char_id: string;
+  save_data: ExportData;
+  updated_at: string;
+}
+
+export async function cloudList(): Promise<CloudSaveEntry[]> {
+  const sb = getSupabase();
+  if (!sb) return [];
+  const { data } = await sb
+    .from('saved_games')
+    .select('game_id, char_id, save_data, updated_at')
+    .order('updated_at', { ascending: false });
+  return (data ?? []) as CloudSaveEntry[];
+}
+
+export async function cloudLoad(gameId: string, charId: string): Promise<ExportData | null> {
+  const sb = getSupabase();
+  if (!sb) return null;
+  const { data } = await sb
+    .from('saved_games')
+    .select('save_data')
+    .eq('game_id', gameId)
+    .eq('char_id', charId)
+    .single();
+  return data?.save_data as ExportData | null;
+}

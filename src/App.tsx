@@ -24,6 +24,7 @@ import type { SoftLLMResponse } from './types'
 import { listBlocks, hydrateFromSaved } from './kernel/block-store'
 import { loadKernelBlock, loadAllBlocks, exportGameState, importGameState, setCurrentGame, saveBlock } from './kernel/persistence'
 import type { SavedGame } from './kernel/persistence'
+import { SaveModal } from './components/SaveModal'
 import './App.css'
 
 type AppPhase = 'setup' | 'loading' | 'ready'
@@ -64,6 +65,7 @@ export default function App() {
   const [kernelLogs, setKernelLogs] = useState<string[]>([])
   const [accumulatedCount, setAccumulatedCount] = useState(0)
   const [dominoMode, setDominoMode] = useState<'auto' | 'informed' | 'silent'>('auto')
+  const [showSaveModal, setShowSaveModal] = useState(false)
 
   // Zone heights (proportional)
   const [solidHeight, setSolidHeight] = useState(() => window.innerHeight * 0.35)
@@ -449,15 +451,7 @@ export default function App() {
           a.download = `${characterName.toLowerCase()}-${gameCode}.txt`
           a.click()
         }} className="text-muted-foreground hover:text-foreground text-xs" title="Download story">📜</button>
-        <button onClick={() => {
-          if (!kernelRef.current) return
-          const json = exportGameState(gameCode, kernelRef.current.block)
-          const blob = new Blob([json], { type: 'application/json' })
-          const a = document.createElement('a')
-          a.href = URL.createObjectURL(blob)
-          a.download = `xstream-${characterName.toLowerCase()}-${gameCode}.json`
-          a.click()
-        }} className="text-muted-foreground hover:text-foreground text-xs" title="Export save">💾</button>
+        <button onClick={() => setShowSaveModal(true)} className="text-muted-foreground hover:text-foreground text-xs" title="Save game">💾</button>
         <button onClick={handleReset} className="text-muted-foreground hover:text-foreground text-xs" title="Leave game">🚪</button>
       </div>
 
@@ -525,6 +519,23 @@ export default function App() {
         isQuerying={softLoading}
         placeholder="What do you do?"
       />
+
+      {/* Save modal */}
+      {showSaveModal && kernelRef.current && (
+        <SaveModal
+          gameCode={gameCode}
+          block={kernelRef.current.block}
+          onClose={() => setShowSaveModal(false)}
+          onFileSave={() => {
+            const json = exportGameState(gameCode, kernelRef.current!.block)
+            const blob = new Blob([json], { type: 'application/json' })
+            const a = document.createElement('a')
+            a.href = URL.createObjectURL(blob)
+            a.download = `xstream-${characterName.toLowerCase()}-${gameCode}.json`
+            a.click()
+          }}
+        />
+      )}
     </div>
   )
 }
