@@ -65,7 +65,7 @@ export function createBlock(
     status: 'idle',
     last_seen: {},
 
-    spatial_address: '111',  // default: Salted Dog main room
+    spatial_address: '111',  // default: Salty Dog main room
     familiarity: {},
     event_log: [],
 

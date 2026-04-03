@@ -22,6 +22,7 @@ import type { SolidBlock, LiquidCard } from './types/xstream'
 import type { Face } from './types/xstream'
 import type { SoftLLMResponse } from './types'
 import { listBlocks, getBlock, hydrateFromSaved } from './kernel/block-store'
+import { bsp, type SpindleResult } from './kernel/bsp'
 import { loadKernelBlock, loadAllBlocks, exportGameState, importGameState, setCurrentGame, saveBlock } from './kernel/persistence'
 import type { SavedGame } from './kernel/persistence'
 import { SaveModal } from './components/SaveModal'
@@ -161,6 +162,22 @@ export default function App() {
     const charId = generateCharId()
     const block = createBlock(charId, name, state || `${name}. A newcomer.`, scene, key)
 
+    // Seed presence: walk spatial block to get location, plant a starting event
+    const spatialBlock = getBlock('spatial-thornkeep')
+    if (spatialBlock) {
+      const result = bsp(spatialBlock, block.spatial_address)
+      if (result.mode === 'spindle') {
+        const nodes = (result as SpindleResult).nodes
+        // Use the building name (second-to-last) for the presence statement
+        const building = nodes.length >= 2 ? nodes[nodes.length - 2].text.split('—')[0].trim() : 'the room'
+        const room = nodes.length >= 1 ? nodes[nodes.length - 1].text.split('—')[0].trim() : ''
+        const where = room ? `the ${room.toLowerCase()} of ${building}` : building
+        const presence = `${name} is in ${where}.`
+        block.event_log.push({ S: block.spatial_address, T: 0, I: name, text: presence, type: 'state_change' })
+        block.accumulated.push({ source: 'world', events: [presence] })
+      }
+    }
+
     const kernel = new Kernel(block, code, makeKernelCallbacks())
     kernelRef.current = kernel
     kernel.start()
@@ -189,11 +206,11 @@ export default function App() {
       }
 
       const charId = generateCharId()
-      const block = createBlock(charId, name, state || `${name}. A newcomer.`, scene, key)
+      const desc = state || 'A figure.'
+      const block = createBlock(charId, name, desc, scene, key)
 
-      const kernel = new Kernel(block, code, makeKernelCallbacks())
-      kernelRef.current = kernel
-      kernel.start()
+      // Seed arrival: joiner enters the scene
+      block.pending_liquid = `${desc} ${name} enters.`
 
       setStatusMessage('')
       setPhase('ready')

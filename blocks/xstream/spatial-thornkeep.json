@@ -3,12 +3,12 @@
   "1": {
     "_": "Thornkeep — a village of two hundred souls built into the cliff face above a natural harbour. Stone buildings, slate roofs, narrow streets that switchback up the slope. The harbour below brings trade; the cliff above brings wind.",
     "1": {
-      "_": "The Salted Dog — Thornkeep's only tavern, built into the base of the cliff where the main street meets the harbour road. Three hundred years old. Stone walls two feet thick. A place where fishers, traders, and guards share warmth against the Atlantic weather.",
+      "_": "The Salty Dog — Thornkeep's only tavern, built into the base of the cliff where the main street meets the harbour road. Three hundred years old. Stone walls two feet thick. A place where fishers, traders, and guards share warmth against the Atlantic weather.",
       "1": {
         "_": {
           "_": "Main room — low ceiling, stone hearth at the far wall, bar of dark oak running the length of the right side. Six tables, none matching. The floor is flagstone worn smooth by centuries of boots. A wooden partition screens the corner table from the rest of the room. The front door is heavy oak with iron studs, visible from the bar and from behind the bar but not from behind the partition. Whale-oil lamps hang from iron hooks. The fire is always lit.",
           "1": {
-            "_": "The main room of the Salted Dog. Thornkeep's only tavern. Open to anyone with coin.",
+            "_": "The main room of the Salty Dog. Thornkeep's only tavern. Open to anyone with coin.",
             "1": {
               "_": "Essa runs this room. Has done for thirty years. Drawing a weapon inside loses your welcome — and losing your welcome at the only tavern in Thornkeep is a real consequence. Off-duty guards unbuckle sword belts as custom.",
               "1": "The wooden partition hides the corner table from the front door — Essa uses this for private meetings with traders she trusts. The trapdoor behind the bar connects to a lower storage cellar with a hatch that also opens into the back room."
@@ -35,13 +35,13 @@
       }
     },
     "2": {
-      "_": "The harbour road — runs from the harbour steps up through the village to the cliff path above. The Salted Dog sits where harbour road meets the main street. Cobbled, narrow, slippery in rain. Whale-oil lamps at intervals.",
+      "_": "The harbour road — runs from the harbour steps up through the village to the cliff path above. The Salty Dog sits where harbour road meets the main street. Cobbled, narrow, slippery in rain. Whale-oil lamps at intervals.",
       "1": "The harbour steps — cut into the rock, leading down to the harbour proper. Slippery with salt spray. Fishing boats moored below, nets hanging to dry on frames.",
       "2": "The market corner — where harbour road widens briefly. Three permanent stalls: a chandler, a net-mender, a fishmonger who sells whatever came in that day. Closed after dark.",
       "3": "The cliff path — continues up from the village toward the headland. Exposed to weather. The lighthouse is visible from here on clear days. Few go up at night."
     },
     "3": {
-      "_": "The guard station — a stone building at the top of the harbour road where it enters the village proper. Two guards on rotation. They see everyone who comes up from the harbour. Off-duty guards frequently found at the Salted Dog.",
+      "_": "The guard station — a stone building at the top of the harbour road where it enters the village proper. Two guards on rotation. They see everyone who comes up from the harbour. Off-duty guards frequently found at the Salty Dog.",
       "1": "The watch room — a single room with a table, two chairs, a weapons rack, and a window overlooking the harbour road. A logbook records arrivals and departures.",
       "2": "The lockup — a cell behind the watch room. Iron door, stone walls, no window. Rarely used. Currently empty."
     }

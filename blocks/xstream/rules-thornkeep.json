@@ -2,7 +2,7 @@
   "_": {
     "_": "Rules constraining action on the Broken Coast. Perception is physical: vision requires line of sight and sufficient light, sound carries through stone but muffled, smell and temperature carry through open spaces, touch and proprioception are immediate. Conflict resolves by narrative judgment — competence, position, physical reality determine outcomes honestly. One commit covers one natural beat of action: seconds in a fight, a minute in conversation, longer for travel. No turns, no initiative order — commit timing is itself a meaningful choice.",
     "1": {
-      "_": "Perception detail — vision requires line of sight and sufficient light. The wooden partition in the Salted Dog blocks vision to the corner table. The back room is not visible from the main room unless the curtain is open.",
+      "_": "Perception detail — vision requires line of sight and sufficient light. The wooden partition in the Salty Dog blocks vision to the corner table. The back room is not visible from the main room unless the curtain is open.",
       "1": "Sound carries through stone walls but is muffled. Conversation in the back room is inaudible from the main room unless raised to shouting. The creak of the stairs is audible from the back room and faintly from the main room.",
       "2": "Smell and temperature carry through open spaces. The draught from the front door reaches the hearth. Smoke from the fire permeates everything. A new smell — wet wool, perfume, blood — is noticeable to anyone in the room.",
       "3": "Touch and proprioception are immediate. You feel the temperature change when the door opens. You feel someone grab your arm. You feel the floor vibrate when something heavy falls nearby."
@@ -21,7 +21,7 @@
   "1": {
     "_": "Thornkeep village norms — a community of two hundred where social consequences outweigh legal authority. Guards patrol in pairs but the village self-polices through reputation, exclusion, and thirty years of memory. Hostility to strangers harms trade; trade sustains the village.",
     "1": {
-      "_": "The Salted Dog — Essa's house, Essa's rules. Drawing a weapon inside is a serious transgression. The barkeeper has authority to eject anyone and has done so for thirty years. Guards who cause trouble inside lose their welcome, and losing your welcome at the only tavern in Thornkeep is a real consequence.",
+      "_": "The Salty Dog — Essa's house, Essa's rules. Drawing a weapon inside is a serious transgression. The barkeeper has authority to eject anyone and has done so for thirty years. Guards who cause trouble inside lose their welcome, and losing your welcome at the only tavern in Thornkeep is a real consequence.",
       "1": "Weapons may be carried but not drawn. Sword belts unbuckled and placed on furniture is the local custom for off-duty guards — it signals 'not working, not threatening.'",
       "2": "Strangers are watched but not confronted unless they cause trouble first. Thornkeep depends on trade; hostility to strangers harms the village. The barkeeper makes first contact, not guards.",
       "3": "The back room is not public but not forbidden. Entering without invitation from the barkeeper draws a look and a question, not violence."
@@ -32,7 +32,7 @@
       "2": "The market corner is public by day, empty by night. Goods left unattended are not stolen — Thornkeep is small enough that theft has social consequences that outweigh the gain."
     },
     "3": {
-      "_": "The guard station — primary authority point for Thornkeep. Guards log all arrivals and departures. The watch room overlooks the harbour road. Off-duty guards frequently found at the Salted Dog.",
+      "_": "The guard station — primary authority point for Thornkeep. Guards log all arrivals and departures. The watch room overlooks the harbour road. Off-duty guards frequently found at the Salty Dog.",
       "1": "The lockup is rarely used. Confinement is a last resort in a village this small — social pressure is the usual enforcement mechanism."
     }
   },
