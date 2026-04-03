@@ -1,14 +1,15 @@
 /**
  * xstream service worker — the kernel
  *
- * Adapted from xstream-play/src/kernel/kernel.ts
- * Runs in Chrome extension background. No CORS restrictions.
- * Sovereign: one kernel per browser, writes only its own block.
- * Coordination is stigmergic via relay polling.
+ * A thin shell that follows stars. Agent blocks define behaviour.
+ * BSP walks compose prompts from blocks. The kernel just follows.
  *
  * RELAY KEYING: sha256(canonical_url) replaces game codes.
  * Every page is an implicit coordination space.
  */
+
+import { bsp, collectUnderscore } from './bsp.js';
+import { buildPageBlock, buildBeachBlock } from './blocks-dynamic.js';
 
 // ============================================================
 // CONFIG
@@ -124,36 +125,118 @@ async function readPeerBlocks(urlHash, myId) {
 }
 
 // ============================================================
-// SOFT-LLM — user's private advisor
+// BLOCK LOADING — agent blocks define behaviour
 // ============================================================
 
-function buildSoftPrompt(query, pageSnapshot, peerContext) {
-  return `You are xstream, a page-aware assistant running as a browser overlay.
+const blockCache = new Map(); // name → { block, fetchedAt }
+const BLOCK_TTL = 5 * 60 * 1000; // 5 minutes
 
-CURRENT PAGE CONTEXT:
-${pageSnapshot}
+// Agent blocks bundled with extension (loaded via fetch from extension URL)
+const BUNDLED_BLOCKS = {
+  'visitor-soft-agent': 'blocks/visitor-soft-agent.json',
+  'visitor-medium-agent': 'blocks/visitor-medium-agent.json',
+};
 
-${peerContext ? `OTHER USERS ON THIS PAGE:\n${peerContext}\n` : ''}
+// Dynamic blocks built at runtime (not fetched)
+const DYNAMIC_RESOLVERS = {
+  'page-context': (kernel) => buildPageBlock(kernel.pageSnapshot),
+  'beach-context': (kernel) => buildBeachBlock(kernel.beachMarks || []),
+};
 
-USER QUERY: ${query}
+async function loadBlock(name, kernel) {
+  // Dynamic blocks — built from runtime state
+  if (DYNAMIC_RESOLVERS[name]) {
+    return DYNAMIC_RESOLVERS[name](kernel);
+  }
 
-Respond with a JSON object:
-{
-  "text": "your response to the user",
-  "softType": "info|refine|clarify|action",
-  "tools": [
-    {
-      "name": "tool_name",
-      "description": "what it does",
-      "selector": "CSS selector for the target element"
+  // Check cache
+  const cached = blockCache.get(name);
+  if (cached && Date.now() - cached.fetchedAt < BLOCK_TTL) {
+    return cached.block;
+  }
+
+  // Bundled blocks — fetch from extension directory
+  if (BUNDLED_BLOCKS[name]) {
+    try {
+      const url = chrome.runtime.getURL(BUNDLED_BLOCKS[name]);
+      const res = await fetch(url);
+      if (res.ok) {
+        const block = await res.json();
+        blockCache.set(name, { block, fetchedAt: Date.now() });
+        return block;
+      }
+    } catch (e) {
+      console.warn('[blocks] failed to load', name, e.message);
     }
-  ]
+  }
+
+  return null;
 }
 
-The tools array describes actions you COULD take on this page.
-Only include tools if the user's query implies wanting to act on the page.
-Keep your response concise — this renders in a small overlay.`;
+// ============================================================
+// PROMPT COMPOSITION — BSP walks of agent blocks
+// The agent block says what it needs. The kernel follows stars.
+// ============================================================
+
+async function buildPromptFromBlock(agentBlockName, kernel, userMessage) {
+  const agentBlock = await loadBlock(agentBlockName, kernel);
+  if (!agentBlock) return userMessage; // fallback: raw message
+
+  const sections = [];
+
+  // 1. Agent block's semantic text (role description)
+  const star = bsp(agentBlock, 0, '*');
+  if (star.semantic) sections.push(star.semantic);
+
+  // 2. Follow star references — load and walk each referenced block
+  if (star.hidden) {
+    for (const [key, name] of Object.entries(star.hidden).sort()) {
+      const refBlock = await loadBlock(name, kernel);
+      if (!refBlock) continue;
+
+      // Collect all text from the referenced block (depth-first)
+      const refTexts = [];
+      function collectAll(node) {
+        if (typeof node === 'string') { refTexts.push(node); return; }
+        if (typeof node !== 'object' || node === null) return;
+        const us = collectUnderscore(node);
+        if (us) refTexts.push(us);
+        for (const k of '123456789') {
+          if (k in node) collectAll(node[k]);
+        }
+      }
+      collectAll(refBlock);
+      if (refTexts.length > 0) sections.push(refTexts.join('\n'));
+    }
+  }
+
+  // 3. Walk agent block branches (rules, style, format) — dir at each
+  for (const d of '123456789') {
+    if (!(d in agentBlock)) continue;
+    const branch = agentBlock[d];
+    const texts = [];
+    function collectTexts(node) {
+      if (typeof node === 'string') { texts.push(node); return; }
+      if (typeof node !== 'object' || node === null) return;
+      const us = collectUnderscore(node);
+      if (us) texts.push(us);
+      for (const k of '123456789') {
+        if (k in node) collectTexts(node[k]);
+      }
+    }
+    collectTexts(branch);
+    if (texts.length > 0) sections.push(texts.join(' '));
+  }
+
+  // 4. User message
+  sections.push(`\nUSER: ${userMessage}`);
+
+  return sections.join('\n\n');
 }
+
+// ============================================================
+// SOFT-LLM — user's private advisor (block-driven)
+// ============================================================
 
 async function querySoft(tabId, query) {
   const kernel = kernels.get(tabId);
@@ -162,62 +245,20 @@ async function querySoft(tabId, query) {
   const apiKey = await getApiKey();
   if (!apiKey) return { error: 'No API key configured' };
 
-  const peerContext = kernel.peerLiquids?.length > 0
-    ? kernel.peerLiquids.map(p => `${p.name}: ${p.liquid}`).join('\n')
-    : '';
-
-  const prompt = buildSoftPrompt(query, kernel.pageSnapshot, peerContext);
+  const prompt = await buildPromptFromBlock('visitor-soft-agent', kernel, query);
 
   try {
     const { text } = await callClaude(apiKey, DEFAULT_MODEL, prompt, 512);
-    const parsed = JSON.parse(cleanJson(text));
-    return parsed;
+    // Soft agent returns plain text (per block: no JSON, no schema)
+    return { text: text.trim(), softType: 'info', tools: [] };
   } catch (e) {
     return { text: `Error: ${e.message}`, softType: 'info', tools: [] };
   }
 }
 
 // ============================================================
-// MEDIUM-LLM — commit resolution
+// MEDIUM-LLM — commit resolution (block-driven)
 // ============================================================
-
-function buildMediumPrompt(liquid, pageSnapshot, peerContext, tools) {
-  return `You are the medium-LLM in xstream, resolving a user's committed intent into action.
-
-PAGE CONTEXT:
-${pageSnapshot}
-
-${peerContext ? `PEER ACTIVITY:\n${peerContext}\n` : ''}
-
-AVAILABLE TOOLS (CSS selectors on the page):
-${JSON.stringify(tools || [], null, 2)}
-
-USER'S COMMITTED INTENT: ${liquid}
-
-Respond with a JSON object:
-{
-  "solid": "description of what was done — shown to user and peers",
-  "actions": [
-    {
-      "type": "click|fill|extract|navigate",
-      "selector": "CSS selector",
-      "value": "for fill actions",
-      "description": "human-readable description of what this action does"
-    }
-  ],
-  "events": ["event descriptions for peer discovery"],
-  "domino": [
-    {
-      "target": "peer_id or 'all'",
-      "context": "why this peer should respond"
-    }
-  ]
-}
-
-SAFETY: Every action MUST include a "description" field so the user can confirm before execution.
-If the intent is informational, actions array can be empty.
-Events are deposited for other users' kernels to discover.`;
-}
 
 async function commitMedium(tabId, liquid) {
   const kernel = kernels.get(tabId);
@@ -226,11 +267,7 @@ async function commitMedium(tabId, liquid) {
   const apiKey = await getApiKey();
   if (!apiKey) return { error: 'No API key configured' };
 
-  const peerContext = kernel.peerLiquids?.length > 0
-    ? kernel.peerLiquids.map(p => `${p.name}: ${p.liquid}`).join('\n')
-    : '';
-
-  const prompt = buildMediumPrompt(liquid, kernel.pageSnapshot, peerContext, kernel.tools);
+  const prompt = await buildPromptFromBlock('visitor-medium-agent', kernel, liquid);
 
   try {
     const { text } = await callClaude(apiKey, MEDIUM_MODEL, prompt, 1024);
@@ -388,6 +425,10 @@ async function beachReadOnly(tabId, url, urlHash, agentId) {
   const meaningfulMarks = otherMarks.filter(m =>
     m.s && m.s !== 'present' && m.s.length > 3
   );
+
+  // Store on kernel for dynamic block resolver
+  const kernel = kernels.get(tabId);
+  if (kernel) kernel.beachMarks = otherMarks;
 
   // Notify content script
   try {
