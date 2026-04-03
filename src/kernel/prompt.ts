@@ -92,29 +92,39 @@ function buildSceneFromStars(block: Block, peerBlocks: Block[]): string {
           }
         }
 
-        // S×rules: follow block reference (hidden key "3" or any string ref)
+        // Follow block references in spatial hidden directory
+        const npcLines: string[] = [];
         for (const sk of Object.keys(spatialStar.hidden).sort()) {
           const ref = spatialStar.hidden[sk];
           if (typeof ref !== 'string') continue;
-          const rulesBlock = getBlock(ref);
-          if (!rulesBlock) continue;
+          const refBlock = getBlock(ref);
+          if (!refBlock) continue;
 
-          // Spindle at same spatial address → location-specific rules
-          const rulesSpindle = bsp(rulesBlock as PscaleNode, addr) as SpindleResult;
-          const ruleLines = rulesSpindle.nodes.map(n => n.text);
+          if (ref.startsWith('character-')) {
+            // NPC character block: root spindle gives appearance, branch 2 gives identity
+            // Gated by familiarity — same as peer characters
+            const rootText = collectUnderscore(refBlock as PscaleNode);
+            if (rootText) npcLines.push(rootText);
+          } else {
+            // Rules or other world block
+            const rulesSpindle = bsp(refBlock as PscaleNode, addr) as SpindleResult;
+            const ruleLines = rulesSpindle.nodes.map(n => n.text);
 
-          // Hidden directory at rules root → universal detail (perception, conflict, time)
-          const rulesRootStar = bsp(rulesBlock as PscaleNode, 0, '*') as StarResult;
-          if (rulesRootStar.hidden) {
-            for (const rk of Object.keys(rulesRootStar.hidden).sort()) {
-              const detail = rulesRootStar.hidden[rk];
-              if (detail && typeof detail === 'object') ruleLines.push(...flattenNode(detail));
+            const rulesRootStar = bsp(refBlock as PscaleNode, 0, '*') as StarResult;
+            if (rulesRootStar.hidden) {
+              for (const rk of Object.keys(rulesRootStar.hidden).sort()) {
+                const detail = rulesRootStar.hidden[rk];
+                if (detail && typeof detail === 'object') ruleLines.push(...flattenNode(detail));
+              }
+            }
+
+            if (ruleLines.length > 0) {
+              sections.push(`RULES IN EFFECT:\n${ruleLines.map(r => `- ${r}`).join('\n')}`);
             }
           }
-
-          if (ruleLines.length > 0) {
-            sections.push(`RULES IN EFFECT:\n${ruleLines.map(r => `- ${r}`).join('\n')}`);
-          }
+        }
+        if (npcLines.length > 0) {
+          sections.push(`ALSO PRESENT (NPCs):\n${npcLines.map(n => `- ${n}`).join('\n')}`);
         }
       }
     }
