@@ -159,17 +159,22 @@ async function loadBlock(name, kernel) {
   if (BUNDLED_BLOCKS[name]) {
     try {
       const url = chrome.runtime.getURL(BUNDLED_BLOCKS[name]);
+      console.log('[blocks] fetching', name, 'from', url);
       const res = await fetch(url);
       if (res.ok) {
         const block = await res.json();
         blockCache.set(name, { block, fetchedAt: Date.now() });
+        console.log('[blocks] loaded', name, 'keys:', Object.keys(block).join(','));
         return block;
+      } else {
+        console.warn('[blocks] fetch failed', name, res.status);
       }
     } catch (e) {
       console.warn('[blocks] failed to load', name, e.message);
     }
   }
 
+  console.warn('[blocks] block not found:', name);
   return null;
 }
 
@@ -180,7 +185,11 @@ async function loadBlock(name, kernel) {
 
 async function buildPromptFromBlock(agentBlockName, kernel, userMessage) {
   const agentBlock = await loadBlock(agentBlockName, kernel);
-  if (!agentBlock) return userMessage; // fallback: raw message
+  if (!agentBlock) {
+    console.warn('[prompt] agent block not found, using fallback:', agentBlockName);
+    // Fallback: basic prompt with page context
+    return `You are a helpful page-aware assistant.\n\nPAGE: ${kernel.pageSnapshot?.slice(0, 500) || 'unknown'}\n\nUSER: ${userMessage}`;
+  }
 
   const sections = [];
 
