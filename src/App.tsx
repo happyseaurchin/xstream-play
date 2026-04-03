@@ -264,6 +264,10 @@ export default function App() {
     }
   }, [makeKernelCallbacks])
 
+  // --- Edit target/address (author/designer shelf) ---
+  const [editTarget, setEditTarget] = useState('spatial-thornkeep')
+  const [editAddress, setEditAddress] = useState('111')
+
   // --- ASK (Soft — direct call, no kernel needed) ---
   const handleQuery = useCallback(async (text: string) => {
     if (!text.trim() || !kernelRef.current) return
@@ -346,10 +350,6 @@ export default function App() {
       kernelRef.current.block.trigger.domino_mode = next
     }
   }, [dominoMode])
-
-  // --- Edit target/address (author/designer shelf) ---
-  const [editTarget, setEditTarget] = useState('spatial-thornkeep')
-  const [editAddress, setEditAddress] = useState('111')
 
   // --- Commit mode toggle (all faces) ---
   const [commitMode, setCommitMode] = useState<'auto' | 'manual' | 'informed'>('manual')
