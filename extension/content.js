@@ -509,19 +509,23 @@ function createWidget() {
   }
 
   // Load saved position
-  chrome.storage.local.get(POS_KEY, (result) => {
-    if (result[POS_KEY]) {
-      try {
-        const saved = JSON.parse(result[POS_KEY]);
-        position.x = Math.max(0, Math.min(window.innerWidth - 56, saved.x));
-        position.y = Math.max(0, Math.min(window.innerHeight - 56, saved.y));
-      } catch { /* use default */ }
-    }
-    applyPosition();
-  });
+  try {
+    chrome.storage.local.get(POS_KEY, (result) => {
+      if (chrome.runtime.lastError) { applyPosition(); return; }
+      if (result[POS_KEY]) {
+        try {
+          const saved = JSON.parse(result[POS_KEY]);
+          position.x = Math.max(0, Math.min(window.innerWidth - 56, saved.x));
+          position.y = Math.max(0, Math.min(window.innerHeight - 56, saved.y));
+        } catch { /* use default */ }
+      }
+      applyPosition();
+    });
+  } catch { applyPosition(); }
 
   function savePosition() {
-    chrome.storage.local.set({ [POS_KEY]: JSON.stringify(position) });
+    try { chrome.storage.local.set({ [POS_KEY]: JSON.stringify(position) }); }
+    catch { /* extension context may be invalidated */ }
   }
 
   compass.addEventListener('mousedown', (e) => {
