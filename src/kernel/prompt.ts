@@ -92,42 +92,47 @@ function buildSceneFromStars(block: Block, peerBlocks: Block[]): string {
           }
         }
 
-        // Follow block references in spatial hidden directory
-        const npcLines: string[] = [];
+        // Follow block references in spatial hidden directory (rules, etc)
         for (const sk of Object.keys(spatialStar.hidden).sort()) {
           const ref = spatialStar.hidden[sk];
           if (typeof ref !== 'string') continue;
           const refBlock = getBlock(ref);
           if (!refBlock) continue;
 
-          if (ref.startsWith('character-')) {
-            // NPC character block: root spindle gives appearance, branch 2 gives identity
-            // Gated by familiarity — same as peer characters
-            const rootText = collectUnderscore(refBlock as PscaleNode);
-            if (rootText) npcLines.push(rootText);
-          } else {
-            // Rules or other world block
-            const rulesSpindle = bsp(refBlock as PscaleNode, addr) as SpindleResult;
-            const ruleLines = rulesSpindle.nodes.map(n => n.text);
+          const rulesSpindle = bsp(refBlock as PscaleNode, addr) as SpindleResult;
+          const ruleLines = rulesSpindle.nodes.map(n => n.text);
 
-            const rulesRootStar = bsp(refBlock as PscaleNode, 0, '*') as StarResult;
-            if (rulesRootStar.hidden) {
-              for (const rk of Object.keys(rulesRootStar.hidden).sort()) {
-                const detail = rulesRootStar.hidden[rk];
-                if (detail && typeof detail === 'object') ruleLines.push(...flattenNode(detail));
-              }
-            }
-
-            if (ruleLines.length > 0) {
-              sections.push(`RULES IN EFFECT:\n${ruleLines.map(r => `- ${r}`).join('\n')}`);
+          const rulesRootStar = bsp(refBlock as PscaleNode, 0, '*') as StarResult;
+          if (rulesRootStar.hidden) {
+            for (const rk of Object.keys(rulesRootStar.hidden).sort()) {
+              const detail = rulesRootStar.hidden[rk];
+              if (detail && typeof detail === 'object') ruleLines.push(...flattenNode(detail));
             }
           }
-        }
-        if (npcLines.length > 0) {
-          sections.push(`ALSO PRESENT (NPCs):\n${npcLines.map(n => `- ${n}`).join('\n')}`);
+
+          if (ruleLines.length > 0) {
+            sections.push(`RULES IN EFFECT:\n${ruleLines.map(r => `- ${r}`).join('\n')}`);
+          }
         }
       }
     }
+  }
+
+  // NPC handshake: scan character blocks for matching spatial address
+  const npcLines: string[] = [];
+  for (const blockName of listBlocks()) {
+    if (!blockName.startsWith('character-')) continue;
+    const npcBlock = getBlock(blockName);
+    if (!npcBlock) continue;
+    // Star walk at root — hidden key "1" is the NPC's spatial address
+    const npcStar = bsp(npcBlock as PscaleNode, 0, '*') as StarResult;
+    if (!npcStar.hidden || npcStar.hidden['1'] !== addr) continue;
+    // Handshake: NPC's address matches player's address
+    const desc = collectUnderscore(npcBlock as PscaleNode);
+    if (desc) npcLines.push(desc);
+  }
+  if (npcLines.length > 0) {
+    sections.push(`ALSO PRESENT (NPCs):\n${npcLines.map(n => `- ${n}`).join('\n')}`);
   }
 
   // Runtime data: characters present (from peer blocks)
