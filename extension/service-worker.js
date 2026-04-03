@@ -196,16 +196,16 @@ async function buildPromptFromBlock(agentBlockName, kernel, userMessage) {
 
       // Collect all text from the referenced block (depth-first)
       const refTexts = [];
-      function collectAll(node) {
+      const collectRef = (node) => {
         if (typeof node === 'string') { refTexts.push(node); return; }
         if (typeof node !== 'object' || node === null) return;
         const us = collectUnderscore(node);
         if (us) refTexts.push(us);
         for (const k of '123456789') {
-          if (k in node) collectAll(node[k]);
+          if (k in node) collectRef(node[k]);
         }
-      }
-      collectAll(refBlock);
+      };
+      collectRef(refBlock);
       if (refTexts.length > 0) sections.push(refTexts.join('\n'));
     }
   }
@@ -215,16 +215,16 @@ async function buildPromptFromBlock(agentBlockName, kernel, userMessage) {
     if (!(d in agentBlock)) continue;
     const branch = agentBlock[d];
     const texts = [];
-    function collectTexts(node) {
+    const collectBranch = (node) => {
       if (typeof node === 'string') { texts.push(node); return; }
       if (typeof node !== 'object' || node === null) return;
       const us = collectUnderscore(node);
       if (us) texts.push(us);
       for (const k of '123456789') {
-        if (k in node) collectTexts(node[k]);
+        if (k in node) collectBranch(node[k]);
       }
-    }
-    collectTexts(branch);
+    };
+    collectBranch(branch);
     if (texts.length > 0) sections.push(texts.join(' '));
   }
 
