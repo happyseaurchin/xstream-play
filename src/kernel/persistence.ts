@@ -162,9 +162,8 @@ export function importGameState(json: string): {
 
 // ── Cloud saves (Supabase) ──
 
-import { getSupabase } from '../lib/supabase';
-
 export async function cloudSave(gameId: string, block: Block): Promise<{ ok: boolean; error?: string }> {
+  const { getSupabase } = await import('../lib/supabase');
   const sb = getSupabase();
   if (!sb) return { ok: false, error: 'Supabase not configured' };
   const { data: { user } } = await sb.auth.getUser();
@@ -194,6 +193,7 @@ export interface CloudSaveEntry {
 }
 
 export async function cloudList(): Promise<CloudSaveEntry[]> {
+  const { getSupabase } = await import('../lib/supabase');
   const sb = getSupabase();
   if (!sb) return [];
   const { data } = await sb
@@ -204,6 +204,7 @@ export async function cloudList(): Promise<CloudSaveEntry[]> {
 }
 
 export async function cloudLoad(gameId: string, charId: string): Promise<ExportData | null> {
+  const { getSupabase } = await import('../lib/supabase');
   const sb = getSupabase();
   if (!sb) return null;
   const { data } = await sb
