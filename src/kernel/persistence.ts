@@ -13,7 +13,6 @@
  */
 
 import type { Block } from './types';
-import { getBlock, listBlocks } from './block-store';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type PscaleNode = string | { [key: string]: any };
@@ -125,12 +124,7 @@ interface ExportData {
   blocks: Record<string, PscaleNode>;
 }
 
-export function exportGameState(gameId: string, block: Block): string {
-  const allBlocks: Record<string, PscaleNode> = {};
-  for (const name of listBlocks()) {
-    const b = getBlock(name);
-    if (b) allBlocks[name] = b;
-  }
+export function exportGameState(gameId: string, block: Block, allBlocks: Record<string, PscaleNode>): string {
   const data: ExportData = {
     version: 2,
     gameId,
@@ -162,14 +156,14 @@ export function importGameState(json: string): {
 
 // ── Cloud saves (Supabase) ──
 
-export async function cloudSave(gameId: string, block: Block): Promise<{ ok: boolean; error?: string }> {
+export async function cloudSave(gameId: string, block: Block, allBlocks: Record<string, PscaleNode>): Promise<{ ok: boolean; error?: string }> {
   const { getSupabase } = await import('../lib/supabase');
   const sb = getSupabase();
   if (!sb) return { ok: false, error: 'Supabase not configured' };
   const { data: { user } } = await sb.auth.getUser();
   if (!user) return { ok: false, error: 'Not signed in' };
 
-  const saveData = JSON.parse(exportGameState(gameId, block));
+  const saveData = JSON.parse(exportGameState(gameId, block, allBlocks));
 
   const { error } = await sb
     .from('saved_games')

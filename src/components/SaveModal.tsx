@@ -11,6 +11,7 @@ import { useState, useEffect } from 'react'
 import { getSupabase } from '../lib/supabase'
 import { signIn, signOut, getUserProfile, type UserProfile } from '../lib/auth'
 import { cloudSave } from '../kernel/persistence'
+import { listBlocks, getBlock } from '../kernel/block-store'
 import type { Block } from '../kernel/types'
 import type { User } from '@supabase/supabase-js'
 
@@ -71,7 +72,9 @@ export function SaveModal({ gameCode, block, onClose, onFileSave }: SaveModalPro
   async function handleCloudSave() {
     setSaving(true)
     setError('')
-    const result = await cloudSave(gameCode, block)
+    const allBlocks: Record<string, unknown> = {}
+    for (const n of listBlocks()) { const b = getBlock(n); if (b) allBlocks[n] = b }
+    const result = await cloudSave(gameCode, block, allBlocks)
     if (!result.ok) {
       setError(result.error ?? 'Save failed')
     } else {

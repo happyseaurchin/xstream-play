@@ -30,18 +30,7 @@ import hardAuthorAgent from '../../blocks/xstream/hard-author-agent.json';
 import hardDesignerAgent from '../../blocks/xstream/hard-designer-agent.json';
 import convergence from '../../blocks/xstream/convergence.json';
 import systemicKernel from '../../blocks/xstream/systemic-kernel.json';
-// Lazy import to break circular dependency (block-store ↔ persistence).
-// persistence.ts imports getBlock/listBlocks from here; we import saveBlock from there.
-// Static import causes TDZ in production bundles.
-let _saveBlock: ((name: string, block: PscaleNode) => void) | null = null;
-function lazySaveBlock(name: string, block: PscaleNode): void {
-  if (!_saveBlock) {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    import('./persistence').then(m => { _saveBlock = m.saveBlock; _saveBlock!(name, block); });
-  } else {
-    _saveBlock(name, block);
-  }
-}
+import { saveBlock } from './persistence';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type PscaleNode = string | { [key: string]: any };
@@ -96,7 +85,7 @@ export function getBlock(name: string): PscaleNode | null {
 
 export function setBlock(name: string, block: PscaleNode): void {
   store.set(name, block);
-  lazySaveBlock(name, block);
+  saveBlock(name, block);
 }
 
 export function listBlocks(): string[] {

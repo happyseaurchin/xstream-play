@@ -21,7 +21,7 @@ import { buildSoftPrompt } from './kernel/soft-prompt'
 import type { SolidBlock, LiquidCard } from './types/xstream'
 import type { Face } from './types/xstream'
 import type { SoftLLMResponse } from './types'
-import { listBlocks, hydrateFromSaved } from './kernel/block-store'
+import { listBlocks, getBlock, hydrateFromSaved } from './kernel/block-store'
 import { loadKernelBlock, loadAllBlocks, exportGameState, importGameState, setCurrentGame, saveBlock } from './kernel/persistence'
 import type { SavedGame } from './kernel/persistence'
 import { SaveModal } from './components/SaveModal'
@@ -527,7 +527,9 @@ export default function App() {
           block={kernelRef.current.block}
           onClose={() => setShowSaveModal(false)}
           onFileSave={() => {
-            const json = exportGameState(gameCode, kernelRef.current!.block)
+            const allBlocks: Record<string, unknown> = {}
+            for (const n of listBlocks()) { const b = getBlock(n); if (b) allBlocks[n] = b }
+            const json = exportGameState(gameCode, kernelRef.current!.block, allBlocks)
             const blob = new Blob([json], { type: 'application/json' })
             const a = document.createElement('a')
             a.href = URL.createObjectURL(blob)
