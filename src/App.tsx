@@ -172,8 +172,8 @@ export default function App() {
         const building = nodes.length >= 2 ? nodes[nodes.length - 2].text.split('—')[0].trim() : 'the room'
         const room = nodes.length >= 1 ? nodes[nodes.length - 1].text.split('—')[0].trim() : ''
         const where = room ? `the ${room.toLowerCase()} of ${building}` : building
-        const presence = `${name} is in ${where}.`
-        block.event_log.push({ S: block.spatial_address, T: 0, I: name, text: presence, type: 'state_change' })
+        const presence = `You are in ${where}.`
+        block.event_log.push({ S: block.spatial_address, T: 0, I: block.character.id, text: presence, type: 'state_change' })
         block.accumulated.push({ source: 'world', events: [presence] })
       }
     }
@@ -210,7 +210,7 @@ export default function App() {
       const block = createBlock(charId, name, desc, scene, key)
 
       // Seed arrival: joiner enters the scene
-      block.pending_liquid = `${desc} ${name} enters.`
+      block.pending_liquid = `${desc} enters.`
 
       setStatusMessage('')
       setPhase('ready')
