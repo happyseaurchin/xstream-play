@@ -1,13 +1,23 @@
 # XStream Play — Project Status
 
-## What Works (26 March 2026)
+## What Works (31 March 2026)
 
-### BSP-walked medium-agent block
-- `src/kernel/bsp.ts` — TypeScript port of the pscale BSP function
-- `blocks/xstream/medium-agent.json` — medium-LLM identity as a pscale block
-- `prompt.ts` walks the block via BSP: role from root spindle, rules from dir(0.1), produce from dir(0.2), format from spindle(0.3)
-- The block contains the **exact tested prompt text** from the Python kernel — same words, same (a)-(d) output format
-- `{name}` placeholders in the block, substituted at prompt assembly time
+### Star operator + BSP-walked agent blocks
+- `src/kernel/bsp.ts` — TypeScript port of pscale BSP function, now includes star operator (`collectUnderscore`, `findHiddenLevel`, `getHiddenDirectory`, `StarResult`)
+- `blocks/xstream/medium-agent.json` — medium-LLM identity as a pscale block, carries star references in hidden directories naming world blocks it needs
+- `blocks/xstream/soft-agent.json` — soft-LLM agent block, carries restricted star references (spatial only, no rules)
+- `prompt.ts` walks medium-agent.json via BSP, follows stars via `block-registry.ts` to walk world blocks (spatial + rules)
+- `soft-prompt.ts` walks soft-agent.json via BSP with restricted star references (spatial only)
+- `block-registry.ts` — kernel follows star references from agent blocks to resolve world block walks; wiring lives in blocks, not code
+- Identity blocks added: Essa, Harren, Kael, plus a template
+- `{name}` placeholders in blocks, substituted at prompt assembly time
+
+### Harness + filmstrip
+- `harness.ts` + `harness.json` — constrains solid output length at the prompt level
+- `api/filmstrip.ts` — logs LLM calls for debugging (currently returns 500 error due to table schema mismatch, needs fixing)
+
+### Block factory defaults
+- `block-factory.ts` defaults: `max_tokens` 2048, `spatial_address` '111'
 
 ### Multiplayer narrative coordination
 - Two+ players create/join games via 6-character codes
@@ -24,6 +34,7 @@
 ### Soft-LLM consultation
 - Player can ASK before committing (thinking partner, Haiku)
 - Knowledge-gated: only references what the character has learned
+- Now a proper BSP-walked agent block (`soft-agent.json`) with restricted star references
 
 ### UI
 - Three-zone layout: solid (narrative), liquid (submitted intentions), vapor (input)
@@ -41,12 +52,19 @@
 
 ---
 
+## Branch Status
+
+**feature/hard-llm** — NOT yet merged to main. Contains all star operator + BSP walk work described above.
+
+---
+
 ## Known Issues
 
-### Characters use each other's names without introduction
-The medium-LLM uses character names in events and narrative even when characters haven't been introduced. The **systemic fix** is Hard-LLM: it builds a perception frame that filters names through a knowledge/relationships block. Without Hard, Medium gets raw accumulated events with names exposed in the `[Established by {source}'s resolution]` label and in events text.
+### Filmstrip API returns 500
+`api/filmstrip.ts` logs LLM calls but the Supabase table schema doesn't match. Needs schema fix or migration.
 
-**Do NOT fix this with more Medium constraints.** Hard-LLM is the proper solution — it existed in the parent repo's block-agents branch and worked.
+### Characters use each other's names without introduction
+The star operator + BSP walks provide spatial and rules context to Medium and Soft. Name gating through a knowledge/relationships block is not yet implemented. The systemic fix is filtering names through identity blocks at perception time — this can be done mechanically via BSP walks or, when judgment is needed, via a future Hard-LLM call.
 
 ### prompt_template field still on Block type
 `types.ts` and `block-factory.ts` still have the `prompt_template` field. prompt.ts no longer reads it — it walks the BSP block instead. Safe to remove after confirming stability.
@@ -56,66 +74,64 @@ Events accumulate and the inbox count shows, but may not clear in the UI after a
 
 ---
 
+## What Was Removed
+
+### perception.ts (deleted)
+142 lines of hardcoded BSP walks that assembled a perception frame. This was a mistake — the walks should have been star references in agent blocks, not a TypeScript function. The star operator makes this unnecessary: agent blocks name the world blocks they need, and `block-registry.ts` follows the references.
+
+### hard.ts (deleted)
+Hard-LLM perception frame engine. Implemented, then removed. The "hard" job (spatial context, rules context) is now done mechanically by BSP walks following star references from agent blocks. Hard-as-LLM returns only when judgment is needed (event contradiction, complex perception filtering).
+
+---
+
 ## Development Plan (Priority Order)
 
-### 1. Hard-LLM + world blocks
-**Status**: Not started. **This is the most important next step.**
+### 1. Fix filmstrip + test on Vercel preview
+**Status**: Filmstrip API exists but returns 500. Fix table schema, verify LLM call logging works, test full gameplay on a Vercel preview deployment.
 
-Hard-LLM reads world state via BSP walks and produces a **frame** — a filtered perception of what the character can see, hear, and know. Medium receives the frame, not raw world data.
+### 2. Consider merge to main
+**Status**: feature/hard-llm branch is stable. Star operator, agent block star references, harness constraints, and filmstrip logging all in place. Needs gameplay testing before merge.
 
-What Hard does:
-- Walks spatial block at character's coordinates → scene description
-- Walks character/relationship blocks → describes other characters by appearance unless known by name
-- Walks rules block → includes applicable rules in the frame
-- Walks events block → includes relevant recent history
+### 3. Name gating via identity blocks
+**Status**: Identity blocks exist (Essa, Harren, Kael). Need to wire knowledge/relationship state so characters are described by appearance until formally introduced. Can be done via star references to identity blocks + BSP walks. Hard-LLM returns here only if judgment is needed.
 
-What this solves:
-- **Name gating**: characters described by appearance until formally introduced
-- **Position-aware perception**: what you can see depends on where you are
-- **Spatial play**: characters move through BSP-navigable spaces
-- **NPC behaviour**: NPCs get their own perception frames
-
-The `hard-agent.json` block already exists in `blocks/xstream/`. The spatial (`spatial-thornkeep.json`) and rules (`rules-thornkeep.json`) blocks also exist. They need to be wired in.
-
-**Key design principle**: Hard's frame IS the scene context that Medium receives. Replace the static `block.scene` string with Hard's output.
-
-### 2. Designer face
+### 4. Designer face
 **Status**: Not started.
 
 A UI mode toggle that lets the player edit layer 2 content: medium constraints, scene descriptions, rules, domino behaviour. All through the same interface, writing to blocks.
 
 This is where pscale pays off: tweak a constraint in the ring, see different narrative behaviour. Change a spatial description, see a different world. The wand, not the axe.
 
-### 3. Author face + world creation
+### 5. Author face + world creation
 **Status**: Not started.
 
 Broader than designer. Create spatial blocks (design a tavern, a village, a coast), rules blocks (social norms, conflict resolution), NPC blocks. An author builds a world; players inhabit it. BSP spatial addressing makes this navigable: `bsp(spatial, 111)` for a room, `bsp(spatial, 110)` for a building.
 
-### 4. Supabase persistence + accounts
+### 6. Supabase persistence + accounts
 **Status**: Relay table exists. No user accounts yet.
 
 Save character state, game sessions, world configurations. Players resume games. Authors publish worlds. Share game codes that load saved world state.
 
-### 5. B-loop convergence
+### 7. B-loop convergence
 **Status**: Tested in Python (see `docs/medium-llm-coordination-spec.md`), not implemented in JavaScript kernel.
-
-### 6. Soft-LLM as proper agent block
-**Status**: Inline prompt in App.tsx. Should be a BSP-walked block like medium.
 
 ---
 
-## Block Structure (medium-agent.json)
+## Block Structure
 
-The block is structured so BSP walks produce the prompt:
+### medium-agent.json
+The block is structured so BSP walks produce the prompt. Star references in hidden directories name world blocks (spatial, rules) that `block-registry.ts` resolves at prompt assembly time.
 
 ```
-_  = role line          → spindle root gives identity
-1  = rules              → dir(0.1) gives header + ring of constraints
-2  = produce            → dir(0.2) gives header + ring of output fields (a)-(d)
-3  = format instruction → spindle(0.3) gives JSON format line
+_  = role line          -> spindle root gives identity
+1  = rules              -> dir(0.1) gives header + ring of constraints
+2  = produce            -> dir(0.2) gives header + ring of output fields (a)-(d)
+3  = format instruction -> spindle(0.3) gives JSON format line
+*  = hidden directory   -> star references to world blocks (spatial, rules)
 ```
 
-Design principle: **start from the target context window, work backwards to block structure.** The block serves the LLM prompt, not the other way around. Spindles for vertical context chains, rings for parallel items (constraints, output fields).
+### soft-agent.json
+Same pattern as medium, but restricted star references (spatial only, no rules). Knowledge-gated, conversational, never narrates.
 
 ---
 
@@ -129,6 +145,7 @@ This project was extracted from `happyseaurchin/xstream` (branch: `feature/block
 4. **Kernel ported from Python reference** — `docs/kernel-reference.py` is the tested original
 5. **Coordination tested across 5 scenarios** — see `docs/medium-llm-coordination-spec.md`
 6. **BSP-walked pscale blocks** — medium-agent.json drives the medium prompt (26 March 2026)
+7. **Star operator replaces Hard-LLM** — agent blocks carry star references, kernel follows them mechanically (31 March 2026)
 
 ---
 
@@ -148,6 +165,20 @@ This project was extracted from `happyseaurchin/xstream` (branch: `feature/block
 ---
 
 ## Session Log
+
+### 31 March 2026 — Star operator replaces Hard-LLM
+- Star operator ported to `bsp.ts`: `collectUnderscore`, `findHiddenLevel`, `getHiddenDirectory`, `StarResult`
+- Agent blocks (`medium-agent.json`, `soft-agent.json`) now carry star references in hidden directories
+- `prompt.ts` follows stars via `block-registry.ts` to walk world blocks (spatial + rules)
+- `soft-prompt.ts` walks `soft-agent.json` via BSP with restricted star references (spatial only)
+- `perception.ts` deleted — 142 lines of hardcoded BSP walks replaced by star references in blocks
+- `hard.ts` deleted — Hard-LLM not needed when BSP walks do the job mechanically
+- `harness.ts` + `harness.json` constrain solid output length at prompt level
+- Filmstrip logging via `api/filmstrip.ts` (500 error on table schema needs fixing)
+- `block-factory.ts` defaults: `max_tokens` 2048, `spatial_address` '111'
+- Identity blocks added: Essa, Harren, Kael, template
+- **Key lesson**: perception.ts was a mistake — hardcoded BSP walks that should have been star references. Always ask: can this be a star reference instead of a TypeScript function?
+- **Key lesson**: agent blocks should carry star references in hidden directories to name world blocks they need. The kernel follows stars — wiring lives in blocks, not code.
 
 ### 26 March 2026 — BSP refactor + Supabase relay
 - Imported `bsp.js` as `src/kernel/bsp.ts`
