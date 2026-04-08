@@ -229,12 +229,19 @@ export function buildSoftPrompt(block: Block, playerMessage: string, face: Face 
     : '';
 
   // History: character sees narrative, author/designer see edit history
+  // At initial condition (no solids yet), show accumulated context so soft knows the situation
   const history = block.character.solid_history.slice(-3);
-  const historySection = history.length > 0
-    ? (face === 'character'
+  let historySection: string;
+  if (history.length > 0) {
+    historySection = face === 'character'
       ? `RECENT EXPERIENCE:\n${history.map(s => `• ${s}`).join('\n')}`
-      : `RECENT EDITS:\n${history.map(s => `• ${s}`).join('\n')}`)
-    : '';
+      : `RECENT EDITS:\n${history.map(s => `• ${s}`).join('\n')}`;
+  } else if (face === 'character' && block.accumulated.length > 0) {
+    const accEvents = block.accumulated.flatMap(a => a.events);
+    historySection = `CURRENT SITUATION:\n${accEvents.map(e => `• ${e}`).join('\n')}`;
+  } else {
+    historySection = '';
+  }
 
   const messageLabel = face === 'character' ? 'PLAYER IS THINKING' : face === 'author' ? 'AUTHOR IS ASKING' : 'DESIGNER IS ASKING';
   const messageSection = `${messageLabel}: "${playerMessage}"`;

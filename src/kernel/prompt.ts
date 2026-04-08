@@ -150,17 +150,10 @@ function buildSceneFromStars(block: Block, peerBlocks: Block[]): string {
     sections.push(`CHARACTERS PRESENT:\n${charLines.join('\n')}`);
   }
 
-  // Runtime data: recent events at this location
-  const allEvents: GameEvent[] = [];
-  for (const e of block.event_log) { if (e.S === addr) allEvents.push(e); }
-  for (const peer of peerBlocks) {
-    if (!peer.event_log) continue;
-    for (const e of peer.event_log) { if (e.S === addr) allEvents.push(e); }
-  }
-  allEvents.sort((a, b) => b.T - a.T);
-  const recent = allEvents.slice(0, 15);
-  if (recent.length > 0) {
-    sections.push(`RECENT EVENTS:\n${recent.map(e => `- [${e.type}] ${e.text}`).join('\n')}`);
+  // Runtime data: own recent events at this location (sovereign — no peer event_logs)
+  const ownEvents = block.event_log.filter(e => e.S === addr).slice(-15);
+  if (ownEvents.length > 0) {
+    sections.push(`RECENT EVENTS:\n${ownEvents.map(e => `- [${e.type}] ${e.text}`).join('\n')}`);
   }
 
   return sections.join('\n\n');

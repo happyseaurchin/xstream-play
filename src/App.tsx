@@ -151,6 +151,29 @@ export default function App() {
     },
   }), [])
 
+  // --- Auto-orientation: fire soft-LLM at game start ---
+  const fireOrientation = useCallback(async (key: string) => {
+    if (!kernelRef.current) return
+    setSoftLoading(true)
+    try {
+      const block = kernelRef.current.block
+      const prompt = buildSoftPrompt(block, 'Where am I? What do I see?', 'character')
+      const response = await callClaude(key, 'claude-haiku-4-5-20251001', prompt, 256)
+      setSoftResponse({
+        id: Date.now().toString(),
+        originalInput: 'Where am I? What do I see?',
+        text: response,
+        softType: 'refine',
+        face: 'character',
+        frameId: null,
+      })
+    } catch (_e) {
+      // Silent fail — orientation is nice-to-have, not critical
+    } finally {
+      setSoftLoading(false)
+    }
+  }, [])
+
   // --- Create Game ---
   const handleCreateGame = useCallback((key: string, name: string, state: string, scene: string) => {
     setApiKey(key)
@@ -187,7 +210,8 @@ export default function App() {
 
     setStatusMessage('')
     setPhase('ready')
-  }, [makeKernelCallbacks])
+    fireOrientation(key)
+  }, [makeKernelCallbacks, fireOrientation])
 
   // --- Join Game ---
   const handleJoinGame = useCallback(async (key: string, name: string, state: string, code: string) => {
@@ -202,18 +226,19 @@ export default function App() {
       const desc = state || 'A figure.'
       const block = createBlock(charId, name, desc, '', key)
 
-      // Seed arrival as event (same pattern as create, but arrival not presence)
+      // Joiner starts outside the pub (110), not inside (111)
+      block.spatial_address = '110'
+
+      // Seed approach event at the building level
       const spatialBlock = getBlock('spatial-thornkeep')
       if (spatialBlock) {
-        const result = bsp(spatialBlock, block.spatial_address)
+        const result = bsp(spatialBlock, '110')
         if (result.mode === 'spindle') {
           const nodes = (result as SpindleResult).nodes
-          const building = nodes.length >= 2 ? nodes[nodes.length - 2].text.split('—')[0].trim() : 'the room'
-          const room = nodes.length >= 1 ? nodes[nodes.length - 1].text.split('—')[0].trim() : ''
-          const where = room ? `the ${room.toLowerCase()} of ${building}` : building
-          const arrival = `${desc} enters ${where}.`
-          block.event_log.push({ S: block.spatial_address, T: 0, I: block.character.id, text: arrival, type: 'arrival' })
-          block.accumulated.push({ source: 'world', events: [arrival] })
+          const building = nodes.length >= 1 ? nodes[nodes.length - 1].text.split('—')[0].trim() : 'a building'
+          const approach = `${desc} approaches ${building}.`
+          block.event_log.push({ S: '110', T: 0, I: block.character.id, text: approach, type: 'arrival' })
+          block.accumulated.push({ source: 'world', events: [approach] })
         }
       }
 
@@ -224,6 +249,7 @@ export default function App() {
 
       setStatusMessage('')
       setPhase('ready')
+      fireOrientation(key)
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to join'
       setStatusMessage(`Error: ${msg}`)
