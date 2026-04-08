@@ -67,6 +67,21 @@ function buildSceneForCharacter(block: Block): string {
     }
   }
 
+  // NPC handshake: scan character blocks for matching spatial address
+  const npcLines: string[] = [];
+  for (const blockName of listBlocks()) {
+    if (!blockName.startsWith('character-')) continue;
+    const npcBlock = getBlock(blockName);
+    if (!npcBlock) continue;
+    const npcStar = bsp(npcBlock as PscaleNode, 0, '*') as StarResult;
+    if (!npcStar.hidden || npcStar.hidden['1'] !== addr) continue;
+    const desc = collectUnderscore(npcBlock as PscaleNode);
+    if (desc) npcLines.push(desc);
+  }
+  if (npcLines.length > 0) {
+    sections.push(`ALSO PRESENT (NPCs):\n${npcLines.map(n => `- ${n}`).join('\n')}`);
+  }
+
   return sections.join('\n\n');
 }
 

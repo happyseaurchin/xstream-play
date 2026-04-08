@@ -7,8 +7,8 @@
 
 import type { Block } from './types';
 
-// Default scene — the Broken Drum tavern from the coordination spec tests
-const DEFAULT_SCENE = `The Broken Drum tavern. Evening. Fire burning low in a stone hearth. Rain outside. Woodsmoke and ale. A few quiet background patrons. A stranger in a dark cloak entered recently and stands near the hearth, hood up, dripping rainwater.`;
+// Default scene — The Salty Dog, Thornkeep (matches spatial-thornkeep at 111)
+const DEFAULT_SCENE = `The Salty Dog tavern, Thornkeep. Evening. Low ceiling, stone hearth at the far wall, bar of dark oak. Woodsmoke and ale. A few quiet patrons. Rain outside.`;
 
 // Default prompt template — the tested pattern from medium-llm-coordination-spec.md
 const DEFAULT_PROMPT_TEMPLATE = {
