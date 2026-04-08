@@ -212,6 +212,10 @@ export default function App() {
       // Seed arrival: joiner enters the scene
       block.pending_liquid = `${desc} enters.`
 
+      const kernel = new Kernel(block, code, makeKernelCallbacks())
+      kernelRef.current = kernel
+      kernel.start()
+
       setStatusMessage('')
       setPhase('ready')
     } catch (err: unknown) {
