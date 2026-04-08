@@ -113,6 +113,8 @@ export default function App() {
       if (f === 'author') setAuthorSolids(prev => [...prev, entry])
       else if (f === 'designer') setDesignerSolids(prev => [...prev, entry])
       else setCharacterSolids(prev => [...prev, entry])
+      // Clear liquid cards — covers both commit and domino-triggered solids
+      setLiquidCards([])
       setSynthesising(false)
     },
     onStatusChange: (status: string) => {
@@ -181,6 +183,7 @@ export default function App() {
     const kernel = new Kernel(block, code, makeKernelCallbacks())
     kernelRef.current = kernel
     kernel.start()
+    setDominoMode(block.trigger.domino_mode)
 
     setStatusMessage('')
     setPhase('ready')
@@ -195,26 +198,29 @@ export default function App() {
     setStatusMessage('Joining game...')
 
     try {
-      // Fetch existing game to get the scene
-      const res = await fetch(`/api/relay/${code}?exclude=_nobody_`)
-      let scene = ''
-      if (res.ok) {
-        const blocks = await res.json()
-        if (blocks.length > 0) {
-          scene = blocks[0].scene || ''
-        }
-      }
-
       const charId = generateCharId()
       const desc = state || 'A figure.'
-      const block = createBlock(charId, name, desc, scene, key)
+      const block = createBlock(charId, name, desc, '', key)
 
-      // Seed arrival: joiner enters the scene
-      block.pending_liquid = `${desc} enters.`
+      // Seed arrival as event (same pattern as create, but arrival not presence)
+      const spatialBlock = getBlock('spatial-thornkeep')
+      if (spatialBlock) {
+        const result = bsp(spatialBlock, block.spatial_address)
+        if (result.mode === 'spindle') {
+          const nodes = (result as SpindleResult).nodes
+          const building = nodes.length >= 2 ? nodes[nodes.length - 2].text.split('—')[0].trim() : 'the room'
+          const room = nodes.length >= 1 ? nodes[nodes.length - 1].text.split('—')[0].trim() : ''
+          const where = room ? `the ${room.toLowerCase()} of ${building}` : building
+          const arrival = `${desc} enters ${where}.`
+          block.event_log.push({ S: block.spatial_address, T: 0, I: block.character.id, text: arrival, type: 'arrival' })
+          block.accumulated.push({ source: 'world', events: [arrival] })
+        }
+      }
 
       const kernel = new Kernel(block, code, makeKernelCallbacks())
       kernelRef.current = kernel
       kernel.start()
+      setDominoMode(block.trigger.domino_mode)
 
       setStatusMessage('')
       setPhase('ready')
@@ -250,6 +256,7 @@ export default function App() {
     const kernel = new Kernel(block, save.gameId, makeKernelCallbacks())
     kernelRef.current = kernel
     kernel.start()
+    setDominoMode(block.trigger.domino_mode)
 
     setStatusMessage('')
     setPhase('ready')
