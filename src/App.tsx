@@ -226,8 +226,21 @@ export default function App() {
       const desc = state || 'A figure.'
       const block = createBlock(charId, name, desc, '', key)
 
-      // Seed arrival: joiner enters the room (same address as creators)
-      block.pending_liquid = `${desc} enters.`
+      // Joiner starts outside the pub (110), not inside (111)
+      block.spatial_address = '110'
+
+      // Seed approach event at the building level
+      const spatialBlock = getBlock('spatial-thornkeep')
+      if (spatialBlock) {
+        const result = bsp(spatialBlock, '110')
+        if (result.mode === 'spindle') {
+          const nodes = (result as SpindleResult).nodes
+          const building = nodes.length >= 1 ? nodes[nodes.length - 1].text.split('—')[0].trim() : 'a building'
+          const approach = `${desc} approaches ${building}.`
+          block.event_log.push({ S: '110', T: 0, I: block.character.id, text: approach, type: 'arrival' })
+          block.accumulated.push({ source: 'world', events: [approach] })
+        }
+      }
 
       const kernel = new Kernel(block, code, makeKernelCallbacks())
       kernelRef.current = kernel
