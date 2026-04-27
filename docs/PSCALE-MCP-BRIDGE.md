@@ -1,6 +1,21 @@
 # pscale-mcp bridge — `feature/pscale-mcp`
 
+**Status: LIVE at xstream.onen.ai (2026-04-27).** Alpha-grade — see "Bridge maturity" below.
+
 Branch that adds a pscale-mcp substrate bridge to xstream-play. Deployed at **xstream.onen.ai** (alongside the unchanged sovereign-localStorage version still at play.onen.ai).
+
+Verified live 2026-04-27 — `curl -I https://xstream.onen.ai/` returns HTTP 200, branch bundle hash differs from production main, Vercel SSO disabled at project level (matching play.onen.ai's posture).
+
+## Bridge maturity
+
+**Alpha** — fine for testing with David + Matthew, not for arbitrary public users. Rough edges (each tracked in `docs/beach-game-handbook.md` §10 in the pscale-mcp-server repo):
+
+- Hardcoded Thornkeep mapping (`BRIDGE_MAP`)
+- Author observation block hits floor-1 ceiling at 9 entries (no growth into floor 2+ yet)
+- No retry on transient Supabase failures
+- No telemetry / error reporting
+- No tests
+- Auth UX assumes player already has a published pscale-mcp passport (no in-UI onboarding flow)
 
 ## What this branch adds
 
