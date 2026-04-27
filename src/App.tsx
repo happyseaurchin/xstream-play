@@ -21,8 +21,9 @@ import { buildSoftPrompt } from './kernel/soft-prompt'
 import type { SolidBlock, LiquidCard } from './types/xstream'
 import type { Face } from './types/xstream'
 import type { SoftLLMResponse } from './types'
-import { listBlocks, getBlock, hydrateFromSaved } from './kernel/block-store'
+import { listBlocks, getBlock, hydrateFromSaved, overlayBlocks } from './kernel/block-store'
 import { bsp, type SpindleResult } from './kernel/bsp'
+import { isPscaleMcpEnabled, fetchBridgedBlocks, writeObservation, getPscaleAgentId, getPscaleSecret } from './lib/pscale-mcp'
 import { loadKernelBlock, loadAllBlocks, exportGameState, importGameState, setCurrentGame, saveBlock } from './kernel/persistence'
 import type { SavedGame } from './kernel/persistence'
 import { SaveModal } from './components/SaveModal'
@@ -174,12 +175,30 @@ export default function App() {
     }
   }, [])
 
+  // --- pscale-mcp bridge: overlay live world content from the substrate ---
+  const overlayPscaleBlocks = useCallback(async () => {
+    if (!isPscaleMcpEnabled()) return
+    setStatusMessage('Fetching live canon from pscale-mcp...')
+    try {
+      const bridged = await fetchBridgedBlocks()
+      if (Object.keys(bridged).length > 0) {
+        overlayBlocks(bridged)
+        console.log('[pscale-mcp] overlaid blocks:', Object.keys(bridged))
+      }
+    } catch (e) {
+      console.warn('[pscale-mcp] overlay failed; falling back to seeds:', e)
+    }
+  }, [])
+
   // --- Create Game ---
-  const handleCreateGame = useCallback((key: string, name: string, state: string, scene: string) => {
+  const handleCreateGame = useCallback(async (key: string, name: string, state: string, scene: string) => {
     setApiKey(key)
     setCharacterName(name)
     setPhase('loading')
     setStatusMessage('Creating game...')
+
+    // Pull live canon BEFORE seeding presence — so the spindle walk sees the latest world.
+    await overlayPscaleBlocks()
 
     const code = generateGameCode()
     setGameCode(code)
@@ -211,7 +230,7 @@ export default function App() {
     setStatusMessage('')
     setPhase('ready')
     fireOrientation(key)
-  }, [makeKernelCallbacks, fireOrientation])
+  }, [makeKernelCallbacks, fireOrientation, overlayPscaleBlocks])
 
   // --- Join Game ---
   const handleJoinGame = useCallback(async (key: string, name: string, state: string, code: string) => {
@@ -222,6 +241,9 @@ export default function App() {
     setStatusMessage('Joining game...')
 
     try {
+      // Pull live canon before seeding presence
+      await overlayPscaleBlocks()
+
       const charId = generateCharId()
       const desc = state || 'A figure.'
       const block = createBlock(charId, name, desc, '', key)
@@ -255,7 +277,7 @@ export default function App() {
       setStatusMessage(`Error: ${msg}`)
       setPhase('setup')
     }
-  }, [makeKernelCallbacks])
+  }, [makeKernelCallbacks, fireOrientation, overlayPscaleBlocks])
 
   // --- Resume Game ---
   const handleResumeGame = useCallback((key: string, save: SavedGame) => {
@@ -386,6 +408,33 @@ export default function App() {
     if (!kernelRef.current) return
     setSynthesising(true)
     kernelRef.current.commit(face)
+
+    // pscale-mcp author write-through: when bridge is on AND face is author,
+    // mirror the committed liquid into the player's pscale-mcp observations
+    // block. The world-compressor on the substrate side picks it up within
+    // ~60s and integrates it into the canonical world block. xstream-play's
+    // local kernel still runs its medium-LLM synthesis as before — the
+    // bridge is a *parallel* write, not a replacement.
+    if (face === 'author' && isPscaleMcpEnabled()) {
+      const agentId = getPscaleAgentId()
+      const secret = getPscaleSecret()
+      const block = kernelRef.current.block
+      const liquid = block.pending_liquid
+      if (agentId && secret && liquid) {
+        const targetAddr = (block.edit_address ?? block.spatial_address ?? '111')
+          .toString().replace(/^thornkeep-world@/, '')
+        writeObservation(agentId, secret, targetAddr, liquid)
+          .then(r => {
+            if (r.ok) {
+              setKernelLogs(prev => [...prev.slice(-50), `🌊 pscale-mcp: observation written at position ${r.position}`])
+            } else {
+              setKernelLogs(prev => [...prev.slice(-50), `⚠ pscale-mcp write failed: ${r.error}`])
+            }
+          })
+          .catch(e => setKernelLogs(prev => [...prev.slice(-50), `⚠ pscale-mcp write error: ${e?.message ?? e}`]))
+      }
+    }
+
     // Clear liquid cards — kernel will handle the rest
     setLiquidCards([])
   }, [face])

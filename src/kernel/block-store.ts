@@ -79,6 +79,17 @@ export function hydrateFromSaved(blocks: Record<string, PscaleNode>): void {
   }
 }
 
+/**
+ * Overlay one or more blocks onto the running store.
+ * Used by the pscale-mcp bridge to inject world / rules content
+ * fetched from the substrate after seeding.
+ */
+export function overlayBlocks(blocks: Record<string, PscaleNode>): void {
+  for (const [name, block] of Object.entries(blocks)) {
+    store.set(name, structuredClone(block));
+  }
+}
+
 export function getBlock(name: string): PscaleNode | null {
   return store.get(name) ?? null;
 }

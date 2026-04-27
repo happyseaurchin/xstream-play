@@ -14,6 +14,12 @@ import { useState, useRef } from 'react'
 import { DEFAULT_SCENE } from '../kernel/block-factory'
 import { listSavedGames, clearAllSaves, importGameState } from '../kernel/persistence'
 import type { SavedGame } from '../kernel/persistence'
+import {
+  isPscaleMcpEnabled, setPscaleMcpEnabled,
+  getPscaleAgentId, setPscaleAgentId,
+  setPscaleSecret,
+  passportExists,
+} from '../lib/pscale-mcp'
 
 type Mode = 'menu' | 'create' | 'join'
 
@@ -38,7 +44,52 @@ export default function SetupScreen({ onCreateGame, onJoinGame, onResumeGame, on
   const [error, setError] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  // pscale-mcp bridge state
+  const [pscaleEnabled, setPscaleEnabled] = useState<boolean>(() => isPscaleMcpEnabled())
+  const [pscaleAgentId, setPscaleAgentIdState] = useState<string>(() => getPscaleAgentId() ?? '')
+  const [pscaleSecret, setPscaleSecretState] = useState<string>('')
+  const [pscaleValidating, setPscaleValidating] = useState<boolean>(false)
+
   const savedGames = listSavedGames()
+
+  /**
+   * Validate pscale-mcp credentials. We confirm the passport exists; the
+   * secret is held in sessionStorage and validated implicitly when the
+   * player tries to write through the bridge (the lock check rejects).
+   */
+  async function validatePscale(): Promise<boolean> {
+    if (!pscaleEnabled) return true
+    if (!pscaleAgentId.trim()) {
+      setError('pscale-mcp agent_id is required when bridge is on.')
+      return false
+    }
+    if (!pscaleSecret.trim()) {
+      setError('pscale-mcp secret is required when bridge is on.')
+      return false
+    }
+    setPscaleValidating(true)
+    try {
+      const exists = await passportExists(pscaleAgentId.trim())
+      if (!exists) {
+        setError(`No passport found for "${pscaleAgentId.trim()}". Publish one via the pscale-mcp tools first.`)
+        return false
+      }
+      setPscaleAgentId(pscaleAgentId.trim())
+      setPscaleSecret(pscaleSecret.trim())
+      return true
+    } finally {
+      setPscaleValidating(false)
+    }
+  }
+
+  function handlePscaleToggle(on: boolean) {
+    setPscaleEnabled(on)
+    setPscaleMcpEnabled(on)
+    if (!on) {
+      setPscaleAgentIdState('')
+      setPscaleSecretState('')
+    }
+  }
 
   function validateKey(): boolean {
     const key = apiKey.trim()
@@ -57,20 +108,23 @@ export default function SetupScreen({ onCreateGame, onJoinGame, onResumeGame, on
     return true
   }
 
-  function handleCreate() {
+  async function handleCreate() {
     if (!validate()) return
+    if (!(await validatePscale())) return
     onCreateGame(apiKey.trim(), name.trim(), charState.trim(), scene.trim())
   }
 
-  function handleJoin() {
+  async function handleJoin() {
     if (!validate()) return
+    if (!(await validatePscale())) return
     const code = gameCode.trim().toUpperCase()
     if (!code || code.length < 4) { setError('Enter a valid game code.'); return }
     onJoinGame(apiKey.trim(), name.trim(), charState.trim(), code)
   }
 
-  function handleResume(save: SavedGame) {
+  async function handleResume(save: SavedGame) {
     if (!validateKey()) return
+    if (!(await validatePscale())) return
     onResumeGame(apiKey.trim(), save)
   }
 
@@ -110,7 +164,9 @@ export default function SetupScreen({ onCreateGame, onJoinGame, onResumeGame, on
   if (mode === 'menu') {
     return (
       <div style={containerStyle}>
-        <h1 style={{ fontSize: '1.5rem', marginBottom: '0.25rem', color: '#fff' }}>xstream</h1>
+        <h1 style={{ fontSize: '1.5rem', marginBottom: '0.25rem', color: '#fff' }}>
+          xstream{pscaleEnabled ? <span style={{ fontSize: '0.65rem', color: '#7af', marginLeft: '0.5rem' }}>· pscale-mcp</span> : null}
+        </h1>
         <p style={{ fontSize: '0.85rem', color: '#888', marginBottom: '2rem' }}>
           narrative coordination
         </p>
@@ -178,6 +234,42 @@ export default function SetupScreen({ onCreateGame, onJoinGame, onResumeGame, on
             onChange={handleImportFile}
             style={{ display: 'none' }}
           />
+
+          {/* pscale-mcp bridge */}
+          <div style={{ borderTop: '1px solid #333', paddingTop: '1rem', marginTop: '0.5rem' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem', color: '#aaa', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={pscaleEnabled}
+                onChange={e => handlePscaleToggle(e.target.checked)}
+              />
+              <span>pscale-mcp bridge</span>
+              <span style={{ fontSize: '0.65rem', color: '#666' }}>(persistent canon + multi-author)</span>
+            </label>
+
+            {pscaleEnabled && (
+              <div style={{ marginTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                <input
+                  type="text"
+                  placeholder="agent_id (e.g. happyseaurchin)"
+                  value={pscaleAgentId}
+                  onChange={e => setPscaleAgentIdState(e.target.value)}
+                  style={{ ...inputStyle, fontSize: '0.85rem' }}
+                />
+                <input
+                  type="password"
+                  placeholder="passport secret"
+                  value={pscaleSecret}
+                  onChange={e => setPscaleSecretState(e.target.value)}
+                  style={{ ...inputStyle, fontSize: '0.85rem' }}
+                />
+                {pscaleValidating && <p style={{ fontSize: '0.7rem', color: '#888', margin: 0 }}>validating...</p>}
+                <p style={{ fontSize: '0.65rem', color: '#666', margin: 0 }}>
+                  Bridges this session to pscale-mcp: world block reads from the substrate; author commits write through to the substrate. Secret is held in sessionStorage only (cleared on tab close).
+                </p>
+              </div>
+            )}
+          </div>
 
           <p style={{ fontSize: '0.7rem', color: '#666', textAlign: 'center' }}>
             Your API key stays in your browser. It is never sent to our server.
