@@ -73,6 +73,7 @@ export function createBlock(
       character: 'manual',
       author: 'manual',
       designer: 'manual',
+      observer: 'manual',
     },
   };
 }

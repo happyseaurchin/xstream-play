@@ -66,12 +66,14 @@ export function DirectoryDrawer({
     character: "Characters",
     author: "Content",
     designer: "Skills",
+    observer: "Reading",
   };
 
   const faceIcons: Record<Face, React.ReactNode> = {
     character: <User className="h-3.5 w-3.5" />,
     author: <FileText className="h-3.5 w-3.5" />,
     designer: <Wrench className="h-3.5 w-3.5" />,
+    observer: <FileText className="h-3.5 w-3.5" />,
   };
 
   return (

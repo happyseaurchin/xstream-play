@@ -69,6 +69,7 @@ export interface Block {
     character: 'auto' | 'manual' | 'informed';
     author: 'auto' | 'manual' | 'informed';
     designer: 'auto' | 'manual' | 'informed';
+    observer: 'auto' | 'manual' | 'informed';
   };
 }
 

@@ -99,6 +99,15 @@ export function setBlock(name: string, block: PscaleNode): void {
   saveBlock(name, block);
 }
 
+/**
+ * Inject a block into the in-memory store WITHOUT persisting to localStorage.
+ * Used for substrate-fetched blocks (resolved from star refs) — they belong
+ * to the substrate, not to the user's local save state.
+ */
+export function injectBlock(name: string, block: PscaleNode): void {
+  store.set(name, block);
+}
+
 export function listBlocks(): string[] {
   return [...store.keys()];
 }

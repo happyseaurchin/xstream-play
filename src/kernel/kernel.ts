@@ -13,6 +13,7 @@ import { callClaude } from './claude-direct';
 import { buildMediumPrompt, buildAuthorPrompt, buildDesignerPrompt, buildHardPrompt, buildAuthorHardPrompt, buildDesignerHardPrompt } from './prompt';
 import { applyBlockEdit } from './block-store';
 import { saveKernelBlock, setCurrentGame } from './persistence';
+import { bsp, presenceHeartbeat, presenceClaimDigit, presenceRead } from '../lib/bsp-client';
 import type { Block, GameEvent, MediumResult, AuthorResult, DesignerResult, HardResult, AccumulatedEvent, DominoSignal } from './types';
 import type { Face } from '../types/xstream';
 
@@ -30,26 +31,64 @@ function cleanJson(text: string): string {
 }
 
 // ============================================================
-// RELAY ABSTRACTION — swap backing store here only
+// SUBSTRATE I/O — bsp-mcp commons via bsp-client
 // ============================================================
+//
+// gameId → beach identifier (currently a string key on the commons; will be
+// a URL routed through Stage 3 WellKnownAdapter when remote beaches ship).
+// charId → agent_id. Each character owns a "character" block at their agent_id.
+// Presence is heartbeated as a structured mark at 1.<digit> of the beach block
+// per docs/presence-via-marks.md. The kernel claims a digit on first heartbeat
+// and overwrites it on subsequent cycles.
+
+const presenceDigitCache = new Map<string, string>();
+
+async function getPresenceDigit(beach: string, agentId: string): Promise<string> {
+  const key = `${beach}::${agentId}`;
+  const cached = presenceDigitCache.get(key);
+  if (cached) return cached;
+  const digit = await presenceClaimDigit({ beach, agent_id: agentId });
+  presenceDigitCache.set(key, digit);
+  return digit;
+}
 
 async function writeBlock(gameId: string, charId: string, block: Block): Promise<void> {
-  const res = await fetch(`/api/relay/${gameId}/${charId}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(block),
+  // 1. Write the character's own block at (agent_id=charId, block="character").
+  const writeResult = await bsp({
+    agent_id: charId,
+    block: 'character',
+    content: block as unknown as Record<string, unknown>,
   });
-  if (!res.ok) {
-    const err = await res.text();
-    console.error(`[relay PUT] ${res.status}:`, err);
-    throw new Error(`Relay PUT failed: ${res.status} — ${err.substring(0, 200)}`);
+  if (!writeResult.ok) {
+    const err = 'error' in writeResult ? writeResult.error : 'unknown';
+    console.error('[bsp] character write failed:', err);
+    throw new Error(`bsp write failed: ${err}`);
   }
+  // 2. Heartbeat presence at the beach. address = spatial_address (or empty).
+  const digit = await getPresenceDigit(gameId, charId);
+  const address = block.spatial_address ?? '';
+  await presenceHeartbeat({
+    beach: gameId,
+    digit,
+    agent_id: charId,
+    address,
+    summary: `${block.character.name} @ ${new Date().toISOString()} — present at ${address || '/'}`,
+  });
 }
 
 async function readPeerBlocks(gameId: string, myCharId: string): Promise<Block[]> {
-  const res = await fetch(`/api/relay/${gameId}?exclude=${myCharId}`);
-  if (!res.ok) return [];
-  return res.json();
+  // 1. Read presence at the beach to discover present agents.
+  const { present } = await presenceRead({ beach: gameId });
+  // 2. For each present peer (excluding self), fetch their character block.
+  const peerIds = present.map(p => p.agent_id).filter(id => id !== myCharId);
+  const blocks: Block[] = [];
+  for (const peerId of peerIds) {
+    const result = await bsp({ agent_id: peerId, block: 'character' });
+    if (result.ok && 'raw' in result && result.raw && typeof result.raw === 'object') {
+      blocks.push(result.raw as unknown as Block);
+    }
+  }
+  return blocks;
 }
 
 // ============================================================

@@ -8,7 +8,9 @@
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react'
-import SetupScreen from './components/SetupScreen'
+import SetupScreen, { type ActivationContext } from './components/SetupScreen'
+import { SubstrateTray, type SubstrateAct } from './components/SubstrateTray'
+import { setHiddenRef, beachToRef, resolveRef, type AgentShell } from './lib/bsp-client'
 import { SolidZone } from './components/xstream/SolidZone'
 import { LiquidZone } from './components/xstream/LiquidZone'
 import { VapourZone } from './components/xstream/VapourZone'
@@ -21,9 +23,9 @@ import { buildSoftPrompt } from './kernel/soft-prompt'
 import type { SolidBlock, LiquidCard } from './types/xstream'
 import type { Face } from './types/xstream'
 import type { SoftLLMResponse } from './types'
-import { listBlocks, getBlock, hydrateFromSaved, overlayBlocks } from './kernel/block-store'
+import { listBlocks, getBlock, hydrateFromSaved, overlayBlocks, injectBlock } from './kernel/block-store'
 import { bsp, type SpindleResult } from './kernel/bsp'
-import { isPscaleMcpEnabled, fetchBridgedBlocks, writeObservation, getPscaleAgentId, getPscaleSecret } from './lib/pscale-mcp'
+// (Legacy pscale-mcp bridge imports removed — bsp-client now talks to the commons directly.)
 import { loadKernelBlock, loadAllBlocks, exportGameState, importGameState, setCurrentGame, saveBlock } from './kernel/persistence'
 import type { SavedGame } from './kernel/persistence'
 import { SaveModal } from './components/SaveModal'
@@ -40,6 +42,8 @@ export default function App() {
   const [apiKey, setApiKey] = useState('')
   const [characterName, setCharacterName] = useState('')
   const [gameCode, setGameCode] = useState('')
+  const [shell, setShell] = useState<AgentShell | null>(null)
+  const [currentAddress, setCurrentAddress] = useState('')
 
   // Kernel
   const kernelRef = useRef<Kernel | null>(null)
@@ -175,170 +179,10 @@ export default function App() {
     }
   }, [])
 
-  // --- pscale-mcp bridge: overlay live world content from the substrate ---
-  const overlayPscaleBlocks = useCallback(async () => {
-    if (!isPscaleMcpEnabled()) return
-    setStatusMessage('Fetching live canon from pscale-mcp...')
-    try {
-      const bridged = await fetchBridgedBlocks()
-      if (Object.keys(bridged).length > 0) {
-        overlayBlocks(bridged)
-        console.log('[pscale-mcp] overlaid blocks:', Object.keys(bridged))
-      }
-    } catch (e) {
-      console.warn('[pscale-mcp] overlay failed; falling back to seeds:', e)
-    }
-  }, [])
-
-  // --- Create Game ---
-  const handleCreateGame = useCallback(async (key: string, name: string, state: string, scene: string) => {
-    setApiKey(key)
-    setCharacterName(name)
-    setPhase('loading')
-    setStatusMessage('Creating game...')
-
-    // Pull live canon BEFORE seeding presence — so the spindle walk sees the latest world.
-    await overlayPscaleBlocks()
-
-    const code = generateGameCode()
-    setGameCode(code)
-
-    const charId = generateCharId()
-    const block = createBlock(charId, name, state || `${name}. A newcomer.`, scene, key)
-
-    // Seed presence: walk spatial block to get location, plant a starting event
-    const spatialBlock = getBlock('spatial-thornkeep')
-    if (spatialBlock) {
-      const result = bsp(spatialBlock, block.spatial_address)
-      if (result.mode === 'spindle') {
-        const nodes = (result as SpindleResult).nodes
-        // Use the building name (second-to-last) for the presence statement
-        const building = nodes.length >= 2 ? nodes[nodes.length - 2].text.split('—')[0].trim() : 'the room'
-        const room = nodes.length >= 1 ? nodes[nodes.length - 1].text.split('—')[0].trim() : ''
-        const where = room ? `the ${room.toLowerCase()} of ${building}` : building
-        const presence = `You are in ${where}.`
-        block.event_log.push({ S: block.spatial_address, T: 0, I: block.character.id, text: presence, type: 'state_change' })
-        block.accumulated.push({ source: 'world', events: [presence] })
-      }
-    }
-
-    const kernel = new Kernel(block, code, makeKernelCallbacks())
-    kernelRef.current = kernel
-    kernel.start()
-    setDominoMode(block.trigger.domino_mode)
-
-    setStatusMessage('')
-    setPhase('ready')
-    fireOrientation(key)
-  }, [makeKernelCallbacks, fireOrientation, overlayPscaleBlocks])
-
-  // --- Join Game ---
-  const handleJoinGame = useCallback(async (key: string, name: string, state: string, code: string) => {
-    setApiKey(key)
-    setCharacterName(name)
-    setGameCode(code)
-    setPhase('loading')
-    setStatusMessage('Joining game...')
-
-    try {
-      // Pull live canon before seeding presence
-      await overlayPscaleBlocks()
-
-      const charId = generateCharId()
-      const desc = state || 'A figure.'
-      const block = createBlock(charId, name, desc, '', key)
-
-      // Joiner starts outside the pub (110), not inside (111)
-      block.spatial_address = '110'
-
-      // Seed approach event at the building level
-      const spatialBlock = getBlock('spatial-thornkeep')
-      if (spatialBlock) {
-        const result = bsp(spatialBlock, '110')
-        if (result.mode === 'spindle') {
-          const nodes = (result as SpindleResult).nodes
-          const building = nodes.length >= 1 ? nodes[nodes.length - 1].text.split('—')[0].trim() : 'a building'
-          const approach = `${desc} approaches ${building}.`
-          block.event_log.push({ S: '110', T: 0, I: block.character.id, text: approach, type: 'arrival' })
-          block.accumulated.push({ source: 'world', events: [approach] })
-        }
-      }
-
-      const kernel = new Kernel(block, code, makeKernelCallbacks())
-      kernelRef.current = kernel
-      kernel.start()
-      setDominoMode(block.trigger.domino_mode)
-
-      setStatusMessage('')
-      setPhase('ready')
-      fireOrientation(key)
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Failed to join'
-      setStatusMessage(`Error: ${msg}`)
-      setPhase('setup')
-    }
-  }, [makeKernelCallbacks, fireOrientation, overlayPscaleBlocks])
-
-  // --- Resume Game ---
-  const handleResumeGame = useCallback((key: string, save: SavedGame) => {
-    setApiKey(key)
-    setPhase('loading')
-    setStatusMessage('Resuming game...')
-
-    const block = loadKernelBlock(save.gameId, save.charId)
-    if (!block) {
-      setStatusMessage('Error: save not found')
-      setPhase('setup')
-      return
-    }
-
-    // Hydrate block store with individually-saved blocks
-    const savedBlocks = loadAllBlocks(save.gameId)
-    if (Object.keys(savedBlocks).length > 0) hydrateFromSaved(savedBlocks)
-
-    // Update API key in block (may have changed)
-    block.medium.api_key = key
-    setCharacterName(block.character.name)
-    setGameCode(save.gameId)
-
-    const kernel = new Kernel(block, save.gameId, makeKernelCallbacks())
-    kernelRef.current = kernel
-    kernel.start()
-    setDominoMode(block.trigger.domino_mode)
-
-    setStatusMessage('')
-    setPhase('ready')
-  }, [makeKernelCallbacks])
-
-  // --- Import Game ---
-  const handleImportGame = useCallback((key: string, json: string) => {
-    setPhase('loading')
-    setStatusMessage('Importing save...')
-
-    try {
-      const { gameId, block, blocks } = importGameState(json)
-      setCurrentGame(gameId)
-      hydrateFromSaved(blocks)
-      // Write each block individually to localStorage
-      for (const [name, b] of Object.entries(blocks)) {
-        saveBlock(name, b)
-      }
-      block.medium.api_key = key
-      setApiKey(key)
-      setCharacterName(block.character.name)
-      setGameCode(gameId)
-
-      const kernel = new Kernel(block, gameId, makeKernelCallbacks())
-      kernelRef.current = kernel
-      kernel.start()
-
-      setStatusMessage('')
-      setPhase('ready')
-    } catch (err) {
-      setStatusMessage(`Error: ${err instanceof Error ? err.message : 'Import failed'}`)
-      setPhase('setup')
-    }
-  }, [makeKernelCallbacks])
+  // (Legacy game-flow handlers and the pscale-mcp bridge overlay — handleCreateGame,
+  // handleJoinGame, handleResumeGame, handleImportGame, overlayPscaleBlocks — removed
+  // in feature/bsp-mcp-native. Activation goes through handleActivate; the SetupScreen
+  // collects agent_id+secret+beach; the bsp-client wrapper talks to the commons directly.)
 
   // --- Edit target/address (author/designer shelf) ---
   const [editTarget, setEditTarget] = useState('spatial-thornkeep')
@@ -409,31 +253,9 @@ export default function App() {
     setSynthesising(true)
     kernelRef.current.commit(face)
 
-    // pscale-mcp author write-through: when bridge is on AND face is author,
-    // mirror the committed liquid into the player's pscale-mcp observations
-    // block. The world-compressor on the substrate side picks it up within
-    // ~60s and integrates it into the canonical world block. xstream-play's
-    // local kernel still runs its medium-LLM synthesis as before — the
-    // bridge is a *parallel* write, not a replacement.
-    if (face === 'author' && isPscaleMcpEnabled()) {
-      const agentId = getPscaleAgentId()
-      const secret = getPscaleSecret()
-      const block = kernelRef.current.block
-      const liquid = block.pending_liquid
-      if (agentId && secret && liquid) {
-        const targetAddr = (block.edit_address ?? block.spatial_address ?? '111')
-          .toString().replace(/^thornkeep-world@/, '')
-        writeObservation(agentId, secret, targetAddr, liquid)
-          .then(r => {
-            if (r.ok) {
-              setKernelLogs(prev => [...prev.slice(-50), `🌊 pscale-mcp: observation written at position ${r.position}`])
-            } else {
-              setKernelLogs(prev => [...prev.slice(-50), `⚠ pscale-mcp write failed: ${r.error}`])
-            }
-          })
-          .catch(e => setKernelLogs(prev => [...prev.slice(-50), `⚠ pscale-mcp write error: ${e?.message ?? e}`]))
-      }
-    }
+    // (Author write-through to pscale-mcp's thornkeep-observations block — removed
+    // in feature/bsp-mcp-native. Author commits now go via the kernel's bsp() write
+    // to the agent's own character block at agent_id; the substrate is uniform.)
 
     // Clear liquid cards — kernel will handle the rest
     setLiquidCards([])
@@ -482,9 +304,66 @@ export default function App() {
     setKernelStatus('idle')
   }, [])
 
+  // --- Activate (beach mode, bsp-mcp native) ---
+  const handleActivate = useCallback(async (ctx: ActivationContext) => {
+    setApiKey(ctx.apiKey)
+    setCharacterName(ctx.agentId)
+    setGameCode(ctx.beach)
+    setShell(ctx.shell)
+    setPhase('loading')
+    setStatusMessage(ctx.bootstrapped ? 'Shell bootstrapped — entering…' : 'Entering…')
+
+    const block = createBlock(ctx.agentId, ctx.agentId, ctx.shell.description || `${ctx.agentId} — present.`, '', ctx.apiKey)
+
+    // Apply face defaults from shell — use Character's default address if no explicit starting address
+    const startingFace = ctx.shell.faces.find(f => f.canonical === 'character') ?? ctx.shell.faces[0]
+    const initialAddress = ctx.address || (startingFace?.default_address ?? '')
+    block.spatial_address = initialAddress
+    setCurrentAddress(initialAddress)
+
+    // Wire the agent blocks' hidden directories to this user's beach. The
+    // resolver follows the URL ref to fetch the beach block from the commons,
+    // and we inject it under the ref string so the prompt builder's getBlock(ref)
+    // call finds it. Per docs/protocol-block-references.md.
+    const beachRef = beachToRef(ctx.beach)
+    if (beachRef) {
+      for (const agentBlockName of ['medium-agent', 'soft-agent', 'hard-agent']) {
+        const ab = getBlock(agentBlockName)
+        if (ab) setHiddenRef(ab, '1', beachRef)
+      }
+      try {
+        const resolved = await resolveRef(beachRef, ctx.agentId)
+        if (resolved.block) injectBlock(beachRef, resolved.block)
+      } catch (e) {
+        console.warn('[activate] beach prefetch failed:', e)
+      }
+    }
+
+    const kernel = new Kernel(block, ctx.beach, makeKernelCallbacks())
+    kernelRef.current = kernel
+    kernel.start()
+    setDominoMode(block.trigger?.domino_mode ?? 'auto')
+
+    setStatusMessage('')
+    setPhase('ready')
+    fireOrientation(ctx.apiKey)
+  }, [makeKernelCallbacks, fireOrientation])
+
+  // Switch face — applies face's default address if blank
+  const handleFaceChange = useCallback((newFace: Face) => {
+    setFace(newFace)
+    if (shell && kernelRef.current) {
+      const f = shell.faces.find(x => x.canonical === newFace)
+      if (f && f.default_address) {
+        kernelRef.current.block.spatial_address = f.default_address
+        setCurrentAddress(f.default_address)
+      }
+    }
+  }, [shell])
+
   // --- Render ---
   if (phase === 'setup') {
-    return <SetupScreen onCreateGame={handleCreateGame} onJoinGame={handleJoinGame} onResumeGame={handleResumeGame} onImportGame={handleImportGame} />
+    return <SetupScreen onActivate={handleActivate} />
   }
 
   if (phase === 'loading') {
@@ -502,22 +381,54 @@ export default function App() {
       {/* Header */}
       <div className="flex items-center gap-3 px-4 h-[44px] border-b border-border/50 text-sm shrink-0">
         <span className="text-face-accent font-medium">{characterName}</span>
-        <select
-          value={face}
-          onChange={e => setFace(e.target.value as Face)}
-          className="text-xs bg-transparent border border-border/50 rounded px-1 py-0.5 text-face-accent cursor-pointer"
-          title="Switch face"
-        >
-          <option value="character">character</option>
-          <option value="author">author</option>
-          <option value="designer">designer</option>
-        </select>
-        <span className="text-muted-foreground text-xs font-mono"
-              style={{ cursor: 'pointer' }}
-              title="Click to copy game code"
-              onClick={() => navigator.clipboard.writeText(gameCode)}>
-          {gameCode}
-        </span>
+        {/* Face switcher — 4 CADO slots, shell-driven labels */}
+        <div className="flex items-center gap-0.5 border border-border/50 rounded overflow-hidden">
+          {(['character', 'author', 'designer', 'observer'] as const).map(f => {
+            const sf = shell?.faces.find(x => x.canonical === f)
+            const label = sf?.label?.split('—')[0]?.trim() || f
+            const active = face === f
+            return (
+              <button
+                key={f}
+                onClick={() => handleFaceChange(f)}
+                className="text-xs px-2 py-0.5"
+                style={{
+                  background: active ? 'rgba(255,255,255,0.08)' : 'transparent',
+                  color: active ? 'inherit' : 'var(--muted-foreground, #888)',
+                  border: 'none', cursor: 'pointer', fontWeight: active ? 600 : 400,
+                }}
+                title={sf?.label || f}
+              >
+                {label}
+              </button>
+            )
+          })}
+        </div>
+        {/* Unified address bar — scope icon + beach + address */}
+        <div className="flex items-center gap-1 text-xs font-mono border border-border/50 rounded px-2 py-0.5">
+          <span title="beach scope" style={{ opacity: 0.7 }}>🌊</span>
+          <span style={{ opacity: 0.7 }}>{gameCode}</span>
+          <span style={{ opacity: 0.4 }}>:</span>
+          <input
+            type="text"
+            value={currentAddress}
+            placeholder="(root)"
+            onChange={e => {
+              const v = e.target.value
+              setCurrentAddress(v)
+              if (kernelRef.current) kernelRef.current.block.spatial_address = v
+            }}
+            style={{ background: 'transparent', border: 'none', outline: 'none', color: 'inherit', width: '5rem', fontFamily: 'inherit' }}
+            title="Current pscale address. Edit to navigate."
+          />
+        </div>
+        {/* Substrate-tool tray — Level-2/3 relational acts */}
+        <SubstrateTray
+          agentId={characterName}
+          onAct={(act: SubstrateAct) => {
+            setKernelLogs(prev => [...prev.slice(-50), `🛠 substrate ${act.kind}: ${JSON.stringify(act).slice(0, 200)}`])
+          }}
+        />
         <span className="text-xs" style={{ opacity: 0.5 }}>
           {kernelStatus === 'idle' ? '🟢' : kernelStatus === 'resolving' ? '🟡' : kernelStatus === 'domino_responding' ? '💥' : '⚪'}
         </span>

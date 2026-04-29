@@ -56,12 +56,14 @@ export function ColumnHeader({
     character: "Character",
     author: "Author",
     designer: "Designer",
+    observer: "Observer",
   };
 
   const faceColorVars: Record<Face, string> = {
     character: "hsl(var(--face-character))",
     author: "hsl(var(--face-author))",
     designer: "hsl(var(--face-designer))",
+    observer: "hsl(var(--muted-foreground))",
   };
 
   return (
