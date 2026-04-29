@@ -78,7 +78,58 @@ interface BlockRow {
   position_hashes: Record<string, string>;
 }
 
+function isUrlAgent(agentId: string): boolean {
+  return agentId.startsWith('http://') || agentId.startsWith('https://');
+}
+
+/**
+ * Federated beach loader — fetches `<agent_id>/.well-known/pscale-beach`
+ * per protocol-pscale-beach-v2 §2.2. The endpoint returns a pscale block
+ * (or a slice if ?spindle/pscale provided). Block name selectable via ?block=.
+ */
+async function loadBlockFederated(agentId: string, name: string): Promise<BlockRow | null> {
+  const url = agentId.replace(/\/+$/, '') + '/.well-known/pscale-beach' + (name && name !== 'beach' ? '?block=' + encodeURIComponent(name) : '');
+  try {
+    const r = await fetch(url, { headers: { Accept: 'application/json' } });
+    if (!r.ok) {
+      if (r.status !== 404) console.warn('[bsp federated] non-OK:', r.status, url);
+      return null;
+    }
+    const block = await r.json() as PscaleNode;
+    return { owner_id: agentId, name, block, position_hashes: {} };
+  } catch (e) {
+    console.warn('[bsp federated] fetch failed:', e);
+    return null;
+  }
+}
+
+async function saveBlockFederated(agentId: string, name: string, block: PscaleNode, params: { spindle?: string; pscale_attention?: number; secret?: string }): Promise<{ ok: boolean; error?: string }> {
+  const url = agentId.replace(/\/+$/, '') + '/.well-known/pscale-beach';
+  const body: Record<string, unknown> = {
+    block: name,
+    spindle: params.spindle ?? '',
+    content: block,
+  };
+  if (params.pscale_attention !== undefined) body.pscale_attention = params.pscale_attention;
+  if (params.secret) body.secret = params.secret;
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const err = await r.text().catch(() => '');
+      return { ok: false, error: `HTTP ${r.status}: ${err.slice(0, 200)}` };
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 async function loadBlock(agentId: string, name: string): Promise<BlockRow | null> {
+  if (isUrlAgent(agentId)) return loadBlockFederated(agentId, name);
   const sb = getSupabase();
   if (!sb) return null;
   const { data, error } = await sb
@@ -95,6 +146,9 @@ async function loadBlock(agentId: string, name: string): Promise<BlockRow | null
 }
 
 async function saveBlock(agentId: string, name: string, block: PscaleNode, positionHashes: Record<string, string>): Promise<{ ok: boolean; error?: string }> {
+  if (isUrlAgent(agentId)) {
+    return saveBlockFederated(agentId, name, block, {});
+  }
   const sb = getSupabase();
   if (!sb) return { ok: false, error: 'Supabase not configured' };
   const { error } = await sb.from('pscale_blocks').upsert({
@@ -203,6 +257,17 @@ export async function bsp(params: BspParams): Promise<BspReadResult | BspWriteRe
   const isWrite = content !== undefined;
   const shape = deriveShape(parsed, pscale_attention, isWrite);
 
+  // Federated write — server handles the spindle apply per v2 §2.2.
+  if (isWrite && isUrlAgent(agent_id)) {
+    const r = await saveBlockFederated(agent_id, blockName, content as PscaleNode, {
+      spindle: spindle ?? '',
+      pscale_attention,
+      secret,
+    });
+    return r.ok ? { ok: true, shape } : { ok: false, shape, error: r.error };
+  }
+
+  // Commons (or any read).
   const row = await loadBlock(agent_id, blockName);
 
   if (!isWrite) {
@@ -211,6 +276,7 @@ export async function bsp(params: BspParams): Promise<BspReadResult | BspWriteRe
     return { ok: true, shape, data, raw: row.block };
   }
 
+  // Commons write — read+mutate+upsert (no remote spindle-apply).
   const lockErr = await checkLock(row, agent_id, blockName, secret);
   if (lockErr) return { ok: false, shape, error: lockErr };
 

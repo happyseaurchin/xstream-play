@@ -36,7 +36,7 @@ export default function SetupScreen({ onActivate }: SetupScreenProps) {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem(API_KEY_KEY) ?? '')
   const [agentId, setAgentId] = useState(() => localStorage.getItem(AGENT_ID_KEY) ?? '')
   const [secret, setSecret] = useState(() => sessionStorage.getItem(SECRET_SESSION_KEY) ?? '')
-  const [beach, setBeach] = useState(() => localStorage.getItem(BEACH_KEY) ?? '')
+  const [beach, setBeach] = useState(() => localStorage.getItem(BEACH_KEY) ?? 'https://happyseaurchin.com')
   const [address, setAddress] = useState(() => localStorage.getItem(ADDRESS_KEY) ?? '')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
