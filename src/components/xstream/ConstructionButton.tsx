@@ -198,14 +198,14 @@ export function ConstructionButton({
     >
       {/* Settings Menu */}
       {isOpen && (
-        <div className="absolute bottom-14 right-0 w-56 glass rounded-lg overflow-hidden shadow-lg animate-slide-up">
+        <div className="absolute bottom-14 right-0 w-56 glass rounded-lg overflow-hidden shadow-lg animate-slide-up text-foreground">
           <div className="px-4 py-3 border-b border-border/50">
-            <span className="text-sm font-medium">Settings</span>
+            <span className="text-sm font-medium text-foreground">Settings</span>
           </div>
 
           <div className="py-1">
             <div className="px-2 py-1">
-              <div className="flex items-center gap-3 px-2 py-1.5 text-sm">
+              <div className="flex items-center gap-3 px-2 py-1.5 text-sm text-foreground">
                 <Palette className="h-4 w-4 text-muted-foreground" />
                 <span>Theme</span>
               </div>
@@ -217,7 +217,7 @@ export function ConstructionButton({
                     className={`flex-1 px-2 py-1.5 text-xs rounded transition-colors ${
                       currentTheme === theme.value
                         ? "bg-primary text-primary-foreground"
-                        : "bg-muted/50 hover:bg-accent/50"
+                        : "bg-muted/50 text-foreground hover:bg-accent/50"
                     }`}
                   >
                     {theme.label}
@@ -228,7 +228,7 @@ export function ConstructionButton({
 
             <button
               onClick={() => setIsOpen(false)}
-              className="w-full flex items-center gap-3 px-4 py-2.5 text-sm hover:bg-accent/50 transition-colors"
+              className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-foreground hover:bg-accent/50 transition-colors"
             >
               <User className="h-4 w-4 text-muted-foreground" />
               Profile

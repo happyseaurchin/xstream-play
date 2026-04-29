@@ -382,33 +382,33 @@ export default function App() {
       <div className="flex items-center gap-3 px-4 h-[44px] border-b border-border/50 text-sm shrink-0">
         <span className="text-face-accent font-medium">{characterName}</span>
         {/* Face switcher — 4 CADO slots, shell-driven labels */}
-        <div className="flex items-center gap-0.5 border border-border/50 rounded overflow-hidden">
+        <div className="flex items-center gap-0.5 border border-border/50 rounded overflow-hidden shrink-0">
           {(['character', 'author', 'designer', 'observer'] as const).map(f => {
             const sf = shell?.faces.find(x => x.canonical === f)
-            const label = sf?.label?.split('—')[0]?.trim() || f
+            const long = sf?.label?.split('—')[0]?.trim() || f
+            const short = (long.charAt(0).toUpperCase()) // single letter — C/A/D/O
             const active = face === f
             return (
               <button
                 key={f}
                 onClick={() => handleFaceChange(f)}
-                className="text-xs px-2 py-0.5"
-                style={{
-                  background: active ? 'rgba(255,255,255,0.08)' : 'transparent',
-                  color: active ? 'inherit' : 'var(--muted-foreground, #888)',
-                  border: 'none', cursor: 'pointer', fontWeight: active ? 600 : 400,
-                }}
+                className={`text-xs px-2 py-0.5 border-none cursor-pointer transition-colors ${
+                  active
+                    ? 'bg-accent text-foreground font-semibold'
+                    : 'bg-transparent text-muted-foreground hover:text-foreground'
+                }`}
                 title={sf?.label || f}
               >
-                {label}
+                {short}
               </button>
             )
           })}
         </div>
         {/* Unified address bar — scope icon + beach + address */}
-        <div className="flex items-center gap-1 text-xs font-mono border border-border/50 rounded px-2 py-0.5">
-          <span title="beach scope" style={{ opacity: 0.7 }}>🌊</span>
-          <span style={{ opacity: 0.7 }}>{gameCode}</span>
-          <span style={{ opacity: 0.4 }}>:</span>
+        <div className="flex items-center gap-1 text-xs font-mono border border-border/50 rounded px-2 py-0.5 text-foreground min-w-0">
+          <span title="beach scope" className="text-muted-foreground shrink-0">🌊</span>
+          <span className="text-muted-foreground truncate max-w-[10rem]" title={gameCode}>{gameCode}</span>
+          <span className="text-muted-foreground shrink-0">:</span>
           <input
             type="text"
             value={currentAddress}
@@ -418,7 +418,8 @@ export default function App() {
               setCurrentAddress(v)
               if (kernelRef.current) kernelRef.current.block.spatial_address = v
             }}
-            style={{ background: 'transparent', border: 'none', outline: 'none', color: 'inherit', width: '5rem', fontFamily: 'inherit' }}
+            className="bg-transparent border-none outline-none text-foreground font-mono"
+            style={{ width: '5rem' }}
             title="Current pscale address. Edit to navigate."
           />
         </div>
