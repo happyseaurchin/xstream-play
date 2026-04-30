@@ -228,7 +228,9 @@ async function executeBsp(input: Record<string, any>, ctx: ExecutorContext): Pro
     }
     if ('data' in result) {
       const r = result as BspReadResult;
-      return JSON.stringify({ ok: true, shape: r.shape, data: r.data });
+      // Always include `raw` so the LLM can recover from a wrong-shape call.
+      // Federated GETs already fetch the whole block server-side; cost is sunk.
+      return JSON.stringify({ ok: true, shape: r.shape, data: r.data, raw: r.raw });
     }
     return JSON.stringify({ ok: true, shape: (result as BspWriteResult).shape });
   } catch (e) {
@@ -373,15 +375,19 @@ export function buildSoftSystemPrompt(opts: {
   sections.push('# How to use bsp — read carefully');
   sections.push('You hold six tools. The primary is `bsp`. Reads are free; writes pass through commit-gates derived from the user\'s shell at the active face. The five non-geometric primitives (pscale_create_collective, pscale_register, pscale_grain_reach, pscale_key_publish, pscale_verify_rider) are NOT yet wired in this client; if the user wants one, suggest the substrate tray (header icons).');
   sections.push('');
-  sections.push('Walking discipline — DO NOT confuse a block with the content under it:');
-  sections.push(' - bsp(spindle="") returns the WHOLE block — usually only the root underscore is interesting; the digit children are sub-positions you must walk.');
-  sections.push(' - To enumerate marks at a beach, ALWAYS call: bsp(agent_id=<beach-url>, block="beach", spindle="1"). This returns the marks ring (positions 1.1..1.9). Walking the root alone will only show you the beach\'s own description, NOT the marks.');
-  sections.push(' - Each entry under spindle="1" is either a string or an object {_, 1, 2, 3}. The _ underscore IS the mark content. The 1/2/3 fields tag agent_id / address / timestamp.');
-  sections.push(' - Distinguishing presence from substantive: a mark whose _ matches /^\\S+ @ \\S+ — present at / is a presence heartbeat (filter it OUT when reporting marks). Anything else is the user\'s substantive contribution.');
-  sections.push(' - Pool: bsp(agent_id=<beach-url>, block="beach", spindle="2.<N>") — Nth pool ring.');
-  sections.push(' - Passport: bsp(agent_id=<them>, block="passport") — _ description, 1 offers, 2 needs, 9 keys.');
-  sections.push(' - Frame disc: bsp(agent_id=<beach-url>, block="frame:<scene>") — entities at 1..9 with .1 liquid / .2 solid; _synthesis at the root.');
-  sections.push(' - Cold contact (inbox replacement): a structured mark on a beach the recipient watches.');
+  sections.push('Walking discipline — pick the right SHAPE (whetstone:2):');
+  sections.push(' - shape derives from spindle length and pscale_attention. P_att = P_end → point. P_att = P_end-1 → ring. P_att < P_end-1 (e.g. negative) → dir/subtree. spindle="" with no P_att → whole. With trailing star → walks the hidden directory.');
+  sections.push(' - bsp() responses always include `raw` (the whole block) alongside `data` (the walked shape). If `data` looks thin, look at `raw` and walk it yourself in your head before deciding the address is empty.');
+  sections.push('');
+  sections.push('Concrete recipes:');
+  sections.push(' - Enumerate marks at a beach: bsp(agent_id=<beach-url>, block="beach", spindle="1", pscale_attention=-2). Returns the dir at "1" — the marks ring as {1: <mark>, 2: <mark>, ...}.');
+  sections.push(' - Each mark is string-or-{_, 1, 2, 3}. The _ IS the mark content; 1/2/3 tag agent / address / timestamp.');
+  sections.push(' - Filter presence vs substantive: presence underscores match /^\\S+ @ \\S+ — present at /. Filter those OUT when listing contributions; keep them when listing presence/peers.');
+  sections.push(' - Read a single mark: bsp(spindle="1.<n>", pscale_attention=-1) returns the {_, 1, 2, 3} object.');
+  sections.push(' - Pool ring: bsp(agent_id=<beach-url>, block="beach", spindle="2.<N>", pscale_attention=-2).');
+  sections.push(' - Passport: bsp(agent_id=<them>, block="passport"). Whole block. _ description, 1 offers, 2 needs, 9 keys.');
+  sections.push(' - Frame disc: bsp(agent_id=<beach-url>, block="frame:<scene>"). Whole block. Entities at 1..9 with .1 liquid / .2 solid; _synthesis at root.');
+  sections.push(' - Cold contact (inbox replacement): drop a structured mark on a beach the recipient watches.');
   sections.push('');
   sections.push('When the user asks "what is here?" / "who is around?" / "what has X been thinking about?" — WALK the substrate at the right depth. If your first walk only returned a description, walk deeper. Do not invent. If a block is empty or absent after a real walk, name the gap.');
   sections.push('');

@@ -25,7 +25,7 @@ import { BeachKernel } from './kernel/beach-kernel'
 import { createBeachSession, type BeachSession, type MarkRow, type FrameView } from './kernel/beach-session'
 import { setHiddenRef, beachToRef, resolveRef, readShell, bootstrapShell, type AgentShell, type PresenceMark } from './lib/bsp-client'
 import { getBlock, injectBlock } from './kernel/block-store'
-import { callClaudeWithTools, callClaudeViaMcpConnector } from './kernel/claude-tools'
+import { callClaudeWithTools, callClaudeViaMcpConnector, composeContext, buildSoftSystemPrompt } from './kernel/claude-tools'
 import type { SolidBlock, LiquidCard, VapourEntry, Theme } from './types/xstream'
 import type { Face } from './types/xstream'
 import type { SoftLLMResponse } from './types'
@@ -225,7 +225,16 @@ export default function App() {
       let summary: string
       if (useConnector) {
         try {
-          const sysPrompt = `You are the soft-LLM for ${identity.handle || 'the user'} on a beach. You have access to bsp-mcp tools via a connected MCP server. Walk the substrate to answer; reflect what you find; 1–3 sentences, second-person present tense.`
+          // Compose the same context the in-client loop uses so the connector
+          // path knows where the user is (beach url, address, frame, shell,
+          // active face). Only the transport differs — Anthropic dispatches
+          // the bsp-mcp tools server-side instead of our in-client loop.
+          const ctx = composeContext({
+            session, shell, face, marks, presence, frame, userMessage: text,
+          })
+          const sysPrompt = buildSoftSystemPrompt({
+            agentId: identity.handle, face, ctx,
+          })
           const r = await callClaudeViaMcpConnector({
             apiKey: identity.apiKey,
             model: session.soft_model,
