@@ -2,23 +2,28 @@
  * ViewerDrawer — slide-down overlay showing what the active face attends to.
  *
  * Closed by default. Opens via the 👁 button in the header. Slides down over
- * the V/L/S surface; the user can drag the bottom edge to size it (resize
- * handle). Default height ~30vh.
+ * the V/L/S surface; the user can drag the bottom edge to size it.
  *
- * Content per face (v0.1):
+ * Content per face:
  *   character / observer  → marks at this address (the landscape)
- *   author                → "viewer for author face — coming"
- *   designer              → "viewer for designer face — coming"
+ *   author                → user's authored blocks: passport + shell manifest
+ *                           pointers + blocks owned at this beach
+ *   designer              → SHELL EDITOR — the reflexive move. Lets the user
+ *                           edit shell:1.<digit>.{1,2,3,4} (default address /
+ *                           knowledge gates / commit gates / persona) for each
+ *                           CADO face. Writes via bsp() with the user's secret.
+ *                           This is what makes the system self-shaping: the
+ *                           user can change the gates that constrain how the
+ *                           soft-LLM walks and writes for them.
  *
  * The viewer is secondary. Its job is to let the user "look up" briefly,
- * then dismiss it and return to V/L/S. It does NOT show what the user has
- * produced — that's solid's job.
+ * then dismiss it and return to V/L/S.
  */
 
 import { useState, useRef, useEffect } from 'react'
 import type { Face } from '../types/xstream'
 import type { MarkRow } from '../kernel/beach-session'
-import type { PresenceMark } from '../lib/bsp-client'
+import { bsp, readShell, type AgentShell, type PresenceMark, type ShellFace, type PscaleNode } from '../lib/bsp-client'
 
 export interface ViewerDrawerProps {
   open: boolean
@@ -28,6 +33,12 @@ export interface ViewerDrawerProps {
   address: string
   marks: MarkRow[]
   presence: PresenceMark[]
+  // Identity + shell — needed by author and designer faces. Pass-through;
+  // character/observer don't read these.
+  agentId: string
+  secret: string
+  shell: AgentShell | null
+  onShellSaved?: (next: AgentShell) => void
 }
 
 export function ViewerDrawer(props: ViewerDrawerProps) {
@@ -77,8 +88,12 @@ export function ViewerDrawer(props: ViewerDrawerProps) {
         {(props.face === 'character' || props.face === 'observer') && (
           <FaceCharacterObserver face={props.face} marks={props.marks} presence={props.presence} address={props.address} />
         )}
-        {props.face === 'author' && <FacePlaceholder face="author" />}
-        {props.face === 'designer' && <FacePlaceholder face="designer" />}
+        {props.face === 'author' && (
+          <FaceAuthor agentId={props.agentId} secret={props.secret} shell={props.shell} beach={props.beach} />
+        )}
+        {props.face === 'designer' && (
+          <FaceDesigner agentId={props.agentId} secret={props.secret} shell={props.shell} onShellSaved={props.onShellSaved} />
+        )}
       </div>
 
       {/* Resize handle */}
@@ -134,10 +149,258 @@ function FaceCharacterObserver({ face, marks, presence, address }: { face: Face;
   )
 }
 
-function FacePlaceholder({ face }: { face: 'author' | 'designer' }) {
+// ── Designer face — shell editor ──────────────────────────────────────────
+//
+// The reflexive move. Writes go to the user's own shell block via bsp() with
+// their session secret as proof of authority. After save, we re-read the
+// shell and call onShellSaved so the active face's gates flow into the next
+// soft-LLM call without a page reload.
+
+const FACE_LABELS: Record<'1' | '2' | '3' | '4', string> = {
+  '1': 'Character — engage as yourself',
+  '2': 'Author — edit your own blocks',
+  '3': 'Designer — edit your own faces',
+  '4': 'Observer — read-only',
+}
+
+function FaceDesigner({ agentId, secret, shell, onShellSaved }: { agentId: string; secret: string; shell: AgentShell | null; onShellSaved?: (s: AgentShell) => void }) {
+  if (!agentId) {
+    return <div className="text-sm text-muted-foreground italic">Identify in the floating button (handle + passphrase) to edit your shell.</div>
+  }
+  if (!shell) {
+    return <div className="text-sm text-muted-foreground italic">Loading shell at <code>{agentId}:shell</code>…</div>
+  }
   return (
-    <div className="text-sm text-muted-foreground italic">
-      Viewer for <strong>{face}</strong> face — coming. Will show {face === 'author' ? 'authored content (spatial blocks, documents being co-authored, prior versions)' : 'design blocks (rules, conventions, agent shells, skill packs in scope)'}.
+    <div className="space-y-3">
+      <div className="text-xs text-muted-foreground">
+        Editing <code className="font-mono">{agentId}:shell</code>. Each face's <em>knowledge_gates</em> filters what the soft-LLM reads under that face; <em>commit_gates</em> filters what it can write. Comma-separated entries: <code>{agentId}</code>, <code>{agentId}:passport</code>, <code>https://…</code>, <code>sed:foo</code>.
+      </div>
+      {(['1', '2', '3', '4'] as const).map(digit => {
+        const face = shell.faces.find(f => f.digit === digit)
+        return (
+          <FaceCard
+            key={digit}
+            digit={digit}
+            face={face}
+            agentId={agentId}
+            secret={secret}
+            onShellSaved={onShellSaved}
+          />
+        )
+      })}
     </div>
   )
+}
+
+function FaceCard({ digit, face, agentId, secret, onShellSaved }: { digit: '1' | '2' | '3' | '4'; face: ShellFace | undefined; agentId: string; secret: string; onShellSaved?: (s: AgentShell) => void }) {
+  const [label, setLabel] = useState(face?.label ?? FACE_LABELS[digit])
+  const [defaultAddr, setDefaultAddr] = useState(face?.default_address ?? '')
+  const [knowledge, setKnowledge] = useState(face?.knowledge_gates ?? '')
+  const [commit, setCommit] = useState(face?.commit_gates ?? '')
+  const [persona, setPersona] = useState(face?.persona ?? '')
+  const [saving, setSaving] = useState(false)
+  const [savedAt, setSavedAt] = useState<number | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  // Re-sync when shell prop changes (e.g. after save in another card).
+  useEffect(() => {
+    setLabel(face?.label ?? FACE_LABELS[digit])
+    setDefaultAddr(face?.default_address ?? '')
+    setKnowledge(face?.knowledge_gates ?? '')
+    setCommit(face?.commit_gates ?? '')
+    setPersona(face?.persona ?? '')
+  }, [face, digit])
+
+  const dirty =
+    (face?.label ?? FACE_LABELS[digit]) !== label ||
+    (face?.default_address ?? '') !== defaultAddr ||
+    (face?.knowledge_gates ?? '') !== knowledge ||
+    (face?.commit_gates ?? '') !== commit ||
+    (face?.persona ?? '') !== persona
+
+  async function save() {
+    if (!secret) {
+      setError('Passphrase required to write your shell.')
+      return
+    }
+    setSaving(true)
+    setError(null)
+    const content: PscaleNode = {
+      _: label,
+      '1': defaultAddr,
+      '2': knowledge,
+      '3': commit,
+      '4': persona,
+    }
+    const result = await bsp({
+      agent_id: agentId,
+      block: 'shell',
+      spindle: '1.' + digit,
+      content,
+      secret,
+    })
+    setSaving(false)
+    if (!result.ok) {
+      setError(('error' in result ? result.error : null) ?? 'write failed')
+      return
+    }
+    setSavedAt(Date.now())
+    // Re-read shell and bubble up so face gates take effect immediately.
+    const next = await readShell(agentId)
+    if (next && onShellSaved) onShellSaved(next)
+  }
+
+  const labelShort = (FACE_LABELS[digit].split('—')[0] || '').trim()
+
+  return (
+    <div className="border border-border/40 rounded p-3 bg-card/40 space-y-2">
+      <div className="flex items-baseline gap-2">
+        <span className="text-[10px] text-muted-foreground font-mono">shell:1.{digit}</span>
+        <span className="text-sm font-medium">{labelShort}</span>
+        <div className="ml-auto flex items-center gap-2">
+          {error && <span className="text-[11px] text-destructive">{error}</span>}
+          {savedAt && !dirty && !error && <span className="text-[11px] text-emerald-500">saved</span>}
+          <button
+            onClick={save}
+            disabled={!dirty || saving || !secret}
+            className="text-[11px] px-2 py-0.5 rounded bg-primary text-primary-foreground disabled:opacity-30 disabled:cursor-not-allowed hover:opacity-90"
+            title={!secret ? 'add a passphrase in Identity to save' : dirty ? 'save this face' : 'no changes to save'}
+          >
+            {saving ? '…' : 'save'}
+          </button>
+        </div>
+      </div>
+      <FieldRow label="label" hint="shell:1.<digit>._ — short name + intent" value={label} onChange={setLabel} />
+      <FieldRow label="default address" hint="pscale coord this face starts at" value={defaultAddr} onChange={setDefaultAddr} />
+      <FieldRow label="knowledge gates" hint="comma-separated read scope refs" value={knowledge} onChange={setKnowledge} />
+      <FieldRow label="commit gates" hint="comma-separated write scope refs" value={commit} onChange={setCommit} />
+      <FieldRow label="persona" hint="soft-LLM persona for this face" value={persona} onChange={setPersona} multiline />
+    </div>
+  )
+}
+
+function FieldRow({ label, hint, value, onChange, multiline }: { label: string; hint: string; value: string; onChange: (v: string) => void; multiline?: boolean }) {
+  return (
+    <label className="block">
+      <div className="flex items-baseline gap-2 mb-0.5">
+        <span className="text-[11px] font-medium text-foreground">{label}</span>
+        <span className="text-[10px] text-muted-foreground">{hint}</span>
+      </div>
+      {multiline ? (
+        <textarea
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          rows={2}
+          className="w-full px-2 py-1 text-xs font-mono rounded border border-border/40 bg-background text-foreground outline-none focus:border-primary/60 resize-y"
+        />
+      ) : (
+        <input
+          type="text"
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          className="w-full px-2 py-1 text-xs font-mono rounded border border-border/40 bg-background text-foreground outline-none focus:border-primary/60"
+        />
+      )}
+    </label>
+  )
+}
+
+// ── Author face — owned blocks ────────────────────────────────────────────
+//
+// Lists the agent's own named blocks: passport, shell manifest entries, plus
+// a "what's at this beach as me?" probe. Click an entry to expand into a
+// raw JSON view (read-only for now — write affordances come with a richer
+// block editor in a follow-up). The substrate-tray actions on the input
+// panel cover the canonical writes (passport, register, engage, keys).
+
+function FaceAuthor({ agentId, secret, shell, beach }: { agentId: string; secret: string; shell: AgentShell | null; beach: string }) {
+  const [passport, setPassport] = useState<PscaleNode | null>(null)
+  const [loadingPassport, setLoadingPassport] = useState(false)
+
+  // void to satisfy lint — secret may be referenced in writes added later
+  void secret
+
+  useEffect(() => {
+    if (!agentId) { setPassport(null); return }
+    let cancelled = false
+    setLoadingPassport(true)
+    ;(async () => {
+      const r = await bsp({ agent_id: agentId, block: 'passport' })
+      if (cancelled) return
+      setLoadingPassport(false)
+      setPassport(r.ok && 'raw' in r ? r.raw : null)
+    })()
+    return () => { cancelled = true }
+  }, [agentId])
+
+  if (!agentId) {
+    return <div className="text-sm text-muted-foreground italic">Identify in the floating button to view what you've authored.</div>
+  }
+
+  return (
+    <div className="space-y-3">
+      <BlockCard
+        label={`passport`}
+        sublabel={`bsp(agent_id="${agentId}", block="passport")`}
+        body={loadingPassport ? '(loading)' : passport ? formatPscale(passport, 0) : '(none — use 🪪 in the input panel to publish one)'}
+        emptyHint="No passport yet"
+      />
+      {shell && shell.block_manifest.length > 0 && (
+        <div>
+          <div className="text-[11px] text-muted-foreground uppercase tracking-wider mb-1">Block manifest (shell:3)</div>
+          <ul className="space-y-1 text-xs font-mono">
+            {shell.block_manifest.map((ref, i) => (
+              <li key={i} className="px-2 py-1 border border-border/30 rounded bg-card/30">{ref}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {shell && shell.watched_beaches.length > 0 && (
+        <div>
+          <div className="text-[11px] text-muted-foreground uppercase tracking-wider mb-1">Watched beaches (shell:2)</div>
+          <ul className="space-y-1 text-xs font-mono">
+            {shell.watched_beaches.map((url, i) => {
+              const here = url === beach
+              return <li key={i} className={`px-2 py-1 border border-border/30 rounded ${here ? 'bg-accent/30' : 'bg-card/30'}`}>{url}{here && <span className="ml-2 text-[10px] text-muted-foreground">(current)</span>}</li>
+            })}
+          </ul>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function BlockCard({ label, sublabel, body, emptyHint }: { label: string; sublabel?: string; body: string; emptyHint?: string }) {
+  return (
+    <div className="border border-border/40 rounded bg-card/40">
+      <div className="px-3 py-1.5 border-b border-border/30 flex items-baseline gap-2">
+        <span className="text-sm font-medium">{label}</span>
+        {sublabel && <span className="text-[10px] text-muted-foreground font-mono">{sublabel}</span>}
+      </div>
+      <pre className="px-3 py-2 text-[11px] font-mono whitespace-pre-wrap text-foreground/80 leading-relaxed">
+        {body || emptyHint || ''}
+      </pre>
+    </div>
+  )
+}
+
+/** Compact pretty-print of a pscale block, capped to keep the viewer light. */
+function formatPscale(node: PscaleNode, depth: number, maxDepth = 3, maxStrLen = 200): string {
+  if (typeof node === 'string') {
+    return node.length > maxStrLen ? node.slice(0, maxStrLen) + '…' : node
+  }
+  if (depth >= maxDepth) return '{…}'
+  if (typeof node !== 'object' || node === null) return ''
+  const obj = node as Record<string, PscaleNode>
+  const lines: string[] = []
+  const indent = '  '.repeat(depth)
+  if (typeof obj._ === 'string') lines.push(`${indent}_: ${obj._.length > maxStrLen ? obj._.slice(0, maxStrLen) + '…' : obj._}`)
+  else if (typeof obj._ === 'object') lines.push(`${indent}_: ${formatPscale(obj._, depth + 1, maxDepth, maxStrLen)}`)
+  for (const k of '123456789') {
+    if (!(k in obj)) continue
+    const v = obj[k]
+    if (typeof v === 'string') lines.push(`${indent}${k}: ${v.length > maxStrLen ? v.slice(0, maxStrLen) + '…' : v}`)
+    else if (typeof v === 'object' && v !== null) lines.push(`${indent}${k}: ${formatPscale(v, depth + 1, maxDepth, maxStrLen)}`)
+  }
+  return lines.join('\n')
 }

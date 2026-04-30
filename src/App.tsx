@@ -659,6 +659,10 @@ export default function App() {
           address={currentAddress}
           marks={marks}
           presence={presence}
+          agentId={identity.handle}
+          secret={identity.secret}
+          shell={shell}
+          onShellSaved={setShell}
         />
       </div>
 
