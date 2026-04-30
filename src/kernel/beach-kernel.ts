@@ -46,10 +46,17 @@ async function getPresenceDigit(beach: string, agentId: string): Promise<string>
   return d;
 }
 
+// A presence heartbeat is a structured mark whose underscore matches the
+// canonical "<agent_id> @ <ts> — present at <addr>" form. Marks that share
+// the three required tag fields (1=agent, 2=address, 3=timestamp) but carry
+// substantive user-typed text in the underscore are NOT presence — they're
+// the user's contribution and belong in the solid stream.
+const PRESENCE_RE = /^\S+ @ \S+ — present at /;
 function isPresenceMark(node: PscaleNode): boolean {
   if (typeof node !== 'object' || node === null) return false;
   const obj = node as Record<string, PscaleNode>;
-  return typeof obj['1'] === 'string' && typeof obj['2'] === 'string' && typeof obj['3'] === 'string';
+  if (typeof obj['1'] !== 'string' || typeof obj['2'] !== 'string' || typeof obj['3'] !== 'string') return false;
+  return typeof obj._ === 'string' && PRESENCE_RE.test(obj._ as string);
 }
 
 function readMarks(rawBlock: PscaleNode | null, addressFilter: string): MarkRow[] {
