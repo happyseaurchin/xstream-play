@@ -1,37 +1,55 @@
 /**
  * App.tsx — xstream beach client.
  *
- * Anonymous landing on the V/L/S surface. No setup gate. Identity, viewer
- * and substrate tools live in the header as toggles. The user can:
+ * Composition: AppHeader (face/address/frame/viewer) + three zones with
+ * draggable separators (Solid/Liquid/Vapour) + ConstructionButton (floating
+ * home of vapour input + identity + theme).
  *
- *   - type into vapour and think privately (always);
- *   - identify (👤) to leave traces (commit to substrate);
- *   - add an API key to engage the soft-LLM (⇧↵) and medium-LLM on commit;
- *   - open the viewer (👁) to see what their face attends to on the beach.
+ * Anonymous landing — no setup gate. Identity lives inside the button.
+ *
+ * Vapour input flow (per the original design):
+ *   ⌘↵ → ask soft-LLM (Tier 2; needs API key)
+ *   ⇧↵ → submit to liquid (pending — appears as own liquid card)
+ *   Click commit on liquid card → write to substrate (mark or frame liquid)
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react'
-import { IdentityPopover, loadIdentity, type IdentityValues } from './components/IdentityPopover'
+import { ConstructionButton } from './components/xstream/ConstructionButton'
+import { SolidZone } from './components/xstream/SolidZone'
+import { LiquidZone } from './components/xstream/LiquidZone'
+import { VapourZone } from './components/xstream/VapourZone'
+import { DraggableSeparator } from './components/DraggableSeparator'
 import { ViewerDrawer } from './components/ViewerDrawer'
 import { SubstrateTray, type SubstrateAct } from './components/SubstrateTray'
-import { VLSPanel } from './components/VLSPanel'
 import { BeachKernel } from './kernel/beach-kernel'
 import { createBeachSession, type BeachSession, type MarkRow, type FrameView } from './kernel/beach-session'
 import { setHiddenRef, beachToRef, resolveRef, readShell, bootstrapShell, type AgentShell, type PresenceMark } from './lib/bsp-client'
 import { getBlock, injectBlock } from './kernel/block-store'
 import { callClaude } from './kernel/claude-direct'
+import type { SolidBlock, LiquidCard, VapourEntry, Theme } from './types/xstream'
 import type { Face } from './types/xstream'
+import type { SoftLLMResponse } from './types'
 import './App.css'
 
-type Theme = 'dark' | 'light' | 'cyber' | 'soft'
-
-const DEFAULT_BEACH = 'https://happyseaurchin.com'
+const HANDLE_KEY = 'xstream:handle'
+const SECRET_SESSION_KEY = 'xstream:secret'
+const API_KEY_SESSION_KEY = 'xstream:api-key'
 const BEACH_KEY = 'xstream:current-beach'
+const DEFAULT_BEACH = 'https://happyseaurchin.com'
+
+const MIN_ZONE = 80
+
+function loadIdentity() {
+  return {
+    handle: localStorage.getItem(HANDLE_KEY) ?? '',
+    secret: sessionStorage.getItem(SECRET_SESSION_KEY) ?? '',
+    apiKey: sessionStorage.getItem(API_KEY_SESSION_KEY) ?? localStorage.getItem('xstream-api-key') ?? '',
+  }
+}
 
 export default function App() {
-  const [identity, setIdentity] = useState<IdentityValues>(() => loadIdentity())
-  const [identityOpen, setIdentityOpen] = useState(false)
-  const [viewerOpen, setViewerOpen] = useState(false)
+  // Identity — lives in localStorage (handle) + sessionStorage (secret, key)
+  const [identity, setIdentity] = useState(() => loadIdentity())
 
   const [theme, setTheme] = useState<Theme>(
     () => (localStorage.getItem('xstream-theme') as Theme) || 'light'
@@ -44,6 +62,7 @@ export default function App() {
   const [currentAddress, setCurrentAddress] = useState('')
   const [frameInput, setFrameInput] = useState('')
   const [shell, setShell] = useState<AgentShell | null>(null)
+  const [viewerOpen, setViewerOpen] = useState(false)
 
   // Live data from kernel
   const [presence, setPresence] = useState<PresenceMark[]>([])
@@ -53,10 +72,17 @@ export default function App() {
 
   // Vapour
   const [vapor, setVapor] = useState('')
-  const [softResponse, setSoftResponse] = useState<string | null>(null)
+  const [softResponse, setSoftResponse] = useState<SoftLLMResponse | null>(null)
   const [softPending, setSoftPending] = useState(false)
 
-  // Build a session synchronously from identity + beach + address
+  // Pending liquid card (after ⇧↵, before commit)
+  const [pendingLiquid, setPendingLiquid] = useState<string | null>(null)
+
+  // Zone heights — proportional, draggable
+  const [solidHeight, setSolidHeight] = useState(() => Math.round(window.innerHeight * 0.35))
+  const [liquidHeight, setLiquidHeight] = useState(() => Math.round(window.innerHeight * 0.30))
+
+  // Session
   const [session, setSession] = useState<BeachSession>(() =>
     createBeachSession({
       agent_id: identity.handle,
@@ -69,13 +95,11 @@ export default function App() {
 
   const kernelRef = useRef<BeachKernel | null>(null)
 
-  // Persist theme + face + beach
   useEffect(() => { localStorage.setItem('xstream-theme', theme) }, [theme])
   useEffect(() => { localStorage.setItem('xstream-face', face) }, [face])
   useEffect(() => { localStorage.setItem(BEACH_KEY, beach) }, [beach])
 
-  // Kernel lifecycle: keep one kernel instance alive across the session;
-  // mutate its session via setters (don't recreate).
+  // Kernel lifetime
   useEffect(() => {
     if (kernelRef.current) return
     const kernel = new BeachKernel(session, {
@@ -87,19 +111,13 @@ export default function App() {
     })
     kernelRef.current = kernel
     kernel.start()
-    return () => {
-      kernel.stop()
-      kernelRef.current = null
-    }
+    return () => { kernel.stop(); kernelRef.current = null }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // When identity changes, attempt shell read/bootstrap & wire agent blocks.
+  // Shell read on identity change
   useEffect(() => {
-    if (!identity.handle) {
-      setShell(null)
-      return
-    }
+    if (!identity.handle) { setShell(null); return }
     let cancelled = false
     ;(async () => {
       let s = await readShell(identity.handle)
@@ -112,7 +130,7 @@ export default function App() {
     return () => { cancelled = true }
   }, [identity.handle, identity.secret, beach])
 
-  // When beach changes, wire agent blocks' hidden directories + prefetch the beach block.
+  // Wire agent block hidden directories on beach change
   useEffect(() => {
     const beachRef = beachToRef(beach)
     if (!beachRef) return
@@ -130,7 +148,7 @@ export default function App() {
     })()
   }, [beach, identity.handle])
 
-  // Sync session to identity / beach / address / api key changes (kernel mutates internally).
+  // Sync session into the running kernel
   useEffect(() => {
     setSession(prev => {
       const next: BeachSession = {
@@ -141,7 +159,6 @@ export default function App() {
         current_beach: beach,
         current_address: currentAddress,
       }
-      // Mutate the kernel's running session so its next cycle picks up changes.
       if (kernelRef.current) {
         kernelRef.current.session.agent_id = next.agent_id
         kernelRef.current.session.secret = next.secret
@@ -153,13 +170,28 @@ export default function App() {
     })
   }, [identity.handle, identity.secret, identity.apiKey, beach, currentAddress])
 
+  // Persist identity changes
+  useEffect(() => {
+    if (identity.handle) localStorage.setItem(HANDLE_KEY, identity.handle); else localStorage.removeItem(HANDLE_KEY)
+    if (identity.secret) sessionStorage.setItem(SECRET_SESSION_KEY, identity.secret); else sessionStorage.removeItem(SECRET_SESSION_KEY)
+    if (identity.apiKey) sessionStorage.setItem(API_KEY_SESSION_KEY, identity.apiKey); else sessionStorage.removeItem(API_KEY_SESSION_KEY)
+  }, [identity])
+
+  // ── Handlers ──
+
+  const handleTopDrag = useCallback((delta: number) => {
+    setSolidHeight(h => Math.max(MIN_ZONE, h + delta))
+    setLiquidHeight(h => Math.max(MIN_ZONE, h - delta))
+  }, [])
+  const handleBottomDrag = useCallback((delta: number) => {
+    setLiquidHeight(h => Math.max(MIN_ZONE, h + delta))
+  }, [])
+
   const handleFaceChange = useCallback((newFace: Face) => {
     setFace(newFace)
     if (shell) {
       const f = shell.faces.find(x => x.canonical === newFace)
-      if (f && f.default_address) {
-        setCurrentAddress(f.default_address)
-      }
+      if (f && f.default_address) setCurrentAddress(f.default_address)
     }
   }, [shell])
 
@@ -168,76 +200,173 @@ export default function App() {
     kernelRef.current.setFrame(frameInput.trim(), '1')
     setSession(s => ({ ...s, current_frame: frameInput.trim(), entity_position: '1' }))
   }, [frameInput])
-
   const handleLeaveFrame = useCallback(() => {
     kernelRef.current?.setFrame(null, null)
     setSession(s => ({ ...s, current_frame: null, entity_position: null }))
   }, [])
 
-  const handleCommit = useCallback(async (text: string) => {
-    if (!kernelRef.current) return
-    if (kernelRef.current.session.current_frame) {
-      await kernelRef.current.commitLiquid(text)
-    } else {
-      await kernelRef.current.dropMark(text)
+  // ⌘↵ — ask soft-LLM (Tier 2)
+  const handleQuery = useCallback(async (text: string) => {
+    if (!identity.apiKey) {
+      setSoftResponse({
+        id: Date.now().toString(), originalInput: text,
+        text: 'Add an API key in identity (button → Identity) to query the soft-LLM.',
+        softType: 'info', face, frameId: null,
+      })
+      return
     }
-  }, [])
-
-  const handleSoftQuery = useCallback(async (text: string) => {
-    if (!identity.apiKey) return
     setSoftPending(true)
     setSoftResponse(null)
     try {
       const softAgent = getBlock('soft-agent')
-      const systemPrompt = typeof softAgent === 'object' && softAgent && '_' in softAgent
-        ? (typeof (softAgent as Record<string, unknown>)._ === 'string'
-            ? (softAgent as Record<string, string>)._
-            : 'You are a soft-LLM partner. Help the user think.')
-        : 'You are a soft-LLM partner. Help the user think.'
-      const prompt = `${systemPrompt}\n\nUser thought: ${text}`
-      const reply = await callClaude(identity.apiKey, 'claude-haiku-4-5-20251001', prompt, 512)
-      setSoftResponse(reply)
+      const sysPrompt = (softAgent && typeof softAgent === 'object' && '_' in softAgent && typeof (softAgent as Record<string, unknown>)._ === 'string')
+        ? ((softAgent as Record<string, string>)._ as string)
+        : 'You are a soft-LLM thinking partner. Help the user think.'
+      const reply = await callClaude(identity.apiKey, 'claude-haiku-4-5-20251001',
+        `${sysPrompt}\n\nUser thought: ${text}`, 512)
+      setSoftResponse({
+        id: Date.now().toString(), originalInput: text,
+        text: reply, softType: 'refine', face, frameId: null,
+      })
     } catch (e) {
-      setSoftResponse(`(soft error: ${e instanceof Error ? e.message : 'unknown'})`)
+      setSoftResponse({
+        id: Date.now().toString(), originalInput: text,
+        text: `(soft error: ${e instanceof Error ? e.message : 'unknown'})`,
+        softType: 'info', face, frameId: null,
+      })
     } finally {
       setSoftPending(false)
     }
-  }, [identity.apiKey])
+  }, [identity.apiKey, face])
 
-  const handleSaveIdentity = useCallback((v: IdentityValues) => {
-    setIdentity(v)
+  // ⇧↵ — submit to liquid (pending)
+  const handleSubmit = useCallback((text: string) => {
+    setPendingLiquid(text)
+    setVapor('')
+  }, [])
+
+  // Click commit on the self liquid card → write to substrate
+  const handleCommit = useCallback(async (_cardId: string) => {
+    if (!pendingLiquid || !kernelRef.current) return
+    if (!identity.handle || !identity.secret) {
+      // Surface as soft note rather than silently dropping
+      setSoftResponse({
+        id: Date.now().toString(), originalInput: pendingLiquid,
+        text: 'Identify (button → Identity → handle + passphrase) to commit to the substrate.',
+        softType: 'info', face, frameId: null,
+      })
+      return
+    }
+    if (kernelRef.current.session.current_frame) {
+      await kernelRef.current.commitLiquid(pendingLiquid)
+    } else {
+      await kernelRef.current.dropMark(pendingLiquid)
+    }
+    setPendingLiquid(null)
+  }, [pendingLiquid, identity.handle, identity.secret, face])
+
+  const handleCopyToVapor = useCallback((text: string) => {
+    setVapor(text)
   }, [])
 
   const handleAct = useCallback((act: SubstrateAct) => {
     setLogs(prev => [...prev.slice(-50), `🛠 substrate ${act.kind}: ${JSON.stringify(act).slice(0, 200)}`])
-    // TODO: wire to real bsp() / pscale_register / pscale_grain_reach calls.
   }, [])
 
-  const isAnonymous = !identity.handle
+  // ── Derived data for the zones ──
+
+  // Liquid cards: my pending + present peers
+  const liquidCards: LiquidCard[] = (() => {
+    const cards: LiquidCard[] = []
+    if (pendingLiquid) {
+      cards.push({
+        id: 'self-pending',
+        userId: 'self',
+        userName: identity.handle || 'anon',
+        content: pendingLiquid,
+        timestamp: Date.now(),
+      })
+    }
+    if (frame && session.entity_position) {
+      // In-frame: peer entities with non-empty liquid
+      for (const e of frame.entities) {
+        if (e.position === session.entity_position) continue
+        if (!e.liquid) continue
+        cards.push({
+          id: `entity-${e.position}`,
+          userId: `entity-${e.position}`,
+          userName: e.underscore?.split('—')[0]?.trim() || `entity ${e.position}`,
+          content: e.liquid,
+          timestamp: Date.now(),
+        })
+      }
+    } else {
+      // Beachcombing: present peers as liquid cards (their handle as userName)
+      for (const p of presence) {
+        if (p.agent_id === identity.handle) continue
+        cards.push({
+          id: `peer-${p.agent_id}`,
+          userId: `peer-${p.agent_id}`,
+          userName: p.agent_id,
+          content: p.summary || `present at ${p.address || '/'}`,
+          timestamp: p.timestamp ? Date.parse(p.timestamp) : Date.now(),
+        })
+      }
+    }
+    return cards
+  })()
+
+  // Solid blocks: my contributions (own marks) or frame synthesis
+  const solidBlocks: SolidBlock[] = (() => {
+    const out: SolidBlock[] = []
+    if (frame && frame.synthesis) {
+      out.push({
+        id: 'synthesis',
+        title: 'Synthesis',
+        content: frame.synthesis + (frame.synthesis_envelope ? `\n\n${frame.synthesis_envelope}` : ''),
+        timestamp: Date.now(),
+      })
+    }
+    if (frame && session.entity_position) {
+      const my = frame.entities.find(e => e.position === session.entity_position)
+      if (my && my.solid) {
+        out.push({ id: 'self-solid', title: 'You · last committed', content: my.solid, timestamp: Date.now() })
+      }
+    } else {
+      // Beachcombing: my own marks at this address
+      for (const m of marks) {
+        if (m.is_presence) continue
+        if (!identity.handle || m.agent_id !== identity.handle) continue
+        out.push({
+          id: `mark-${m.digit}`,
+          content: m.text,
+          timestamp: m.timestamp ? Date.parse(m.timestamp) : Date.now(),
+        })
+      }
+    }
+    return out
+  })()
+
+  // Vapour entries: peers' vapour (none today — placeholder for realtime)
+  const vapourEntries: VapourEntry[] = []
+
+  const placeholderText = identity.apiKey
+    ? 'type · ⌘↵ ask soft · ⇧↵ submit'
+    : (identity.handle ? 'type · ⇧↵ submit' : 'type to think · identify in button to engage')
 
   return (
     <div className="app relative" data-theme={theme} data-face={face}>
       {/* Header */}
-      <div className="flex items-center gap-2 px-3 h-[44px] border-b border-border/50 text-sm shrink-0 z-10 relative bg-background">
-        {/* Identity indicator */}
-        <button
-          onClick={() => setIdentityOpen(true)}
-          className="flex items-center gap-1.5 text-xs px-2 py-0.5 rounded border border-border/50 hover:bg-accent text-foreground"
-          title="identity"
-        >
-          <span>👤</span>
-          <span className={isAnonymous ? 'text-muted-foreground italic' : 'font-medium text-face-accent'}>
-            {isAnonymous ? 'anon' : identity.handle}
-          </span>
-          {identity.apiKey && <span className="text-[10px] text-muted-foreground">·llm</span>}
-        </button>
+      <div className="flex items-center gap-2 px-3 h-[44px] border-b border-border/50 text-sm shrink-0 z-10 relative bg-background overflow-x-auto">
+        <span className={`text-xs font-mono ${identity.handle ? 'text-face-accent font-semibold' : 'text-muted-foreground italic'}`}>
+          {identity.handle || 'anon'}
+        </span>
 
         {/* Face switcher */}
         <div className="flex items-center gap-0.5 border border-border/50 rounded overflow-hidden shrink-0">
           {(['character', 'author', 'designer', 'observer'] as const).map(f => {
             const sf = shell?.faces.find(x => x.canonical === f)
             const long = sf?.label?.split('—')[0]?.trim() || f
-            const short = long.charAt(0).toUpperCase()
             const active = face === f
             return (
               <button
@@ -248,14 +377,14 @@ export default function App() {
                 }`}
                 title={sf?.label || f}
               >
-                {short}
+                {long.charAt(0).toUpperCase()}
               </button>
             )
           })}
         </div>
 
         {/* Address bar */}
-        <div className="flex items-center gap-1 text-xs font-mono border border-border/50 rounded px-2 py-0.5 text-foreground min-w-0">
+        <div className="flex items-center gap-1 text-xs font-mono border border-border/50 rounded px-2 py-0.5 text-foreground min-w-0 shrink">
           <span title="beach" className="text-muted-foreground shrink-0">🌊</span>
           <input
             type="text"
@@ -263,7 +392,7 @@ export default function App() {
             onChange={e => setBeach(e.target.value)}
             className="bg-transparent border-none outline-none text-muted-foreground"
             style={{ width: '11rem' }}
-            title="beach (URL or commons key)"
+            title="beach"
           />
           <span className="text-muted-foreground shrink-0">:</span>
           <input
@@ -306,7 +435,7 @@ export default function App() {
 
         <SubstrateTray agentId={identity.handle || '(anon)'} onAct={handleAct} />
 
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex items-center gap-2 shrink-0">
           <button
             onClick={() => setViewerOpen(v => !v)}
             className={`text-xs px-2 py-0.5 rounded border border-border/50 transition-colors ${viewerOpen ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
@@ -314,37 +443,29 @@ export default function App() {
           >
             👁
           </button>
-
           <span className="text-xs text-muted-foreground" title="presence at this address">
             {presence.length > 0 ? `🟢 ${presence.length}` : '·'}
           </span>
-
-          <button
-            onClick={() => {
-              const next: Record<Theme, Theme> = { dark: 'light', light: 'cyber', cyber: 'soft', soft: 'dark' }
-              setTheme(next[theme])
-            }}
-            className="text-xs px-2 py-0.5 rounded border border-border/50 text-muted-foreground hover:text-foreground"
-            title={`theme: ${theme}`}
-          >
-            {theme}
-          </button>
         </div>
       </div>
 
-      {/* V/L/S surface */}
-      <div className="flex-1 min-h-0 relative">
-        <VLSPanel
-          session={session}
-          presence={presence}
-          marks={marks}
-          frame={frame}
-          vapor={vapor}
-          onVaporChange={setVapor}
+      {/* Three zones */}
+      <div className="flex-1 min-h-0 flex flex-col relative">
+        <SolidZone blocks={solidBlocks} height={solidHeight} />
+        <DraggableSeparator position="top" onDrag={handleTopDrag} />
+        <LiquidZone
+          cards={liquidCards}
+          height={liquidHeight}
+          currentUserId="self"
+          isLoading={false}
           onCommit={handleCommit}
-          onSoftQuery={handleSoftQuery}
-          softResponse={softResponse}
-          softPending={softPending}
+          onCopyToVapor={handleCopyToVapor}
+        />
+        <DraggableSeparator position="bottom" onDrag={handleBottomDrag} />
+        <VapourZone
+          entries={vapourEntries}
+          softResponse={softPending ? null : softResponse}
+          onDismissSoftResponse={() => setSoftResponse(null)}
         />
 
         {/* Viewer drawer overlay */}
@@ -359,12 +480,22 @@ export default function App() {
         />
       </div>
 
-      {/* Identity popover */}
-      <IdentityPopover
-        open={identityOpen}
-        onClose={() => setIdentityOpen(false)}
-        onSave={handleSaveIdentity}
-        initial={identity}
+      {/* Floating button — home of vapour input + identity + theme */}
+      <ConstructionButton
+        onThemeChange={setTheme}
+        currentTheme={theme}
+        onQuery={handleQuery}
+        onSubmit={handleSubmit}
+        value={vapor}
+        onChange={setVapor}
+        isQuerying={softPending}
+        placeholder={placeholderText}
+        identity={{
+          handle: identity.handle,
+          secret: identity.secret,
+          apiKey: identity.apiKey,
+          onIdentityChange: setIdentity,
+        }}
       />
     </div>
   )
