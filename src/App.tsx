@@ -20,10 +20,9 @@ import { LiquidZone } from './components/xstream/LiquidZone'
 import { VapourZone } from './components/xstream/VapourZone'
 import { DraggableSeparator } from './components/DraggableSeparator'
 import { ViewerDrawer } from './components/ViewerDrawer'
-import { SubstrateTray, type SubstrateAct } from './components/SubstrateTray'
 import { BeachKernel } from './kernel/beach-kernel'
 import { createBeachSession, type BeachSession, type MarkRow, type FrameView } from './kernel/beach-session'
-import { setHiddenRef, beachToRef, resolveRef, readShell, bootstrapShell, type AgentShell, type PresenceMark } from './lib/bsp-client'
+import { setHiddenRef, beachToRef, resolveRef, readShell, bootstrapShell, bsp, pscaleRegister, pscaleGrainReach, pscaleKeyPublish, type AgentShell, type PresenceMark } from './lib/bsp-client'
 import { getBlock, injectBlock } from './kernel/block-store'
 import { callClaudeWithTools, callClaudeViaMcpConnector, composeContext, buildSoftSystemPrompt } from './kernel/claude-tools'
 import type { SolidBlock, LiquidCard, VapourEntry, Theme } from './types/xstream'
@@ -284,11 +283,85 @@ export default function App() {
     }
   }, [identity.apiKey, face, session, shell, marks, presence, frame])
 
-  // ⇧↵ — submit to liquid (pending)
-  const handleSubmit = useCallback((text: string) => {
-    setPendingLiquid(text)
+  // ⇧↵ — submit. Parses an action verb prefix and dispatches to the matching
+  // primitive. Default (no recognised prefix) drops a mark or commits liquid.
+  // Verb syntax (matches the templates injected by the action column):
+  //   passport: <description>
+  //   register sed:<collective> <declaration>
+  //   engage <agent_id> <description> | <my side>
+  //   keys
+  // Anything else is treated as raw mark / liquid content.
+  const handleSubmit = useCallback(async (text: string) => {
+    const trimmed = text.trim()
+    if (!trimmed) return
+
+    const reportInfo = (msg: string) => setSoftResponse({
+      id: Date.now().toString(), originalInput: text, text: msg,
+      softType: 'info', face, frameId: null,
+    })
+
+    // passport: <description>
+    const passportMatch = trimmed.match(/^passport[:\s]+([\s\S]+)$/i)
+    if (passportMatch) {
+      if (!identity.handle || !identity.secret) { reportInfo('Identify first (button → Identity).'); return }
+      const desc = passportMatch[1].trim()
+      const r = await bsp({
+        agent_id: identity.handle, block: 'passport',
+        spindle: '', pscale_attention: 0,
+        content: desc, secret: identity.secret,
+      })
+      reportInfo(r.ok ? `📇 passport _ updated.` : `passport write failed: ${'error' in r ? r.error : 'unknown'}`)
+      setVapor('')
+      return
+    }
+
+    // register sed:<collective> <declaration>
+    const registerMatch = trimmed.match(/^register\s+sed:(\S+)\s+([\s\S]+)$/i)
+    if (registerMatch) {
+      if (!identity.handle || !identity.secret) { reportInfo('Identify first (button → Identity).'); return }
+      const collective = registerMatch[1]
+      const declaration = registerMatch[2].trim()
+      reportInfo(`📝 registering at sed:${collective}…`)
+      const r = await pscaleRegister({ collective, declaration, passphrase: identity.secret })
+      reportInfo(r.ok ? `📝 ${r.message}` : `register failed: ${r.message}`)
+      setVapor('')
+      return
+    }
+
+    // engage <agent_id> <description> | <my side>
+    const engageMatch = trimmed.match(/^engage\s+(\S+)\s+([\s\S]+)$/i)
+    if (engageMatch) {
+      if (!identity.handle || !identity.secret) { reportInfo('Identify first (button → Identity).'); return }
+      const partner = engageMatch[1]
+      const rest = engageMatch[2]
+      const [description, mySide] = rest.includes('|')
+        ? rest.split('|', 2).map(s => s.trim())
+        : [rest.trim(), rest.trim()]
+      reportInfo(`🤝 reaching to ${partner}…`)
+      const r = await pscaleGrainReach({
+        agent_id: identity.handle, partner_agent_id: partner,
+        description, my_side_content: mySide, my_passphrase: identity.secret,
+      })
+      reportInfo(r.ok ? `🤝 ${r.message}` : `engage failed: ${r.message}`)
+      setVapor('')
+      return
+    }
+
+    // keys (publish ed25519 + x25519)
+    if (/^keys$/i.test(trimmed)) {
+      if (!identity.handle || !identity.secret) { reportInfo('Identify first (button → Identity).'); return }
+      reportInfo(`🔑 deriving + publishing keys…`)
+      const r = await pscaleKeyPublish({ agent_id: identity.handle, secret: identity.secret })
+      reportInfo(r.ok ? `🔑 ${r.message}` : `key publish failed: ${r.message}`)
+      setVapor('')
+      return
+    }
+
+    // Default: pass to the existing pending-liquid → commit flow (mark drop
+    // or in-frame liquid commit, depending on session state).
+    setPendingLiquid(trimmed)
     setVapor('')
-  }, [])
+  }, [face, identity.handle, identity.secret])
 
   // Click commit on the self liquid card → write to substrate
   const handleCommit = useCallback(async (_cardId: string) => {
@@ -312,10 +385,6 @@ export default function App() {
 
   const handleCopyToVapor = useCallback((text: string) => {
     setVapor(text)
-  }, [])
-
-  const handleAct = useCallback((act: SubstrateAct) => {
-    setLogs(prev => [...prev.slice(-50), `🛠 substrate ${act.kind}: ${JSON.stringify(act).slice(0, 200)}`])
   }, [])
 
   // ── Derived data for the zones ──
@@ -477,8 +546,6 @@ export default function App() {
             </button>
           </div>
         )}
-
-        <SubstrateTray agentId={identity.handle || '(anon)'} onAct={handleAct} />
 
         <div className="ml-auto flex items-center gap-2 shrink-0">
           <button

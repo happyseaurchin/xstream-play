@@ -9,11 +9,41 @@ import {
   Zap,
   ArrowRight,
   Loader2,
-  Paperclip,
-  Mic,
   ChevronDown,
+  MapPin,
+  UserPlus,
+  Handshake,
+  IdCard,
+  KeyRound,
 } from "lucide-react";
 import { Theme } from "@/types/xstream";
+
+export type ActionVerb = 'mark' | 'register' | 'engage' | 'passport' | 'keys';
+
+export interface ActionDef {
+  verb: ActionVerb;
+  label: string;
+  hint: string;
+  template: string;
+  needsHandle: boolean;
+  needsSecret: boolean;
+}
+
+export const ACTIONS: ActionDef[] = [
+  { verb: 'mark',     label: 'Drop a mark',    hint: 'leave a trace at this address',          template: '',                                              needsHandle: false, needsSecret: false },
+  { verb: 'passport', label: 'Edit passport',  hint: 'publish your self-description',          template: 'passport: ',                                    needsHandle: true,  needsSecret: true  },
+  { verb: 'register', label: 'Register',       hint: 'claim a position in a collective',       template: 'register sed:<collective> <declaration>',       needsHandle: true,  needsSecret: true  },
+  { verb: 'engage',   label: 'Reach out',      hint: 'open a bilateral channel with someone',  template: 'engage <agent_id> <description> | <my side>',  needsHandle: true,  needsSecret: true  },
+  { verb: 'keys',     label: 'Publish keys',   hint: 'derive ed25519+x25519 from your passphrase and publish public halves to passport:9', template: 'keys', needsHandle: true, needsSecret: true },
+];
+
+const ICONS: Record<ActionVerb, typeof MapPin> = {
+  mark: MapPin,
+  passport: IdCard,
+  register: UserPlus,
+  engage: Handshake,
+  keys: KeyRound,
+};
 
 export interface IdentityProps {
   handle: string;
@@ -39,6 +69,8 @@ interface ConstructionButtonProps {
   columnId?: string;
   // Identity (replaces logout — beach mode has no game session)
   identity: IdentityProps;
+  // Action verb hint (e.g. last action template injected) — purely visual.
+  activeVerb?: ActionVerb | null;
 }
 
 const STORAGE_KEY = "xstream-construction-btn-pos";
@@ -54,6 +86,7 @@ export function ConstructionButton({
   placeholder = "Type your thought...",
   columnId,
   identity,
+  activeVerb = null,
 }: ConstructionButtonProps) {
   const [showIdentity, setShowIdentity] = useState(false);
   const [editHandle, setEditHandle] = useState(identity.handle);
@@ -322,85 +355,117 @@ export function ConstructionButton({
 
       {/* Expanded Input Panel */}
       {isExpanded && !isOpen && (
-        <div className="absolute bottom-14 right-0 w-80 glass rounded-lg overflow-hidden shadow-lg animate-slide-up">
+        <div className="absolute bottom-14 right-0 w-[22rem] glass rounded-lg overflow-hidden shadow-lg animate-slide-up">
           <div className="p-3">
-            {/* Input row */}
-            <div className="flex items-start gap-2 bg-background/50 rounded-lg p-2">
-              {/* Query button (Cmd+Enter) */}
-              <button
-                onClick={handleQuery}
-                disabled={isQuerying || !value.trim()}
-                className={`shrink-0 h-8 w-8 rounded-md flex items-center justify-center transition-colors mt-0.5 ${
-                  isQuerying
-                    ? 'bg-accent-subtle text-accent animate-pulse cursor-wait'
-                    : 'bg-accent-subtle icon-accent hover:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed'
-                }`}
-                title="Query Soft-LLM (⌘↵)"
-              >
-                {isQuerying ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Zap className="h-4 w-4" />
-                )}
-              </button>
+            {/* Input row + vertical action column */}
+            <div className="flex items-stretch gap-2">
+              {/* Left: query + textarea (stacked) */}
+              <div className="flex-1 flex items-start gap-2 bg-background/50 rounded-lg p-2">
+                {/* Query button (Cmd+Enter) */}
+                <button
+                  onClick={handleQuery}
+                  disabled={isQuerying || !value.trim()}
+                  className={`shrink-0 h-8 w-8 rounded-md flex items-center justify-center transition-colors mt-0.5 ${
+                    isQuerying
+                      ? 'bg-accent-subtle text-accent animate-pulse cursor-wait'
+                      : 'bg-accent-subtle icon-accent hover:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed'
+                  }`}
+                  title="Query Soft-LLM (⌘↵)"
+                >
+                  {isQuerying ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Zap className="h-4 w-4" />
+                  )}
+                </button>
 
-              {/* Textarea field */}
-              <div className="relative flex-1">
-                <textarea
-                  ref={textareaRef}
-                  value={value}
-                  onChange={(e) => onChange(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder={placeholder}
-                  rows={2}
-                  className="w-full bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground/50 resize-none pr-6"
-                />
-                {value && (
-                  <button
-                    onClick={handleClear}
-                    className="absolute right-0 top-1 text-muted-foreground/50 hover:text-muted-foreground transition-colors"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                )}
+                {/* Textarea field */}
+                <div className="relative flex-1">
+                  <textarea
+                    ref={textareaRef}
+                    value={value}
+                    onChange={(e) => onChange(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    placeholder={placeholder}
+                    rows={3}
+                    className="w-full bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground/50 resize-none pr-6"
+                  />
+                  {value && (
+                    <button
+                      onClick={handleClear}
+                      className="absolute right-0 top-1 text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
               </div>
 
-              {/* Submit button (Shift+Enter) */}
-              <button
-                onClick={handleSubmit}
-                disabled={!value.trim()}
-                className="shrink-0 h-8 w-8 rounded-md flex items-center justify-center bg-face-accent text-white disabled:opacity-30 disabled:cursor-not-allowed hover:opacity-90 transition-opacity mt-0.5"
-                title="Submit to Liquid (⇧↵)"
-              >
-                <ArrowRight className="h-4 w-4" />
-              </button>
+              {/* Right: vertical action column. Each icon injects a template
+                  prefix into the textarea; the parent's submit dispatcher
+                  parses the prefix and fires the matching primitive. */}
+              <div className="flex flex-col gap-1 shrink-0" data-no-drag>
+                {ACTIONS.map(a => {
+                  const Icon = ICONS[a.verb];
+                  const handleAvail = !a.needsHandle || !!identity.handle;
+                  const secretAvail = !a.needsSecret || !!identity.secret;
+                  const enabled = handleAvail && secretAvail;
+                  const reason = !handleAvail ? ' — needs handle (Identity)' : !secretAvail ? ' — needs passphrase (Identity)' : '';
+                  const active = activeVerb === a.verb;
+                  return (
+                    <button
+                      key={a.verb}
+                      onClick={() => {
+                        if (!enabled) {
+                          setIsOpen(true); // open settings so user can add identity
+                          return;
+                        }
+                        // Inject template (prefix). Empty template = "mark"
+                        // mode where input is the mark text directly.
+                        onChange(a.template);
+                        // For non-empty templates, place caret at end so
+                        // typing fills the placeholder section.
+                        setTimeout(() => {
+                          textareaRef.current?.focus();
+                          if (a.template) {
+                            const ta = textareaRef.current;
+                            if (ta) ta.selectionStart = ta.selectionEnd = a.template.length;
+                          }
+                        }, 0);
+                      }}
+                      disabled={false}
+                      className={`h-8 w-8 rounded-md flex items-center justify-center transition-all ${
+                        active
+                          ? 'bg-face-accent text-white'
+                          : enabled
+                            ? 'bg-background/50 text-muted-foreground hover:text-foreground hover:bg-accent/30'
+                            : 'bg-background/30 text-muted-foreground/30 hover:text-muted-foreground/60'
+                      }`}
+                      title={`${a.label} — ${a.hint}${reason}`}
+                    >
+                      <Icon className="h-4 w-4" />
+                    </button>
+                  );
+                })}
+
+                {/* Submit (Shift+Enter) — sits at the bottom of the column,
+                    visually anchoring the action stack as the commit step. */}
+                <button
+                  onClick={handleSubmit}
+                  disabled={!value.trim()}
+                  className="h-8 w-8 rounded-md flex items-center justify-center bg-face-accent text-white disabled:opacity-30 disabled:cursor-not-allowed hover:opacity-90 transition-opacity mt-1"
+                  title="Submit (⇧↵)"
+                >
+                  <ArrowRight className="h-4 w-4" />
+                </button>
+              </div>
             </div>
 
-            {/* Action buttons row */}
+            {/* Hints row */}
             <div className="flex items-center gap-2 mt-2 px-1">
-              {/* Attachment stub */}
-              <button
-                className="h-7 w-7 rounded flex items-center justify-center text-muted-foreground/50 hover:text-muted-foreground hover:bg-accent/20 transition-colors"
-                title="Attach file (coming soon)"
-                disabled
-              >
-                <Paperclip className="h-4 w-4" />
-              </button>
-
-              {/* Audio stub */}
-              <button
-                className="h-7 w-7 rounded flex items-center justify-center text-muted-foreground/50 hover:text-muted-foreground hover:bg-accent/20 transition-colors"
-                title="Voice input (coming soon)"
-                disabled
-              >
-                <Mic className="h-4 w-4" />
-              </button>
-
               <div className="flex-1" />
-
-              {/* Keyboard hints */}
               <div className="flex gap-2 text-[10px] text-muted-foreground/40">
-                <span>⌘↵ query</span>
+                <span>⌘↵ ask</span>
                 <span>⇧↵ submit</span>
               </div>
             </div>

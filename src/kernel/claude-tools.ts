@@ -26,7 +26,7 @@
  * branch 4 underscores name the slots; we fill them from live state.
  */
 
-import { bsp as bspCall, type BspParams, type BspReadResult, type BspWriteResult, type Face, type Tier, type AgentShell, type PscaleNode, type PresenceMark } from '../lib/bsp-client';
+import { bsp as bspCall, pscaleRegister, pscaleGrainReach, pscaleKeyPublish, pscaleCreateCollective, pscaleVerifyRider, type BspParams, type BspReadResult, type BspWriteResult, type Face, type Tier, type AgentShell, type PscaleNode, type PresenceMark } from '../lib/bsp-client';
 import { bsp as walkLocal, collectUnderscore } from './bsp';
 import { getBlock } from './block-store';
 import type { BeachSession, MarkRow, FrameView } from './beach-session';
@@ -69,57 +69,71 @@ export const BSP_TOOLS: AnthropicTool[] = [
   },
   {
     name: 'pscale_create_collective',
-    description: 'Create a new sed: collective. Admin op. NOT YET WIRED IN CLIENT — will return a not-implemented stub; suggest the user use the substrate tray.',
+    description: 'Create a new sed: collective. Admin op — sets root underscore (conventions) and the creator passphrase that locks future admin writes.',
     input_schema: {
       type: 'object',
       properties: {
-        name: { type: 'string', description: 'Collective name; becomes sed:<name>.' },
-        description: { type: 'string' },
+        collective: { type: 'string', description: 'Collective name; becomes sed:<name>.' },
+        conventions: { type: 'string', description: 'Rules of play — becomes the root underscore of the new sed: block.' },
+        creator_passphrase: { type: 'string', description: 'Admin passphrase. Sensitive — only call when the user has explicitly provided it for this purpose.' },
       },
-      required: ['name'],
+      required: ['collective', 'conventions', 'creator_passphrase'],
     },
   },
   {
     name: 'pscale_register',
-    description: 'Claim a position in a sed: collective in landing order. NOT YET WIRED IN CLIENT — will return a not-implemented stub; suggest the user use the substrate tray.',
+    description: 'Claim a server-assigned position in a sed: collective in landing order. Atomic create-lock-write. The position is permanent (proof-of-presence-in-time).',
     input_schema: {
       type: 'object',
       properties: {
-        collective: { type: 'string', description: 'Target collective, e.g. "commons" or "designers".' },
-        declaration: { type: 'string', description: 'Underscore content for the claimed position.' },
+        collective: { type: 'string', description: 'Target collective name (without sed: prefix), e.g. "commons" or "designers".' },
+        declaration: { type: 'string', description: 'Who you are and what you offer/need — becomes the underscore at your position.' },
+        passphrase: { type: 'string', description: 'Write-lock passphrase for your position. Sensitive — only use the user\'s session secret with their explicit consent.' },
+        shell_ref: { type: 'string', description: 'Optional URL or block reference to the agent\'s sovereign shell.' },
       },
-      required: ['collective', 'declaration'],
+      required: ['collective', 'declaration', 'passphrase'],
     },
   },
   {
     name: 'pscale_grain_reach',
-    description: 'Propose a bilateral grain (private channel). NOT YET WIRED IN CLIENT — will return a not-implemented stub; suggest the user use the substrate tray.',
+    description: 'Symmetric reach/accept across a bilateral pair_id (sha256(sort(A,B))[:16]). Atomic create-lock-write per side. First call from either party initialises the grain; second call from the other party completes it.',
     input_schema: {
       type: 'object',
       properties: {
-        partner_agent_id: { type: 'string' },
-        purpose: { type: 'string' },
+        agent_id: { type: 'string', description: 'The caller\'s agent_id (bare — not grain: or sed:).' },
+        partner_agent_id: { type: 'string', description: 'The other side\'s agent_id. Must differ from agent_id.' },
+        description: { type: 'string', description: 'Mutual description — becomes the root underscore of the grain. Used only on first reach; ignored on accept.' },
+        my_side_content: { type: 'string', description: 'What you write at your side\'s underscore — your synthesis or commitment statement.' },
+        my_passphrase: { type: 'string', description: 'Write-lock passphrase for your side. Sensitive — only use with explicit user consent.' },
       },
-      required: ['partner_agent_id'],
+      required: ['agent_id', 'partner_agent_id', 'description', 'my_side_content', 'my_passphrase'],
     },
   },
   {
     name: 'pscale_key_publish',
-    description: 'Derive ed25519 + x25519 keys via Argon2id from secret + agent_id and publish public halves to passport position 9. NOT YET WIRED IN CLIENT.',
+    description: 'Derive Argon2id keypair from secret+agent_id and publish public halves (ed25519 + x25519) to passport:9. Required for gray-encrypted communications and rider signing.',
     input_schema: {
       type: 'object',
-      properties: {},
+      properties: {
+        agent_id: { type: 'string', description: 'The user\'s agent_id; must already have a passport block.' },
+        secret: { type: 'string', description: 'Passphrase or local block hash — combined with agent_id as derivation salt. Sensitive.' },
+      },
+      required: ['agent_id', 'secret'],
     },
   },
   {
     name: 'pscale_verify_rider',
-    description: 'Verify an ecosquared rider signature chain. NOT YET WIRED IN CLIENT.',
+    description: 'Deterministic arithmetic check on a Level-2 ecosquared rider. Returns verdict (pass/warn/fail/skip).',
     input_schema: {
       type: 'object',
       properties: {
-        rider_id: { type: 'string' },
+        sender_agent_id: { type: 'string', description: 'Whose passport to load for credit and SQ checks.' },
+        rider: { type: 'string', description: 'The rider JSON object as a string.' },
+        probe_id: { type: 'string' },
+        chain: { type: 'string', description: 'JSON array of chain hops [{agent, sig}, ...].' },
+        topic_coordinate: { type: 'string', description: 'Pscale coordinate of the topic for SQ recompute.' },
       },
-      required: ['rider_id'],
+      required: ['sender_agent_id'],
     },
   },
 ];
@@ -178,11 +192,54 @@ export async function executeTool(
   ctx: ExecutorContext
 ): Promise<string> {
   if (name === 'bsp') return executeBsp(input, ctx);
-  if (name.startsWith('pscale_')) {
-    return JSON.stringify({
-      ok: false,
-      error: `${name} is not yet wired in this client. Suggest the user use the substrate tray (header icons) to perform this action.`,
+  if (name === 'pscale_register') {
+    ctx.onLog?.(`mcp pscale_register collective=${input.collective}`);
+    const r = await pscaleRegister({
+      collective: String(input.collective ?? ''),
+      declaration: String(input.declaration ?? ''),
+      passphrase: String(input.passphrase ?? ctx.session.secret ?? ''),
+      shell_ref: typeof input.shell_ref === 'string' ? input.shell_ref : undefined,
     });
+    return JSON.stringify(r);
+  }
+  if (name === 'pscale_grain_reach') {
+    ctx.onLog?.(`mcp pscale_grain_reach with=${input.partner_agent_id}`);
+    const r = await pscaleGrainReach({
+      agent_id: String(input.agent_id ?? ctx.session.agent_id ?? ''),
+      partner_agent_id: String(input.partner_agent_id ?? ''),
+      description: String(input.description ?? ''),
+      my_side_content: String(input.my_side_content ?? ''),
+      my_passphrase: String(input.my_passphrase ?? ctx.session.secret ?? ''),
+    });
+    return JSON.stringify(r);
+  }
+  if (name === 'pscale_key_publish') {
+    ctx.onLog?.(`mcp pscale_key_publish`);
+    const r = await pscaleKeyPublish({
+      agent_id: String(input.agent_id ?? ctx.session.agent_id ?? ''),
+      secret: String(input.secret ?? ctx.session.secret ?? ''),
+    });
+    return JSON.stringify(r);
+  }
+  if (name === 'pscale_create_collective') {
+    ctx.onLog?.(`mcp pscale_create_collective name=${input.collective}`);
+    const r = await pscaleCreateCollective({
+      collective: String(input.collective ?? ''),
+      conventions: String(input.conventions ?? ''),
+      creator_passphrase: String(input.creator_passphrase ?? ''),
+    });
+    return JSON.stringify(r);
+  }
+  if (name === 'pscale_verify_rider') {
+    ctx.onLog?.(`mcp pscale_verify_rider sender=${input.sender_agent_id}`);
+    const r = await pscaleVerifyRider({
+      sender_agent_id: String(input.sender_agent_id ?? ''),
+      rider: typeof input.rider === 'string' ? input.rider : undefined,
+      probe_id: typeof input.probe_id === 'string' ? input.probe_id : undefined,
+      chain: typeof input.chain === 'string' ? input.chain : undefined,
+      topic_coordinate: typeof input.topic_coordinate === 'string' ? input.topic_coordinate : undefined,
+    });
+    return JSON.stringify(r);
   }
   return JSON.stringify({ ok: false, error: `unknown tool: ${name}` });
 }
@@ -373,7 +430,7 @@ export function buildSoftSystemPrompt(opts: {
   sections.push(opts.ctx.solid_history);
   sections.push('');
   sections.push('# How to use bsp — read carefully');
-  sections.push('You hold six tools. The primary is `bsp`. Reads are free; writes pass through commit-gates derived from the user\'s shell at the active face. The five non-geometric primitives (pscale_create_collective, pscale_register, pscale_grain_reach, pscale_key_publish, pscale_verify_rider) are NOT yet wired in this client; if the user wants one, suggest the substrate tray (header icons).');
+  sections.push('You hold six tools. The primary is `bsp`. Reads are free; writes pass through commit-gates derived from the user\'s shell at the active face. The five non-geometric primitives (pscale_create_collective, pscale_register, pscale_grain_reach, pscale_key_publish, pscale_verify_rider) are wired via MCP-over-HTTP to bsp.hermitcrab.me. They consume passphrases and create permanent positions — only invoke when the user explicitly asks for them, and never assume their session secret without being told to use it.');
   sections.push('');
   sections.push('Walking discipline — pick the right SHAPE (whetstone:2):');
   sections.push(' - shape derives from spindle length and pscale_attention. P_att = P_end → point. P_att = P_end-1 → ring. P_att < P_end-1 (e.g. negative) → dir/subtree. spindle="" with no P_att → whole. With trailing star → walks the hidden directory.');

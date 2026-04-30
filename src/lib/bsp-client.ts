@@ -684,3 +684,54 @@ export function beachToRef(beach: string): string {
   if (beach.includes('.')) return 'https://' + beach;
   return beach;
 }
+
+// ── Five non-geometric primitives via MCP-over-HTTP to bsp.hermitcrab.me ──
+//
+// bsp() handles read/write geometry; these five are substrate state machines
+// (lock allocation, key derivation, signature verification) that bsp() alone
+// cannot subsume per whetstone:5. The bsp-mcp server implements them; we call
+// it directly from the browser via mcp-client.ts.
+//
+// The server's CORS allows any origin and exposes mcp-session-id, so the
+// browser path works directly. Each helper returns { ok, ... } with the
+// human-readable summary surfaced from the tool result for UI feedback.
+
+import { mcpCallTool, mcpExtractText } from './mcp-client';
+
+export interface PrimitiveResult {
+  ok: boolean;
+  message: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  raw?: any;
+  error?: string;
+}
+
+async function dispatchPrimitive(name: string, args: Record<string, unknown>): Promise<PrimitiveResult> {
+  try {
+    const result = await mcpCallTool(name, args);
+    const message = mcpExtractText(result) || JSON.stringify(result.structuredContent ?? {}).slice(0, 200);
+    return { ok: !result.isError, message, raw: result };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : String(e), error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+export async function pscaleRegister(opts: { collective: string; declaration: string; passphrase: string; shell_ref?: string }): Promise<PrimitiveResult> {
+  return dispatchPrimitive('pscale_register', opts);
+}
+
+export async function pscaleGrainReach(opts: { agent_id: string; partner_agent_id: string; description: string; my_side_content: string; my_passphrase: string }): Promise<PrimitiveResult> {
+  return dispatchPrimitive('pscale_grain_reach', opts);
+}
+
+export async function pscaleKeyPublish(opts: { agent_id: string; secret: string; prior_secret?: string; signature?: string }): Promise<PrimitiveResult> {
+  return dispatchPrimitive('pscale_key_publish', opts);
+}
+
+export async function pscaleCreateCollective(opts: { collective: string; conventions: string; creator_passphrase: string }): Promise<PrimitiveResult> {
+  return dispatchPrimitive('pscale_create_collective', opts);
+}
+
+export async function pscaleVerifyRider(opts: { sender_agent_id: string; rider?: string; probe_id?: string; chain?: string; topic_coordinate?: string }): Promise<PrimitiveResult> {
+  return dispatchPrimitive('pscale_verify_rider', opts);
+}
