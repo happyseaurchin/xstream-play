@@ -370,21 +370,24 @@ export function buildSoftSystemPrompt(opts: {
   sections.push(`# ${slot3}`);
   sections.push(opts.ctx.solid_history);
   sections.push('');
-  sections.push('# Tool-use guidance');
-  sections.push('You hold six tools. The primary is `bsp` — the geometric primitive. Reads are free; writes pass through commit-gates derived from the user\'s shell at the active face.');
+  sections.push('# How to use bsp — read carefully');
+  sections.push('You hold six tools. The primary is `bsp`. Reads are free; writes pass through commit-gates derived from the user\'s shell at the active face. The five non-geometric primitives (pscale_create_collective, pscale_register, pscale_grain_reach, pscale_key_publish, pscale_verify_rider) are NOT yet wired in this client; if the user wants one, suggest the substrate tray (header icons).');
   sections.push('');
-  sections.push('When the user asks "what is here?" / "who is around?" / "what has X been thinking about?" — WALK the substrate. Do not invent. Read the relevant blocks via bsp() and reflect what you find. If a block is empty or absent, say so.');
-  sections.push('');
-  sections.push('Conventions accessed via bsp() (these are NOT separate tools):');
-  sections.push(' - Passport: bsp(agent_id=<them>, block="passport") — _ description, 1 offers, 2 needs, 9 keys.');
-  sections.push(' - Beach marks: bsp(agent_id=<beach-url>, block="beach", spindle="1") — ring of marks at 1.1..1.9.');
+  sections.push('Walking discipline — DO NOT confuse a block with the content under it:');
+  sections.push(' - bsp(spindle="") returns the WHOLE block — usually only the root underscore is interesting; the digit children are sub-positions you must walk.');
+  sections.push(' - To enumerate marks at a beach, ALWAYS call: bsp(agent_id=<beach-url>, block="beach", spindle="1"). This returns the marks ring (positions 1.1..1.9). Walking the root alone will only show you the beach\'s own description, NOT the marks.');
+  sections.push(' - Each entry under spindle="1" is either a string or an object {_, 1, 2, 3}. The _ underscore IS the mark content. The 1/2/3 fields tag agent_id / address / timestamp.');
+  sections.push(' - Distinguishing presence from substantive: a mark whose _ matches /^\\S+ @ \\S+ — present at / is a presence heartbeat (filter it OUT when reporting marks). Anything else is the user\'s substantive contribution.');
   sections.push(' - Pool: bsp(agent_id=<beach-url>, block="beach", spindle="2.<N>") — Nth pool ring.');
-  sections.push(' - Presence marks: structured marks at beach:1 with {1=agent_id, 2=address, 3=ts}; identifiable by underscore pattern.');
-  sections.push(' - Inbox replacement: cold contact = a structured mark on a beach the recipient watches.');
+  sections.push(' - Passport: bsp(agent_id=<them>, block="passport") — _ description, 1 offers, 2 needs, 9 keys.');
+  sections.push(' - Frame disc: bsp(agent_id=<beach-url>, block="frame:<scene>") — entities at 1..9 with .1 liquid / .2 solid; _synthesis at the root.');
+  sections.push(' - Cold contact (inbox replacement): a structured mark on a beach the recipient watches.');
   sections.push('');
-  sections.push('The five non-geometric primitives (pscale_create_collective, pscale_register, pscale_grain_reach, pscale_key_publish, pscale_verify_rider) are NOT yet wired in this client. If the user wants one, suggest the substrate tray (header icons).');
+  sections.push('When the user asks "what is here?" / "who is around?" / "what has X been thinking about?" — WALK the substrate at the right depth. If your first walk only returned a description, walk deeper. Do not invent. If a block is empty or absent after a real walk, name the gap.');
   sections.push('');
-  sections.push('Keep your final answer 1–3 sentences, second-person present tense. Brief, grounded, conversational. Never narrate. Reflect, condense, surface options. If your walk turned up nothing, name the gap honestly.');
+  sections.push('Note: the # Recent solid section above already reflects pre-filtered substantive marks at the user\'s current address. If it lists marks, those ARE present — do not contradict it by claiming the beach is empty.');
+  sections.push('');
+  sections.push('Keep your final answer 1–3 sentences, second-person present tense. Brief, grounded, conversational. Never narrate. Reflect, condense, surface options.');
 
   return sections.join('\n');
 }
