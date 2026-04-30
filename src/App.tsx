@@ -25,7 +25,7 @@ import { BeachKernel } from './kernel/beach-kernel'
 import { createBeachSession, type BeachSession, type MarkRow, type FrameView } from './kernel/beach-session'
 import { setHiddenRef, beachToRef, resolveRef, readShell, bootstrapShell, type AgentShell, type PresenceMark } from './lib/bsp-client'
 import { getBlock, injectBlock } from './kernel/block-store'
-import { callClaude } from './kernel/claude-direct'
+import { callClaudeWithTools } from './kernel/claude-tools'
 import type { SolidBlock, LiquidCard, VapourEntry, Theme } from './types/xstream'
 import type { Face } from './types/xstream'
 import type { SoftLLMResponse } from './types'
@@ -205,7 +205,7 @@ export default function App() {
     setSession(s => ({ ...s, current_frame: null, entity_position: null }))
   }, [])
 
-  // ⌘↵ — ask soft-LLM (Tier 2)
+  // ⌘↵ — ask soft-LLM (Tier 2). The magic move: substrate-equipped, face-gated.
   const handleQuery = useCallback(async (text: string) => {
     if (!identity.apiKey) {
       setSoftResponse({
@@ -218,15 +218,28 @@ export default function App() {
     setSoftPending(true)
     setSoftResponse(null)
     try {
-      const softAgent = getBlock('soft-agent')
-      const sysPrompt = (softAgent && typeof softAgent === 'object' && '_' in softAgent && typeof (softAgent as Record<string, unknown>)._ === 'string')
-        ? ((softAgent as Record<string, string>)._ as string)
-        : 'You are a soft-LLM thinking partner. Help the user think.'
-      const reply = await callClaude(identity.apiKey, 'claude-haiku-4-5-20251001',
-        `${sysPrompt}\n\nUser thought: ${text}`, 512)
+      const result = await callClaudeWithTools({
+        apiKey: identity.apiKey,
+        model: session.soft_model,
+        session,
+        shell,
+        face,
+        marks,
+        presence,
+        frame,
+        userMessage: text,
+        onToolCall: (name, input) => {
+          setLogs(prev => [...prev.slice(-50), `🛠 ${name}(${JSON.stringify(input).slice(0, 120)})`])
+        },
+        onLog: msg => setLogs(prev => [...prev.slice(-50), `· ${msg}`]),
+      })
+      const summary = result.toolCalls.length > 0
+        ? ` (${result.toolCalls.length} tool call${result.toolCalls.length === 1 ? '' : 's'} · ${result.turns} turn${result.turns === 1 ? '' : 's'})`
+        : ''
       setSoftResponse({
         id: Date.now().toString(), originalInput: text,
-        text: reply, softType: 'refine', face, frameId: null,
+        text: result.text + (summary ? `\n\n— ${summary.trim()}` : ''),
+        softType: 'refine', face, frameId: null,
       })
     } catch (e) {
       setSoftResponse({
@@ -237,7 +250,7 @@ export default function App() {
     } finally {
       setSoftPending(false)
     }
-  }, [identity.apiKey, face])
+  }, [identity.apiKey, face, session, shell, marks, presence, frame])
 
   // ⇧↵ — submit to liquid (pending)
   const handleSubmit = useCallback((text: string) => {
