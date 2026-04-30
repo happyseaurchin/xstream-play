@@ -96,9 +96,14 @@ async function loadBlockFederated(agentId: string, name: string): Promise<BlockR
   params.set('_t', String(Date.now()));
   const url = base + '?' + params.toString();
   try {
+    // cache: 'no-store' instructs the browser cache to skip storing/matching
+    // this request. We deliberately do NOT add a Cache-Control header — that
+    // would turn the GET into a non-simple CORS request and trip preflight on
+    // servers that don't allowlist the header. The ?_t= query param plus
+    // 'no-store' is enough.
     const r = await fetch(url, {
       cache: 'no-store',
-      headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
+      headers: { Accept: 'application/json' },
     });
     if (!r.ok) {
       if (r.status !== 404) console.warn('[bsp federated] non-OK:', r.status, url);
