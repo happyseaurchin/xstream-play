@@ -88,9 +88,18 @@ function isUrlAgent(agentId: string): boolean {
  * (or a slice if ?spindle/pscale provided). Block name selectable via ?block=.
  */
 async function loadBlockFederated(agentId: string, name: string): Promise<BlockRow | null> {
-  const url = agentId.replace(/\/+$/, '') + '/.well-known/pscale-beach' + (name && name !== 'beach' ? '?block=' + encodeURIComponent(name) : '');
+  const base = agentId.replace(/\/+$/, '') + '/.well-known/pscale-beach';
+  const params = new URLSearchParams();
+  if (name && name !== 'beach') params.set('block', name);
+  // Cache-buster: federated beaches are mutable; the browser will happily
+  // serve stale 304s otherwise and our poll loop never sees new marks.
+  params.set('_t', String(Date.now()));
+  const url = base + '?' + params.toString();
   try {
-    const r = await fetch(url, { headers: { Accept: 'application/json' } });
+    const r = await fetch(url, {
+      cache: 'no-store',
+      headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
+    });
     if (!r.ok) {
       if (r.status !== 404) console.warn('[bsp federated] non-OK:', r.status, url);
       return null;
@@ -115,15 +124,18 @@ async function saveBlockFederated(agentId: string, name: string, block: PscaleNo
   try {
     const r = await fetch(url, {
       method: 'POST',
+      cache: 'no-store',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify(body),
     });
+    const respText = await r.text().catch(() => '');
     if (!r.ok) {
-      const err = await r.text().catch(() => '');
-      return { ok: false, error: `HTTP ${r.status}: ${err.slice(0, 200)}` };
+      console.warn('[bsp federated] write rejected:', r.status, respText.slice(0, 300));
+      return { ok: false, error: `HTTP ${r.status}: ${respText.slice(0, 200)}` };
     }
     return { ok: true };
   } catch (e) {
+    console.warn('[bsp federated] write threw:', e);
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }
