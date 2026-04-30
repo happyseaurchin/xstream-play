@@ -1,12 +1,96 @@
 # Handover — xstream beach client
 
-**Date**: 2026-04-30
+**Date**: 2026-04-30 (updated end of session)
 **Branch**: `feature/bsp-mcp-native`
-**Latest commit**: `ae13f95` — *isPresenceMark: match underscore pattern*
+**Latest commit**: `2691264` — *Tier 3 — watched-beach inbox*
 **Live**: <https://xstream.onen.ai>
 **Vercel project**: `xstream-play` (team `happyseaurchins-projects`); domain `xstream.onen.ai` is bound to this branch; `play.onen.ai` stays on `main` (legacy fantasy game).
 
 > Read this file FIRST. It captures everything the previous session learned, so you don't repeat the same wrong turns.
+
+---
+
+## What landed in this session (2026-04-30)
+
+The session delivered four coherent tiers on top of the previously-substrate-aware base. Test plan at the end of this section.
+
+### Magic move (kernel) — `ad92903 → cb29f80`
+The soft-LLM is no longer generic Claude. ⌘↵ runs an in-client tool-use loop where Claude holds the **six bsp-mcp primitives** as tools and walks the federated commons to compose its own context, face-gated from the live shell.
+
+- `src/kernel/claude-tools.ts` — BSP_TOOLS (6 schemas), executeTool, composeContext (fills soft-agent branch 4 named slots from kernel state), buildSoftSystemPrompt (walks soft-agent via local kernel/bsp walker), callClaudeWithTools (Messages-API loop, dispatches tool_use to executor, feeds tool_result back, terminates on end_turn or max-turns=8).
+- `src/kernel/claude-direct.ts` — generalised messagesApi(apiKey, body) wrapper, kept callClaude for backward compat.
+- `App.tsx handleQuery` passes session, shell, face, marks, presence, frame to the loop. onToolCall surfaces every dispatch into the kernel log.
+- **Verified live on production**: end-to-end tool loop with real LLM round-trips, accurate substrate references, 1–3-sentence soft-agent discipline.
+
+Two prompt-sharpens during verification (live debugging caught LLM walking spindle="" and seeing only the root underscore):
+- Explicit walking discipline + concrete recipes (marks: `bsp(spindle="1", pscale_attention=-2)` for dir).
+- Always include `raw` in bsp read responses so the LLM can recover from a wrong-shape call.
+
+Beta connector spike (`callClaudeViaMcpConnector`, behind `?mcp=connector`): proves Anthropic's `mcp_servers` parameter dispatches against `bsp.hermitcrab.me/mcp/v1` server-side. Transport works; bsp-mcp server's URL-federation routing for connector-mode is the gap (the in-client loop doesn't have this gap because it routes via xstream's own bsp-client). Default stays in-client.
+
+### Tier 1.1 — Substrate primitives via MCP-over-HTTP — `f493147`
+Reframed per user feedback: the substrate tray was the wrong shape. The five buttons are USER-FACING ACTIONS, not raw protocol primitives, and they belong on the input panel.
+
+- `src/lib/mcp-client.ts` (new) — minimal MCP-over-HTTP client. Streamable-HTTP transport. CORS open (verified). Initialize → cache mcp-session-id → tools/call POSTs include the header. JSON + SSE response framings handled. 404/Unknown-session triggers one-shot reset+retry.
+- `src/lib/bsp-client.ts` — pscaleRegister, pscaleGrainReach, pscaleKeyPublish, pscaleCreateCollective, pscaleVerifyRider — wrap mcpCallTool with the exact tool signatures probed from the live server.
+- Header `SubstrateTray` removed (the row of emoji icons was visually ugly and conflated user actions with protocol primitives).
+- `ConstructionButton` input panel now has a vertical lucide-icon column on the right: 📍 mark, 🪪 passport, 👤+ register, 🤝 engage, 🔑 keys. Submit (→) anchors the bottom.
+- Identity-gated visually: anonymous users see only `mark` enabled; the rest are dim.
+- Click an action → injects a template prefix into the textarea + focuses the cursor at the end.
+- `App.tsx handleSubmit` — verb-prefix parser routes:
+  - `passport: <description>` → bsp() write at (handle, "passport")
+  - `register sed:<col> <decl>` → pscale_register
+  - `engage <agent_id> <desc> | <my side>` → pscale_grain_reach
+  - `keys` → pscale_key_publish
+  - (anything else) → drop mark / liquid commit
+- LLM tool descriptions in claude-tools.ts now reflect the live signatures (was guessed before).
+- Same MCP backend serves both user buttons AND LLM tool calls.
+
+### Tier 1.2 — Live peer vapour over Supabase Realtime — `df784f5`
+Vapour is the imaginative-canvas tier per protocol-xstream-frame.md §3.1 — humans typing toward each other in real time, never persisted to substrate.
+
+- `src/lib/realtime.ts` (new) — `joinVapourChannel({ scope, agent_id, face, onPeer })` wraps Supabase Realtime. `deriveScope({ beach, address, frame, entity_position })` keys the channel.
+- Channel naming: `vapour:<beach>:addr:<address>` beachcombing, `vapour:<beach>:frame:<scene>:entity:<n>` in-frame.
+- Self-echo guard at both transport (broadcast `self: false`) and receive layer (agent_id match).
+- App.tsx — peerVapour state keyed by peer agent_id. Channel re-joins on (handle, beach, address, frame, entity) changes; face is *not* a scope axis. 80 ms debounced broadcast on vapour change. 12 s staleness window — peers fade when they stop typing.
+- Anonymous users receive but don't broadcast.
+- Non-Supabase deployments fall back gracefully (null channel, no crash).
+- **Verified locally end-to-end**: real `POST .../realtime/v1/api/broadcast → 202`, OPTIONS preflight 200.
+
+### Tier 2 — Designer-face shell editor + Author-face viewer — `dbfba8d`
+The reflexive move. Designer face is no longer a placeholder — it's a focused block editor for the user's own `shell:1.<digit>` faces.
+
+- ViewerDrawer `FaceDesigner` — 4 cards (one per CADO face), each with editable label / default address / knowledge_gates / commit_gates / persona. Save → `bsp({ agent_id, block: "shell", spindle: "1.<digit>", content: {_, 1, 2, 3, 4}, secret })`. After save: readShell() + onShellSaved bubbles up so face gates take effect on the next soft-LLM call without reload.
+- `FaceAuthor` — passport card (with the bsp() signature shown verbatim), block manifest list (shell:3), watched beaches list (shell:2) with current beach highlighted.
+- ViewerDrawer now takes `agentId, secret, shell, onShellSaved` props.
+
+### Tier 3 — Watched-beach inbox / cold contact — `2691264`
+The inbox-replacement layer. shell:2 holds the user's watched beaches; the kernel scans them every ~20 s and surfaces marks whose underscore mentions the user's agent_id.
+
+- `BeachKernel.setWatchedBeaches(beaches)` — caller pushes shell:2 in. Excludes current_beach.
+- `scanInbox()` runs every 5th cycle. For each watched beach: read beach:1 ring → filter out presence + own marks → keep marks whose text/address contains `<my_agent_id>` or `@<my_agent_id>`. Sorted newest first via `onInbox(items)`.
+- New header indicator: 📬N badge next to 👁 (only when identified). Click toggles `InboxDrawer`.
+- `src/components/InboxDrawer.tsx` (new) — slide-down overlay listing tagged marks. Each is a click-to-navigate button — tapping jumps active beach + address to the mark's location. Empty-state hint points to Designer face for editing shell:2.
+
+---
+
+## Test plan for tomorrow
+
+The session shipped fast and pushed straight to production after each tier. Some live verifications were deferred (passphrase + per-call consent for substrate writes; two-tab vapour reception). Recommended order:
+
+1. **Smoke test** — open <https://xstream.onen.ai>, identify (button → Identity → handle + passphrase + API key already cached), confirm V/L/S renders, presence count is sane.
+2. **Magic move (re-verify)** — type a vapour question like "what's at this address?" and ⌘↵. Watch tool-call summary in the response footer (`(N tool call · M turns)`). Response should reference real substrate state.
+3. **Action column (mark)** — already verified. Drop a substantive mark, confirm it appears in solid + on the federated beach via direct fetch if you want.
+4. **Action column (passport)** — click 🪪, fill in a description after the `passport: ` prefix, ⇧↵. Verify by reading <https://piqxyfmzzywxzqkzmpmm.supabase.co> (or just walking `bsp(agent_id="happyseaurchin", block="passport")` via the soft-LLM).
+5. **Action column (register)** — careful: positions are permanent. Use a test sed: like `register sed:test-2026-04-30 first registration in xstream`. Confirm the mcp call returns a position.
+6. **Action column (keys)** — `keys` + ⇧↵. Server derives Argon2id keypair and publishes public halves to passport:9. Verify by walking passport.
+7. **Action column (engage)** — same caution as register; creates a permanent grain. Use a test partner_agent_id.
+8. **Designer face** — toggle face=D, open viewer (👁). Edit your character face's `commit_gates` to `happyseaurchin:passport,happyseaurchin:notes`. Save. Confirm via re-opening the editor that the new value is read back.
+9. **Inbox (📬)** — drop a mark on the federated beach mentioning your own handle from a different identity (or from a second tab). Within ~20 s, the 📬 indicator should show 1. Click → drawer opens with the mark. Click the mark → beach + address swap to the mark's source.
+10. **Two-tab vapour** — open xstream.onen.ai in two browsers with different handles at the same address. Type in one. The other should see live keystroke deltas in their VapourZone.
+11. **Connector spike** — append `?mcp=connector` to the URL, fire any LLM query. Should still respond (Anthropic dispatches bsp-mcp tools server-side). Server-side federation routing is currently the gap (server doesn't see https://happyseaurchin.com), but the connector path itself works.
+
+If anything breaks, the gotchas section below covers the recurring ones from the previous sessions.
 
 ---
 
