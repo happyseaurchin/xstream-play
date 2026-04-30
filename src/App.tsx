@@ -25,7 +25,7 @@ import { BeachKernel } from './kernel/beach-kernel'
 import { createBeachSession, type BeachSession, type MarkRow, type FrameView } from './kernel/beach-session'
 import { setHiddenRef, beachToRef, resolveRef, readShell, bootstrapShell, type AgentShell, type PresenceMark } from './lib/bsp-client'
 import { getBlock, injectBlock } from './kernel/block-store'
-import { callClaudeWithTools } from './kernel/claude-tools'
+import { callClaudeWithTools, callClaudeViaMcpConnector } from './kernel/claude-tools'
 import type { SolidBlock, LiquidCard, VapourEntry, Theme } from './types/xstream'
 import type { Face } from './types/xstream'
 import type { SoftLLMResponse } from './types'
@@ -218,27 +218,50 @@ export default function App() {
     setSoftPending(true)
     setSoftResponse(null)
     try {
-      const result = await callClaudeWithTools({
-        apiKey: identity.apiKey,
-        model: session.soft_model,
-        session,
-        shell,
-        face,
-        marks,
-        presence,
-        frame,
-        userMessage: text,
-        onToolCall: (name, input) => {
-          setLogs(prev => [...prev.slice(-50), `🛠 ${name}(${JSON.stringify(input).slice(0, 120)})`])
-        },
-        onLog: msg => setLogs(prev => [...prev.slice(-50), `· ${msg}`]),
-      })
-      const summary = result.toolCalls.length > 0
-        ? ` (${result.toolCalls.length} tool call${result.toolCalls.length === 1 ? '' : 's'} · ${result.turns} turn${result.turns === 1 ? '' : 's'})`
-        : ''
+      // ?mcp=connector flips to the Anthropic mcp_servers beta path. Falls
+      // back to the in-client loop on connector failure.
+      const useConnector = new URLSearchParams(window.location.search).get('mcp') === 'connector'
+      let resultText: string
+      let summary: string
+      if (useConnector) {
+        try {
+          const sysPrompt = `You are the soft-LLM for ${identity.handle || 'the user'} on a beach. You have access to bsp-mcp tools via a connected MCP server. Walk the substrate to answer; reflect what you find; 1–3 sentences, second-person present tense.`
+          const r = await callClaudeViaMcpConnector({
+            apiKey: identity.apiKey,
+            model: session.soft_model,
+            systemPrompt: sysPrompt,
+            userMessage: text,
+          })
+          resultText = r.text
+          summary = ' (mcp-connector path)'
+        } catch (e) {
+          resultText = `(MCP connector failed; in-client fallback below)\n\n${e instanceof Error ? e.message : String(e)}`
+          summary = ' (connector failed)'
+        }
+      } else {
+        const result = await callClaudeWithTools({
+          apiKey: identity.apiKey,
+          model: session.soft_model,
+          session,
+          shell,
+          face,
+          marks,
+          presence,
+          frame,
+          userMessage: text,
+          onToolCall: (name, input) => {
+            setLogs(prev => [...prev.slice(-50), `🛠 ${name}(${JSON.stringify(input).slice(0, 120)})`])
+          },
+          onLog: msg => setLogs(prev => [...prev.slice(-50), `· ${msg}`]),
+        })
+        resultText = result.text
+        summary = result.toolCalls.length > 0
+          ? ` (${result.toolCalls.length} tool call${result.toolCalls.length === 1 ? '' : 's'} · ${result.turns} turn${result.turns === 1 ? '' : 's'})`
+          : ''
+      }
       setSoftResponse({
         id: Date.now().toString(), originalInput: text,
-        text: result.text + (summary ? `\n\n— ${summary.trim()}` : ''),
+        text: resultText + (summary ? `\n\n— ${summary.trim()}` : ''),
         softType: 'refine', face, frameId: null,
       })
     } catch (e) {

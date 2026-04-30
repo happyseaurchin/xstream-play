@@ -392,6 +392,76 @@ export function buildSoftSystemPrompt(opts: {
   return sections.join('\n');
 }
 
+// ── Beta spike: Anthropic Messages API mcp_servers connector ──
+//
+// Anthropic's Messages API (beta) accepts an mcp_servers param: Claude calls
+// the named MCP server directly, server-side, bypassing this client's tool
+// loop entirely. If the bsp-mcp server speaks the streamable-HTTP transport
+// the connector expects, this collapses our in-client loop to a single API
+// call. Face-gating still has to be in-client (per agent-shell §"Gate
+// Interpretation v0.1": gates are client-side context filters), so this is a
+// transport-only swap.
+//
+// Toggled at runtime by the URL query param `?mcp=connector` (read in App.tsx).
+// On failure, the in-client loop is the fallback; we surface the error verbatim
+// so the user can tell whether the MCP server URL is reachable / speaks the
+// right protocol.
+
+const BSP_MCP_CONNECTOR_URL = 'https://bsp.hermitcrab.me/mcp/v1';
+
+export interface ConnectorOptions {
+  apiKey: string;
+  model: string;
+  systemPrompt: string;
+  userMessage: string;
+  maxTokens?: number;
+}
+
+export interface ConnectorResult {
+  text: string;
+  raw: unknown;
+}
+
+export async function callClaudeViaMcpConnector(opts: ConnectorOptions): Promise<ConnectorResult> {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': opts.apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-beta': 'mcp-client-2025-04-04',
+      'content-type': 'application/json',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: opts.model,
+      max_tokens: opts.maxTokens ?? 1024,
+      system: opts.systemPrompt,
+      mcp_servers: [{ type: 'url', url: BSP_MCP_CONNECTOR_URL, name: 'bsp-mcp' }],
+      messages: [{ role: 'user', content: opts.userMessage }],
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`MCP connector ${res.status}: ${err.slice(0, 600)}`);
+  }
+  const data = await res.json();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const content = (data.content || []) as Array<{ type: string; [k: string]: any }>;
+  const text = content.filter(c => c.type === 'text').map(c => c.text).join('\n').trim();
+  logFilmstrip({
+    model: opts.model,
+    system_prompt: opts.systemPrompt,
+    user_prompt: opts.userMessage,
+    response: text,
+    max_tokens: opts.maxTokens ?? 1024,
+    input_tokens: data.usage?.input_tokens ?? null,
+    output_tokens: data.usage?.output_tokens ?? null,
+    stop_reason: data.stop_reason ?? null,
+    extras: { transport: 'mcp-connector', server: BSP_MCP_CONNECTOR_URL },
+  });
+  return { text: text || '(no response from MCP connector path)', raw: data };
+}
+
 // ── Main entry point: tool-use loop ──
 
 export interface SoftLLMOptions {
