@@ -20,7 +20,8 @@ import { LiquidZone } from './components/xstream/LiquidZone'
 import { VapourZone } from './components/xstream/VapourZone'
 import { DraggableSeparator } from './components/DraggableSeparator'
 import { ViewerDrawer } from './components/ViewerDrawer'
-import { BeachKernel } from './kernel/beach-kernel'
+import { InboxDrawer } from './components/InboxDrawer'
+import { BeachKernel, type InboxItem } from './kernel/beach-kernel'
 import { createBeachSession, type BeachSession, type MarkRow, type FrameView } from './kernel/beach-session'
 import { setHiddenRef, beachToRef, resolveRef, readShell, bootstrapShell, bsp, pscaleRegister, pscaleGrainReach, pscaleKeyPublish, type AgentShell, type PresenceMark } from './lib/bsp-client'
 import { joinVapourChannel, deriveScope, type VapourChannelHandle, type VapourBroadcast } from './lib/realtime'
@@ -63,11 +64,13 @@ export default function App() {
   const [frameInput, setFrameInput] = useState('')
   const [shell, setShell] = useState<AgentShell | null>(null)
   const [viewerOpen, setViewerOpen] = useState(false)
+  const [inboxOpen, setInboxOpen] = useState(false)
 
   // Live data from kernel
   const [presence, setPresence] = useState<PresenceMark[]>([])
   const [marks, setMarks] = useState<MarkRow[]>([])
   const [frame, setFrame] = useState<FrameView | null>(null)
+  const [inbox, setInbox] = useState<InboxItem[]>([])
   const [, setLogs] = useState<string[]>([])
 
   // Vapour
@@ -113,6 +116,7 @@ export default function App() {
       onPresence: setPresence,
       onMarks: setMarks,
       onFrame: setFrame,
+      onInbox: setInbox,
       onError: msg => setLogs(prev => [...prev.slice(-50), `❌ ${msg}`]),
       onLog: msg => setLogs(prev => [...prev.slice(-50), msg]),
     })
@@ -136,6 +140,12 @@ export default function App() {
     })()
     return () => { cancelled = true }
   }, [identity.handle, identity.secret, beach])
+
+  // Push watched beaches into the kernel — drives the inbox scan loop.
+  useEffect(() => {
+    if (!kernelRef.current) return
+    kernelRef.current.setWatchedBeaches(shell?.watched_beaches ?? [])
+  }, [shell])
 
   // Wire agent block hidden directories on beach change
   useEffect(() => {
@@ -618,6 +628,15 @@ export default function App() {
         )}
 
         <div className="ml-auto flex items-center gap-2 shrink-0">
+          {identity.handle && (
+            <button
+              onClick={() => setInboxOpen(v => !v)}
+              className={`text-xs px-2 py-0.5 rounded border border-border/50 transition-colors relative ${inboxOpen ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+              title={`inbox — marks across your ${shell?.watched_beaches.length ?? 0} watched beach${shell?.watched_beaches.length === 1 ? '' : 'es'} that mention ${identity.handle}`}
+            >
+              📬{inbox.length > 0 && <span className="ml-1 text-[10px] font-semibold">{inbox.length}</span>}
+            </button>
+          )}
           <button
             onClick={() => setViewerOpen(v => !v)}
             className={`text-xs px-2 py-0.5 rounded border border-border/50 transition-colors ${viewerOpen ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
@@ -663,6 +682,19 @@ export default function App() {
           secret={identity.secret}
           shell={shell}
           onShellSaved={setShell}
+        />
+
+        {/* Inbox drawer overlay — cold-contact across watched beaches */}
+        <InboxDrawer
+          open={inboxOpen}
+          onClose={() => setInboxOpen(false)}
+          items={inbox}
+          watchedCount={shell?.watched_beaches.length ?? 0}
+          onNavigate={(beachUrl, address) => {
+            setBeach(beachUrl)
+            setCurrentAddress(address || '')
+            setInboxOpen(false)
+          }}
         />
       </div>
 

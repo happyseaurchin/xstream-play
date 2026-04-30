@@ -26,10 +26,20 @@ import {
 } from '../lib/bsp-client';
 import type { BeachSession, MarkRow, FrameView, FrameEntity } from './beach-session';
 
+export interface InboxItem {
+  beach: string;             // beach URL where the mark lives
+  digit: string;             // position under beach:1
+  agent_id: string | null;   // who left it
+  address: string | null;    // pscale coord
+  timestamp: string | null;
+  text: string;              // the mark's underscore content
+}
+
 export interface BeachKernelCallbacks {
   onPresence: (peers: PresenceMark[]) => void;
   onMarks: (marks: MarkRow[]) => void;
   onFrame: (frame: FrameView | null) => void;
+  onInbox: (items: InboxItem[]) => void;
   onError: (err: string) => void;
   onLog: (msg: string) => void;
 }
@@ -125,9 +135,21 @@ export class BeachKernel {
   private cycling = false;
   private running = false;
 
+  // Watched beaches — the inbox-replacement layer. Scanned at a slower
+  // cadence than current_beach (every nth cycle). A mark is "for me" if
+  // its underscore mentions the user's agent_id (cold-contact convention).
+  private watchedBeaches: string[] = [];
+  private cycleN = 0;
+  private static WATCH_EVERY_N_CYCLES = 5;       // 5 × 4s = 20s
+
   constructor(session: BeachSession, callbacks: BeachKernelCallbacks) {
     this.session = session;
     this.cb = callbacks;
+  }
+
+  /** Update the watched-beach list; next watch tick uses these. */
+  setWatchedBeaches(beaches: string[]): void {
+    this.watchedBeaches = beaches.filter(b => !!b && b !== this.session.current_beach);
   }
 
   start(pollMs: number = DEFAULT_POLL_MS): void {
@@ -261,10 +283,52 @@ export class BeachKernel {
       } else {
         this.cb.onFrame(null);
       }
+
+      // 5. Watched-beach inbox scan — every Nth cycle.
+      this.cycleN++;
+      if (this.session.agent_id && this.cycleN % BeachKernel.WATCH_EVERY_N_CYCLES === 0 && this.watchedBeaches.length > 0) {
+        await this.scanInbox();
+      }
     } catch (e) {
       this.cb.onError(e instanceof Error ? e.message : String(e));
     } finally {
       this.cycling = false;
     }
+  }
+
+  /** Scan watched beaches for marks tagged for this agent. */
+  private async scanInbox(): Promise<void> {
+    const me = this.session.agent_id;
+    if (!me) return;
+    const items: InboxItem[] = [];
+    // Tag conventions a mark uses to address us: bare handle, @handle,
+    // qualified <handle>:..., or our beach URL prefix.
+    const needles = [me, '@' + me];
+    for (const watchedBeach of this.watchedBeaches) {
+      try {
+        const r = await bsp({ agent_id: watchedBeach, block: 'beach', spindle: '1' });
+        if (!r.ok || !('raw' in r) || !r.raw) continue;
+        const rows = readMarks(r.raw, '');
+        for (const row of rows) {
+          if (row.is_presence) continue;
+          if (row.agent_id === me) continue; // skip our own marks
+          const blob = (row.text || '') + ' ' + (row.address || '');
+          if (!needles.some(n => blob.includes(n))) continue;
+          items.push({
+            beach: watchedBeach,
+            digit: row.digit,
+            agent_id: row.agent_id,
+            address: row.address,
+            timestamp: row.timestamp,
+            text: row.text,
+          });
+        }
+      } catch {
+        // skip this beach this tick
+      }
+    }
+    // Sort newest first.
+    items.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+    this.cb.onInbox(items);
   }
 }
