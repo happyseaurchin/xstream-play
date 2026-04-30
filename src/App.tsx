@@ -71,6 +71,19 @@ export default function App() {
   const [marks, setMarks] = useState<MarkRow[]>([])
   const [frame, setFrame] = useState<FrameView | null>(null)
   const [inbox, setInbox] = useState<InboxItem[]>([])
+  // Locally-acked inbox keys ("<beach>#<digit>") — dismissed marks won't
+  // resurface even if the source beach hasn't tided them out yet.
+  // Local-only for now: persistence-across-devices is a Tier-4 nicety.
+  const [inboxAcks, setInboxAcks] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem('xstream:inbox-acks')
+      return new Set(raw ? JSON.parse(raw) as string[] : [])
+    } catch { return new Set() }
+  })
+  const persistAcks = useCallback((next: Set<string>) => {
+    setInboxAcks(next)
+    try { localStorage.setItem('xstream:inbox-acks', JSON.stringify([...next])) } catch { /* quota / SSR */ }
+  }, [])
   const [, setLogs] = useState<string[]>([])
 
   // Vapour
@@ -628,15 +641,18 @@ export default function App() {
         )}
 
         <div className="ml-auto flex items-center gap-2 shrink-0">
-          {identity.handle && (
-            <button
-              onClick={() => setInboxOpen(v => !v)}
-              className={`text-xs px-2 py-0.5 rounded border border-border/50 transition-colors relative ${inboxOpen ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-              title={`inbox — marks across your ${shell?.watched_beaches.length ?? 0} watched beach${shell?.watched_beaches.length === 1 ? '' : 'es'} that mention ${identity.handle}`}
-            >
-              📬{inbox.length > 0 && <span className="ml-1 text-[10px] font-semibold">{inbox.length}</span>}
-            </button>
-          )}
+          {identity.handle && (() => {
+            const unread = inbox.filter(i => !inboxAcks.has(`${i.beach}#${i.digit}`)).length
+            return (
+              <button
+                onClick={() => setInboxOpen(v => !v)}
+                className={`text-xs px-2 py-0.5 rounded border border-border/50 transition-colors relative ${inboxOpen ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+                title={`inbox — marks across your ${shell?.watched_beaches.length ?? 0} watched beach${shell?.watched_beaches.length === 1 ? '' : 'es'} that mention ${identity.handle}`}
+              >
+                📬{unread > 0 && <span className="ml-1 text-[10px] font-semibold">{unread}</span>}
+              </button>
+            )
+          })()}
           <button
             onClick={() => setViewerOpen(v => !v)}
             className={`text-xs px-2 py-0.5 rounded border border-border/50 transition-colors ${viewerOpen ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
@@ -688,12 +704,15 @@ export default function App() {
         <InboxDrawer
           open={inboxOpen}
           onClose={() => setInboxOpen(false)}
-          items={inbox}
+          items={inbox.filter(i => !inboxAcks.has(`${i.beach}#${i.digit}`))}
           watchedCount={shell?.watched_beaches.length ?? 0}
           onNavigate={(beachUrl, address) => {
             setBeach(beachUrl)
             setCurrentAddress(address || '')
             setInboxOpen(false)
+          }}
+          onAck={key => {
+            const next = new Set(inboxAcks); next.add(key); persistAcks(next)
           }}
         />
       </div>

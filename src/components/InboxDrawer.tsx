@@ -21,9 +21,10 @@ export interface InboxDrawerProps {
   items: InboxItem[]
   watchedCount: number
   onNavigate: (beach: string, address: string) => void
+  onAck: (key: string) => void
 }
 
-export function InboxDrawer({ open, onClose, items, watchedCount, onNavigate }: InboxDrawerProps) {
+export function InboxDrawer({ open, onClose, items, watchedCount, onNavigate, onAck }: InboxDrawerProps) {
   const [height, setHeight] = useState(() => {
     const saved = localStorage.getItem('xstream:inbox-height')
     return saved ? parseInt(saved, 10) : Math.round(window.innerHeight * 0.32)
@@ -70,22 +71,33 @@ export function InboxDrawer({ open, onClose, items, watchedCount, onNavigate }: 
               : 'No marks mentioning you on any watched beach right now.'}
           </div>
         ) : (
-          items.map(item => (
-            <button
-              key={`${item.beach}#${item.digit}`}
-              onClick={() => onNavigate(item.beach, item.address || '')}
-              className="block w-full text-left border border-border/40 rounded px-3 py-2 bg-card/50 hover:bg-accent/30 transition-colors"
-              title={`open ${item.beach}${item.address ? ':' + item.address : ''}`}
-            >
-              <div className="text-sm whitespace-pre-wrap text-foreground">{item.text}</div>
-              <div className="flex gap-3 text-[11px] text-muted-foreground mt-1 font-mono flex-wrap">
-                {item.agent_id && <span>{item.agent_id}</span>}
-                <span className="opacity-70">{item.beach}{item.address ? ':' + item.address : ''}</span>
-                {item.timestamp && <span>{new Date(item.timestamp).toLocaleString()}</span>}
-                <span className="ml-auto opacity-50">1.{item.digit}</span>
+          items.map(item => {
+            const key = `${item.beach}#${item.digit}`
+            return (
+              <div key={key} className="border border-border/40 rounded bg-card/50 hover:bg-accent/30 transition-colors flex items-stretch">
+                <button
+                  onClick={() => onNavigate(item.beach, item.address || '')}
+                  className="flex-1 text-left px-3 py-2"
+                  title={`open ${item.beach}${item.address ? ':' + item.address : ''}`}
+                >
+                  <div className="text-sm whitespace-pre-wrap text-foreground">{item.text}</div>
+                  <div className="flex gap-3 text-[11px] text-muted-foreground mt-1 font-mono flex-wrap">
+                    {item.agent_id && <span>{item.agent_id}</span>}
+                    <span className="opacity-70">{item.beach}{item.address ? ':' + item.address : ''}</span>
+                    {item.timestamp && <span>{new Date(item.timestamp).toLocaleString()}</span>}
+                    <span className="ml-auto opacity-50">1.{item.digit}</span>
+                  </div>
+                </button>
+                <button
+                  onClick={() => onAck(key)}
+                  className="px-2 text-muted-foreground hover:text-foreground border-l border-border/30"
+                  title="dismiss (won't surface again)"
+                >
+                  ✕
+                </button>
               </div>
-            </button>
-          ))
+            )
+          })
         )}
       </div>
 

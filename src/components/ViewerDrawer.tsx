@@ -232,12 +232,18 @@ function FaceCard({ digit, face, agentId, secret, onShellSaved }: { digit: '1' |
       '3': commit,
       '4': persona,
     }
+    // Pass new_lock=secret so the first save of an unlocked shell sets
+    // the write-lock (R1/R2). Subsequent saves rotate to the same hash —
+    // idempotent. This makes the Designer face genuinely sovereign:
+    // after the first edit, no one without the passphrase can rewrite
+    // the user's gates, even though anyone can READ them.
     const result = await bsp({
       agent_id: agentId,
       block: 'shell',
       spindle: '1.' + digit,
       content,
       secret,
+      new_lock: secret,
     })
     setSaving(false)
     if (!result.ok) {
@@ -313,9 +319,12 @@ function FieldRow({ label, hint, value, onChange, multiline }: { label: string; 
 // block editor in a follow-up). The substrate-tray actions on the input
 // panel cover the canonical writes (passport, register, engage, keys).
 
+interface PoolEntry { digit: string; underscore: string; synthesis: string | null }
+
 function FaceAuthor({ agentId, secret, shell, beach }: { agentId: string; secret: string; shell: AgentShell | null; beach: string }) {
   const [passport, setPassport] = useState<PscaleNode | null>(null)
   const [loadingPassport, setLoadingPassport] = useState(false)
+  const [pools, setPools] = useState<PoolEntry[]>([])
 
   // void to satisfy lint — secret may be referenced in writes added later
   void secret
@@ -333,6 +342,41 @@ function FaceAuthor({ agentId, secret, shell, beach }: { agentId: string; secret
     return () => { cancelled = true }
   }, [agentId])
 
+  // Pool discovery — walk beach:2 to list pools at this beach. Each pool
+  // is a sub-block at beach:2.<N> with its own underscore (purpose) and
+  // optionally _synthesis. Pure read; no writes here.
+  useEffect(() => {
+    if (!beach) { setPools([]); return }
+    let cancelled = false
+    ;(async () => {
+      const r = await bsp({ agent_id: beach, block: 'beach', spindle: '2' })
+      if (cancelled) return
+      if (!r.ok || !('raw' in r) || !r.raw || typeof r.raw !== 'object') { setPools([]); return }
+      const root = r.raw as Record<string, PscaleNode>
+      const poolsNode = root['2']
+      if (typeof poolsNode !== 'object' || poolsNode === null) { setPools([]); return }
+      const out: PoolEntry[] = []
+      const po = poolsNode as Record<string, PscaleNode>
+      for (let d = 1; d <= 9; d++) {
+        const k = String(d)
+        const v = po[k]
+        if (typeof v !== 'object' || v === null) continue
+        const vo = v as Record<string, PscaleNode>
+        const u = typeof vo._ === 'string' ? (vo._ as string) : ''
+        const synthNode = vo._synthesis
+        let synthesis: string | null = null
+        if (typeof synthNode === 'object' && synthNode !== null) {
+          const sn = synthNode as Record<string, PscaleNode>
+          if (typeof sn._ === 'string') synthesis = sn._ as string
+        }
+        if (!u && !synthesis) continue
+        out.push({ digit: k, underscore: u, synthesis })
+      }
+      setPools(out)
+    })()
+    return () => { cancelled = true }
+  }, [beach])
+
   if (!agentId) {
     return <div className="text-sm text-muted-foreground italic">Identify in the floating button to view what you've authored.</div>
   }
@@ -345,6 +389,24 @@ function FaceAuthor({ agentId, secret, shell, beach }: { agentId: string; secret
         body={loadingPassport ? '(loading)' : passport ? formatPscale(passport, 0) : '(none — use 🪪 in the input panel to publish one)'}
         emptyHint="No passport yet"
       />
+      {pools.length > 0 && (
+        <div>
+          <div className="text-[11px] text-muted-foreground uppercase tracking-wider mb-1">Pools at this beach (beach:2)</div>
+          <ul className="space-y-1.5">
+            {pools.map(p => (
+              <li key={p.digit} className="px-2 py-1.5 border border-border/30 rounded bg-card/30">
+                <div className="flex items-baseline gap-2">
+                  <span className="text-[10px] text-muted-foreground font-mono">2.{p.digit}</span>
+                  <span className="text-sm">{p.underscore || '(no purpose)'}</span>
+                </div>
+                {p.synthesis && (
+                  <div className="text-[11px] text-muted-foreground mt-0.5 italic line-clamp-2">{p.synthesis}</div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {shell && shell.block_manifest.length > 0 && (
         <div>
           <div className="text-[11px] text-muted-foreground uppercase tracking-wider mb-1">Block manifest (shell:3)</div>

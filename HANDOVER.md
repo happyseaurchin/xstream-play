@@ -94,6 +94,111 @@ If anything breaks, the gotchas section below covers the recurring ones from the
 
 ---
 
+## Late-session additions (after Tier 3 ship)
+
+Three small follow-ups landed before the test session:
+
+### Inbox ack/dismiss — local — `<commit>`
+
+The 📬 indicator now shows *unread* count, not total. Each item in InboxDrawer has a `✕` button that ACKS the mark locally (localStorage `xstream:inbox-acks`, JSON array of `<beach>#<digit>` keys). Acked marks are filtered from the list and from the badge count. Local-only — persistence-across-devices is a Tier-4 concern (would need a `bsp()` write to a private `inbox-acks` block keyed by the user, follow-up).
+
+### Shell lock on save — sovereignty closes — `<commit>`
+
+The bootstrap shell was created unlocked, meaning anyone who knew the agent_id could rewrite gates. Now the in-client `bsp()` accepts `new_lock: string` and the `FaceCard.save()` always passes `new_lock: secret`. Per bsp-mcp lock semantics:
+
+- **R1** (block doesn't exist + new_lock): create locked, no secret needed.
+- **R2** (block unlocked + new_lock): set lock, no secret needed.
+- **R3** (block locked + secret): proves authority for content writes.
+- **R4** (block locked + secret + new_lock): rotate (with optional content).
+
+Result: the first save by an agent locks their shell with their session passphrase. Subsequent saves match (R3) and re-write the same hash (R4 idempotent). The Designer face is now genuinely sovereign — anyone can READ the user's gates, but only the passphrase holder can write them.
+
+Implementation note: lock is rooted at position `_` for v0.1 — a single root-level lock covers the whole shell. Per-position locking is a substrate feature for later.
+
+### Pool surface — discovery — `<commit>`
+
+The Author face now lists pools at the current beach. Pure read: walks `bsp(agent_id=beach, block="beach", spindle="2")`, enumerates `2.1..2.9`, and shows each pool's underscore (purpose) plus its `_synthesis._` if present. Doesn't yet wire pool *contributions* — see the operational design below for what that needs.
+
+---
+
+## How pool is operational on bsp-mcp
+
+A pool isn't a separate primitive. It's a *block shape* on a beach. The geometry does the work; bsp() is the only function involved.
+
+### Address shape
+
+A beach block has the canonical structure:
+
+```
+beach (the block at agent_id=<beach-url>, block="beach")
+  _    : "Beach at <origin> — public commons..."     ← the beach's own description
+  1    : { 1: <mark>, 2: <mark>, ... }                ← marks ring (open billboard, tide-cleared)
+  2    : { 1: <pool>, 2: <pool>, ... }                ← pools ring (each Nth slot is one pool)
+```
+
+Each pool at `2.<N>` is itself a small block:
+
+```
+beach:2.<N>
+  _           : "Pool purpose — what we're trying to converge on"
+  1           : <contribution>     ← contribution slot 1
+  2           : <contribution>     ← contribution slot 2
+  ...
+  9           : <contribution>     ← contribution slot 9
+  _synthesis  : { _: "<canonical render>", _envelope: "[SYNTHESIS rule=... by=... at=...]" }
+```
+
+Same pscale geometry as a frame disc, just rooted under `2.<N>` instead of being a separate `frame:<scene>` block. The reason it sits inside the beach block (rather than as its own `pool:<id>` block) is that **pools belong to the beach**: discovery is "what pools are at this beach?", which is just `bsp(spindle="2")` at the beach.
+
+### Operating on a pool — every action is a bsp() call
+
+| Action | Call |
+|---|---|
+| List pools at a beach | `bsp(agent_id=<beach>, block="beach", spindle="2", pscale_attention=-2)` — dir at "2" |
+| Read a pool's purpose | `bsp(agent_id=<beach>, block="beach", spindle="2.<N>", pscale_attention=0)` — point at the underscore |
+| Read all contributions | `bsp(agent_id=<beach>, block="beach", spindle="2.<N>", pscale_attention=-2)` — dir |
+| Read latest synthesis | `bsp(agent_id=<beach>, block="beach", spindle="2.<N>._synthesis", pscale_attention=0)` |
+| Create a new pool | `bsp(agent_id=<beach>, block="beach", spindle="2.<next-free>", content={_: "purpose"}, secret: <beach-owner-secret>)` |
+| Contribute to a pool | `bsp(agent_id=<beach>, block="beach", spindle="2.<N>.<next-free>", content="<my contribution>", secret: <my-write-token-if-locked>)` |
+
+The "next-free" digit is computed by reading the ring first and finding the first absent slot 1..9. When all 9 are full, GRIT triggers (or in v0.1, the oldest gets overwritten, depending on tide rules).
+
+### GRIT — synthesis daemon
+
+The synthesis itself is **out of bsp-mcp** — it's a daemon running on the pool host that watches for "round closed" conditions and dispatches. Per `protocol-xstream-frame.md` §7:
+
+1. **Trigger**: signal (e.g. user-fired commit), quorum (M of N contributors have written), or timer (window elapsed).
+2. **Read full state**: `bsp(spindle="2.<N>", pscale_attention=-2)` — full pool.
+3. **Fetch skill**: resolve `*:<owner>:skill-pack:<pool-kind>` for the rendering rule.
+4. **Call medium-LLM**: skill + context → solid synthesis.
+5. **Write commitments**: clear contributions to `2.<N>.<m>.2`-equivalents (or just rotate them out), write synthesis to `2.<N>._synthesis._`, stamp `_envelope`.
+
+The daemon only uses bsp() — no new primitive. Its `agent_id` must be registered in the appropriate `sed:` collective (e.g., `sed:<game>-resolvers`) for the pool to accept its writes. This is the existing sed: face authority machinery; nothing new.
+
+### What the xstream client needs to do pools fully (the open work)
+
+We have **discovery** today (Author face lists pools). The remaining client-side work to make pools operational is:
+
+1. **Join a pool** — set `current_address` to `2.<N>`. The address bar already accepts this; navigating works for browsing.
+2. **Pool-aware reads** — the kernel today reads marks from `beach:1`. When the user is "in a pool" (current_address starts with `2.<digit>`), it should additionally read `beach:2.<N>` ring and surface contributions in the Solid/Liquid zones (instead of marks).
+3. **Pool-aware contributions** — when the user submits and is at a pool address, the write goes to `beach:2.<N>.<next-free>` instead of `beach:1.<next-free>`. This is a small branch in `dropMark` / `commitLiquid`.
+4. **Pool synthesis surfacing** — when present, render `2.<N>._synthesis._` as the canonical solid above the contributions, just like the frame synthesis.
+5. **Create-a-pool affordance** — a 6th action button (or a verb prefix `pool: <purpose>`) that writes a new pool at the next free `2.<N>`. Beach-owner secret needed unless the beach allows open pool creation.
+
+That's roughly 100 LOC of kernel branch plus a UI affordance. Not done in this session. The cleanest sequencing:
+
+- (a) Decide whether pools are discovered-at-beach or also at federated URLs (today: beach-local — simpler). Probably this is fine for v0.1.
+- (b) Add a `current_pool: string | null` to BeachSession (parallel to current_frame), set by parsing `current_address` — if it starts with `2.<digit>`, that's the pool position.
+- (c) Branch `dropMark` and `commitLiquid` on `current_pool`: when in pool, write at `beach:2.<pool>.<next>` shape.
+- (d) Branch the kernel cycle's marks-read: when in pool, ALSO read `beach:2.<pool>` and surface as a `poolContributions` callback. UI renders these in Solid (because pool contributions are committed, not draft).
+- (e) Pool creation: a verb prefix `pool: <purpose>` parses to a write at the next free `2.<N>`, or a dedicated UI affordance.
+
+The whole thing remains six entry points: nothing new. Pools are just where on the geometry the contributions land.
+
+---
+
+---
+
 ## What this is
 
 xstream as a bsp-mcp-native beach client. The user lands on a V/L/S surface (vapour, liquid, solid zones with draggable separators), identifies via a popover inside the floating `#` button, and engages with a federated beach (`https://happyseaurchin.com`) plus the bsp-mcp commons. **The substrate is the context engine**, not a content firehose; what the user sees is filtered by *who they are* (identity + face) and *where they are* (beach + address + frame).

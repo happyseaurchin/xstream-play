@@ -40,6 +40,16 @@ export interface BspParams {
   tier?: Tier;
   secret?: string;
   gray?: boolean;
+  /**
+   * Set or rotate the write-lock at the addressed position. Per
+   * bsp-mcp-server lock semantics:
+   *   R1: block doesn't exist + new_lock          → create locked, no secret needed.
+   *   R2: block unlocked       + new_lock          → set lock, no secret needed.
+   *   R3: block locked         + secret            → secret proves authority for content writes.
+   *   R4: block locked         + secret + new_lock → rotate lock (with optional content).
+   * Currently honoured at the root underscore lock only (position '_').
+   */
+  new_lock?: string;
 }
 
 export type BspShape = 'whole' | 'spindle' | 'point' | 'ring' | 'dir' | 'disc' | 'star';
@@ -269,14 +279,14 @@ async function checkLock(row: BlockRow | null, agentId: string, name: string, se
 // ── Core bsp() ──
 
 export async function bsp(params: BspParams): Promise<BspReadResult | BspWriteResult> {
-  const { agent_id, block: blockName, spindle, pscale_attention, content, secret } = params;
+  const { agent_id, block: blockName, spindle, pscale_attention, content, secret, new_lock } = params;
   const parsed = parseSpindle(spindle);
-  const isWrite = content !== undefined;
+  const isWrite = content !== undefined || new_lock !== undefined;
   const shape = deriveShape(parsed, pscale_attention, isWrite);
 
   // Federated write — server handles the spindle apply per v2 §2.2.
   if (isWrite && isUrlAgent(agent_id)) {
-    const r = await saveBlockFederated(agent_id, blockName, content as PscaleNode, {
+    const r = await saveBlockFederated(agent_id, blockName, (content ?? null) as PscaleNode, {
       spindle: spindle ?? '',
       pscale_attention,
       secret,
@@ -298,8 +308,15 @@ export async function bsp(params: BspParams): Promise<BspReadResult | BspWriteRe
   if (lockErr) return { ok: false, shape, error: lockErr };
 
   const baseBlock = row?.block ?? {};
-  const newBlock = applyWrite(baseBlock, parsed, content as PscaleNode);
-  const result = await saveBlock(agent_id, blockName, newBlock, row?.position_hashes ?? {});
+  const newBlock = content !== undefined ? applyWrite(baseBlock, parsed, content as PscaleNode) : baseBlock;
+  // Lock semantics R1/R2: unlocked block + new_lock → set lock without
+  // needing secret. R4: locked + secret (already verified) + new_lock →
+  // rotate. Position is rooted at '_' for v0.1.
+  const positionHashes = { ...(row?.position_hashes ?? {}) };
+  if (new_lock) {
+    positionHashes._ = await hashBlockPassphrase(new_lock, agent_id, blockName, '_');
+  }
+  const result = await saveBlock(agent_id, blockName, newBlock, positionHashes);
   return result.ok ? { ok: true, shape } : { ok: false, shape, error: result.error };
 }
 
