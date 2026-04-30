@@ -16,6 +16,29 @@ xstream as a bsp-mcp-native beach client. The user lands on a V/L/S surface (vap
 
 The previous "xstream-play" was a multi-character RPG kernel. The game kernel is **gone**. What survives is the substrate (`bsp-client.ts`, `beach-kernel.ts`) and the original UI components (zones, separators, button).
 
+### bsp-mcp ≠ pscale-mcp — discipline check
+
+The pscale-mcp era shipped ~25 categorised tools (passport_publish, inbox_send, beach_mark, pool_join, …). **bsp-mcp collapses that surface to six primitives**, and that's it:
+
+1. `bsp()` — the geometric primitive (read/write at any spindle, any pscale_attention, any block). Whetstone signature: `bsp(agent_id, block, spindle, pscale_attention, content?, face?, tier?, secret?, gray?)`.
+2. `pscale_create_collective` — instantiate a sed: collective.
+3. `pscale_register` — claim a position in a sed: collective.
+4. `pscale_grain_reach` — propose a bilateral grain.
+5. `pscale_key_publish` — publish ed25519/x25519 keys to your passport.
+6. `pscale_verify_rider` — verify a rider's signature chain.
+
+(Names retain the `pscale_` prefix per whetstone:5 — *"carry over unchanged in name and semantics"* — but they are bsp-mcp primitives, not pscale-mcp legacy.)
+
+**Everything else is a convention**, not a tool:
+- Passport — a block at `(agent_id, "passport")` with a conventional shape; read/written via `bsp()`.
+- Inbox — replaced. There is no inbox primitive. Cold contact = a structured mark on a beach the recipient watches.
+- Beach mark — a `bsp()` ring write at `1.<n>` of the beach block.
+- Pool / liquid pool — a `bsp()` ring write at `2.<N>.<n>`.
+- GRIT — a daemon script that polls a pool via `bsp()` and writes a synthesis envelope via `bsp()`. No primitive.
+- Presence — a structured mark with three required tags (`1=agent_id, 2=address, 3=ts`); read-side staleness filter.
+
+**Implication for tool-use**: when you expose tools to the LLM, you expose **these six primitives plus nothing**. The conventions are taught in the *system prompt* via context (the user's shell, current beach state, current frame disc) — they are not additional tools. If you find yourself listing `pscale_passport_publish` or `pscale_pool_send` as tools, stop — those are pscale-mcp legacy names, not bsp-mcp. Use `bsp()` to read/write the underlying block at the conventional shape.
+
 ---
 
 ## Architecture
@@ -109,25 +132,42 @@ The shell at `(agent_id, "shell")` is auto-bootstrapped on first registered acti
 Goal: when the user types in vapour and hits ⌘↵, the soft-LLM:
 - Knows who they are (`agent_id`, current face).
 - Knows where they are (beach, address, frame if any).
-- Can call `bsp()` to read the beach (and other substrate primitives appropriate to their face) to answer situated questions like "what's here?" / "who's around?" / "what has weft been thinking about?".
+- Can call the six bsp-mcp primitives — appropriate to their face — to answer situated questions like "what's here?" / "who's around?" / "what has weft been thinking about?".
 
-Implementation:
+**Tools to expose**: exactly the six bsp-mcp primitives listed in §"What this is". No more, no less. Conventions (passport / pool / inbox-replacement / beach-mark) are taught via *context*, not as additional tools — the LLM uses `bsp()` to read/write at the conventional shape.
+
+**Where the gates come from — read them, don't hardcode**:
+- The active face is `shell:1.<digit>` where digit ∈ {1=character, 2=author, 3=designer, 4=observer}.
+- Knowledge gates are `shell:1.<digit>.2` (read scope).
+- Commit gates are `shell:1.<digit>.3` (write scope).
+- The whetstone:3.2 default face/tier matrix is **fallback only**, applied when the shell doesn't specify. The shell is the source of truth — which means the user can edit gating from the Designer face. That's the whole point.
+
+**Where the system-prompt context slots come from — read the block, don't reinvent**:
+- The soft-agent block at `blocks/xstream/soft-agent.json` already names the context slots at branch 4: `4.1` shell, `4.2` frame from hard, `4.3` solid history, `4.4` user message.
+- The work is filling those named slots via `bsp()` reads. Not new design — discipline.
+
+**Implementation path**:
 - Extend `callClaude` (or write `callClaudeWithTools`) to accept Anthropic Messages API `tools` array; loop on `tool_use` blocks → execute via `bsp-client` → `tool_result` → continue.
-- Tool definitions for `bsp`, `pscale_register`, `pscale_grain_reach`, `pscale_key_publish`, `pscale_verify_rider`, `pscale_create_collective` (JSON schemas matching whetstone).
-- Face-conditional tool gating per whetstone:3.2 default matrix:
-  - Character: bsp (read only), grain_reach
-  - Author: bsp (read + write at edit_target), grain_reach, register
-  - Designer: bsp (full), all primitives
-  - Observer: bsp (read only), no primitives
-- System prompt receives a small context block: `face: <c/a/d/o>`, `agent_id`, `beach`, `address`, `frame?`, plus the active face's persona text from the user's shell.
+- Tool schemas match whetstone:1 (bsp signature) and the five non-geometric primitives.
+- On each soft-LLM call: read `shell:1.<active digit>` for persona + gates; gate the tools array accordingly; fill the context slots from the soft-agent block via `bsp()` reads.
 
 Estimated scope: ~200 LOC. Lands as one coherent commit. Substantial UX win: the soft-LLM stops being generic Claude and becomes a substrate-aware partner.
 
-**Alternative**: use Anthropic Messages API's MCP connector (`mcp_servers` parameter, currently beta) to attach `https://pscale-mcp-server-production.up.railway.app/mcp/v2` directly. Less code, but depends on the beta connector. Path A (in-client tool-use) is more reliable today.
+**Spike before coding**: try Anthropic Messages API's MCP connector (`mcp_servers` parameter, beta) attaching `https://pscale-mcp-server-production.up.railway.app/mcp/v2` (the bsp-mcp deployment — name lags). If it Just Works, the in-client tool loop collapses to system-prompt + face-gating only. 30 minutes. If the connector doesn't accept the URL or face-gating gets ugly, fall back to the in-client loop above.
 
 ### 2. Wire substrate-tool tray to real calls
 
-Replace the `onAct` log in `SubstrateTray` with actual `bsp-client` calls. `pscale_register` writes to a sed: collective; `pscale_grain_reach` writes a reach mark to a beach the partner watches; etc. The dialog inputs already capture the right fields; the wiring is plumbing.
+Replace the `onAct` log in `SubstrateTray` with calls to the five non-geometric bsp-mcp primitives:
+
+| Tray button | Primitive |
+|---|---|
+| Reach | `pscale_grain_reach` |
+| Register | `pscale_register` |
+| Publish keys | `pscale_key_publish` |
+| Verify rider | `pscale_verify_rider` |
+| Create collective | `pscale_create_collective` |
+
+The dialog inputs already capture the right fields; the wiring is plumbing. (And no, "publish passport" is not a tray button — it's a `bsp()` write at `(agent_id, "passport")`. If the user wants a UI affordance for it, that's a *block-edit* surface, not a primitive.)
 
 ### 3. Author / Designer face viewer content
 
@@ -158,13 +198,21 @@ For deploys: `mcp__79741c3b-...__list_deployments` (project `prj_B5kbVU2hPpwhQ3U
 
 ## Reference docs (bsp-mcp side)
 
+Specs (markdown):
 - `https://github.com/pscale-commons/bsp-mcp-server/blob/main/docs/protocol-pscale-beach-v2.md`
 - `https://github.com/pscale-commons/bsp-mcp-server/blob/main/docs/protocol-agent-shell.md`
 - `https://github.com/pscale-commons/bsp-mcp-server/blob/main/docs/protocol-block-references.md`
 - `https://github.com/pscale-commons/bsp-mcp-server/blob/main/docs/protocol-xstream-frame.md`
 - `https://github.com/pscale-commons/bsp-mcp-server/blob/main/docs/presence-via-marks.md`
-- Sunstone (teaches BSP by being walkable): in this repo's parent or fetch from pscale-commons.
-- Whetstone (operational reference for `bsp()` signature + face/tier matrix): same.
+
+Self-teaching pscale blocks (these ARE pscale blocks; walk them with `bsp()` to learn):
+- **Sunstone** — teaches BSP by being navigable through BSP. Eight branches (geometry / function / access / substrate / composition / commons / reflexive / voicing). Reading sunstone is how the LLM internalises the substrate. Source: `pscale-commons/pscale` repo or attached to a session as `sunstone.json`.
+- **Whetstone** — operational reference for the `bsp()` primitive: signature, the 7-case selection-shape derivation, modifier composition (face / tier / secret / gray), the storage-adapter interface, and the translation map from pscale-mcp legacy → bsp-mcp. The whetstone:3.2 default face/tier matrix is the *fallback* for face-gating when the user's shell doesn't specify. Source: same. (URL lookup may return 404 on a `.md` extension — these are JSON blocks.)
+
+Whetstone:5 lists the bsp-mcp primitives that *carry over from pscale-mcp unchanged in name and semantics*:
+`pscale_create_collective`, `pscale_register`, `pscale_grain_reach`, `pscale_lock_block`, `pscale_evolution`, `pscale_key_publish`, `pscale_verify_rider`.
+
+For the xstream client, the practically-relevant subset is the five we expose in the substrate tray + tool-use: `register`, `grain_reach`, `key_publish`, `verify_rider`, `create_collective`. Plus `bsp()` itself.
 
 ---
 
