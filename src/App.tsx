@@ -23,6 +23,7 @@ import { ViewerDrawer } from './components/ViewerDrawer'
 import { BeachKernel } from './kernel/beach-kernel'
 import { createBeachSession, type BeachSession, type MarkRow, type FrameView } from './kernel/beach-session'
 import { setHiddenRef, beachToRef, resolveRef, readShell, bootstrapShell, bsp, pscaleRegister, pscaleGrainReach, pscaleKeyPublish, type AgentShell, type PresenceMark } from './lib/bsp-client'
+import { joinVapourChannel, deriveScope, type VapourChannelHandle, type VapourBroadcast } from './lib/realtime'
 import { getBlock, injectBlock } from './kernel/block-store'
 import { callClaudeWithTools, callClaudeViaMcpConnector, composeContext, buildSoftSystemPrompt } from './kernel/claude-tools'
 import type { SolidBlock, LiquidCard, VapourEntry, Theme } from './types/xstream'
@@ -73,6 +74,13 @@ export default function App() {
   const [vapor, setVapor] = useState('')
   const [softResponse, setSoftResponse] = useState<SoftLLMResponse | null>(null)
   const [softPending, setSoftPending] = useState(false)
+
+  // Live peer vapour — out-of-substrate broadcast per protocol-xstream-frame.md §3.1.
+  // Map keyed by peer agent_id so each peer occupies one row that updates in
+  // place as they type. Stale entries (no ping for >12s) are pruned in render.
+  const [peerVapour, setPeerVapour] = useState<Record<string, VapourBroadcast>>({})
+  const vapourChannelRef = useRef<VapourChannelHandle | null>(null)
+  const vapourBroadcastDebounceRef = useRef<number | null>(null)
 
   // Pending liquid card (after ⇧↵, before commit)
   const [pendingLiquid, setPendingLiquid] = useState<string | null>(null)
@@ -175,6 +183,55 @@ export default function App() {
     if (identity.secret) sessionStorage.setItem(SECRET_SESSION_KEY, identity.secret); else sessionStorage.removeItem(SECRET_SESSION_KEY)
     if (identity.apiKey) sessionStorage.setItem(API_KEY_SESSION_KEY, identity.apiKey); else sessionStorage.removeItem(API_KEY_SESSION_KEY)
   }, [identity])
+
+  // Live peer vapour — join a Supabase Realtime channel scoped to (beach,
+  // address, frame, entity). Switching face is intentionally NOT a scope
+  // change: peers at the same address see each other regardless of face;
+  // face filters render, not channel membership. Anonymous users (no
+  // handle) don't broadcast — they can't be addressed back — but they
+  // still receive peer vapour.
+  useEffect(() => {
+    // Tear down any prior channel.
+    if (vapourChannelRef.current) {
+      vapourChannelRef.current.leave().catch(() => {})
+      vapourChannelRef.current = null
+    }
+    setPeerVapour({})
+    if (!identity.handle) return // anonymous: skip joining; we have no agent_id to label our broadcast
+    const scope = deriveScope({
+      beach,
+      address: currentAddress,
+      frame: session.current_frame,
+      entity_position: session.entity_position,
+    })
+    const handle = joinVapourChannel({
+      scope,
+      agent_id: identity.handle,
+      face,
+      onPeer: msg => {
+        setPeerVapour(prev => ({ ...prev, [msg.agent_id]: msg }))
+      },
+    })
+    if (handle) vapourChannelRef.current = handle
+    return () => {
+      if (vapourChannelRef.current) {
+        vapourChannelRef.current.leave().catch(() => {})
+        vapourChannelRef.current = null
+      }
+    }
+  }, [identity.handle, beach, currentAddress, session.current_frame, session.entity_position, face])
+
+  // Broadcast our vapour as it changes, debounced ~80 ms. Empty string
+  // broadcasts too — that signals "I stopped typing" so peers fade us out.
+  useEffect(() => {
+    if (!vapourChannelRef.current) return
+    if (vapourBroadcastDebounceRef.current) {
+      window.clearTimeout(vapourBroadcastDebounceRef.current)
+    }
+    vapourBroadcastDebounceRef.current = window.setTimeout(() => {
+      vapourChannelRef.current?.broadcast(vapor)
+    }, 80)
+  }, [vapor])
 
   // ── Handlers ──
 
@@ -461,8 +518,21 @@ export default function App() {
     return out
   })()
 
-  // Vapour entries: peers' vapour (none today — placeholder for realtime)
-  const vapourEntries: VapourEntry[] = []
+  // Vapour entries: peers' live vapour from the realtime channel. Drop
+  // entries with empty text (peer stopped typing) and entries older than
+  // 12 s (peer dropped offline / channel hiccup).
+  const VAPOUR_STALENESS_MS = 12_000
+  const now = Date.now()
+  const vapourEntries: VapourEntry[] = Object.values(peerVapour)
+    .filter(p => p.vapour_text.trim().length > 0 && (now - p.ts) < VAPOUR_STALENESS_MS)
+    .map(p => ({
+      id: `peer-vapour-${p.agent_id}`,
+      userId: p.agent_id,
+      userName: p.agent_id,
+      text: p.vapour_text,
+      timestamp: p.ts,
+      isSelf: false,
+    }))
 
   const placeholderText = identity.apiKey
     ? 'type · ⌘↵ ask soft · ⇧↵ submit'
