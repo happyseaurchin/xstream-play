@@ -107,8 +107,11 @@ export function ConstructionButton({
   }, [isExpanded, isOpen]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).closest("button") ||
-        (e.target as HTMLElement).closest("textarea")) return;
+    const t = e.target as HTMLElement;
+    // Don't start a drag when the user is interacting with form/text controls
+    // or any element inside the settings popover.
+    if (t.closest("button") || t.closest("textarea") || t.closest("input") ||
+        t.closest("label") || t.closest("[data-no-drag]")) return;
     e.preventDefault();
     setIsDragging(true);
     dragStart.current = { x: e.clientX - position.x, y: e.clientY - position.y };
@@ -224,7 +227,7 @@ export function ConstructionButton({
     >
       {/* Settings Menu */}
       {isOpen && (
-        <div className="absolute bottom-14 right-0 w-56 glass rounded-lg overflow-hidden shadow-lg animate-slide-up text-foreground">
+        <div data-no-drag className="absolute bottom-14 right-0 w-64 glass rounded-lg overflow-hidden shadow-lg animate-slide-up text-foreground">
           <div className="px-4 py-3 border-b border-border/50">
             <span className="text-sm font-medium text-foreground">Settings</span>
           </div>
@@ -311,7 +314,7 @@ export function ConstructionButton({
 
           <div className="px-4 py-2 border-t border-border/50 bg-muted/30">
             <span className="text-[10px] text-muted-foreground font-mono">
-              v0.12.1
+              v0.2
             </span>
           </div>
         </div>
