@@ -22,8 +22,8 @@ import { DraggableSeparator } from './components/DraggableSeparator'
 import { ViewerDrawer } from './components/ViewerDrawer'
 import { InboxDrawer } from './components/InboxDrawer'
 import { BeachKernel, type InboxItem } from './kernel/beach-kernel'
-import { createBeachSession, type BeachSession, type MarkRow, type FrameView } from './kernel/beach-session'
-import { setHiddenRef, beachToRef, resolveRef, readShell, bootstrapShell, bsp, pscaleRegister, pscaleGrainReach, pscaleKeyPublish, type AgentShell, type PresenceMark } from './lib/bsp-client'
+import { createBeachSession, type BeachSession, type MarkRow, type FrameView, type PoolView } from './kernel/beach-session'
+import { setHiddenRef, beachToRef, resolveRef, readShell, bootstrapShell, bsp, pscaleRegister, pscaleGrainReach, pscaleKeyPublish, type AgentShell, type PresenceMark, type PscaleNode } from './lib/bsp-client'
 import { joinVapourChannel, deriveScope, type VapourChannelHandle, type VapourBroadcast } from './lib/realtime'
 import { getBlock, injectBlock } from './kernel/block-store'
 import { callClaudeWithTools, callClaudeViaMcpConnector, composeContext, buildSoftSystemPrompt } from './kernel/claude-tools'
@@ -32,19 +32,64 @@ import type { Face } from './types/xstream'
 import type { SoftLLMResponse } from './types'
 import './App.css'
 
-const HANDLE_KEY = 'xstream:handle'
-const SECRET_SESSION_KEY = 'xstream:secret'
-const API_KEY_SESSION_KEY = 'xstream:api-key'
+const ACTIVE_HANDLE_KEY = 'xstream:active-handle'
+const HANDLES_LIST_KEY = 'xstream:handles'
+// Legacy single-handle keys, kept for one-time migration into the per-handle scheme.
+const LEGACY_HANDLE_KEY = 'xstream:handle'
+const LEGACY_SECRET_KEY = 'xstream:secret'
+const LEGACY_API_KEY = 'xstream:api-key'
+const LEGACY_API_KEY_DASH = 'xstream-api-key'
 const BEACH_KEY = 'xstream:current-beach'
 const DEFAULT_BEACH = 'https://happyseaurchin.com'
 
 const MIN_ZONE = 80
 
+// Per-handle storage keys. Secrets stay in sessionStorage (session-scoped by
+// design — passphrases are not persisted to disk). The handles list and the
+// active handle live in localStorage so the user picks back up where they
+// left off across browser restarts.
+const secretKey = (h: string) => `xstream:secret:${h}`
+const apiKeyKey = (h: string) => `xstream:api-key:${h}`
+const faceStateKey = (h: string) => `xstream:face-state:${h || '_anon'}`
+
+function loadHandles(): string[] {
+  try {
+    const raw = localStorage.getItem(HANDLES_LIST_KEY)
+    if (raw) {
+      const arr = JSON.parse(raw)
+      if (Array.isArray(arr)) return arr.filter(x => typeof x === 'string')
+    }
+  } catch { /* corrupt — fall through */ }
+  return []
+}
+
+function saveHandles(list: string[]) {
+  try { localStorage.setItem(HANDLES_LIST_KEY, JSON.stringify(list)) } catch { /* quota */ }
+}
+
+// One-shot migration: if a single-handle identity exists from before the
+// switcher landed, copy its secret/key to per-handle keys and seed the list.
+// Idempotent — once active-handle is set, this short-circuits.
+function migrateLegacyIdentity() {
+  if (localStorage.getItem(ACTIVE_HANDLE_KEY)) return
+  const handle = localStorage.getItem(LEGACY_HANDLE_KEY)
+  if (!handle) return
+  const secret = sessionStorage.getItem(LEGACY_SECRET_KEY)
+  const apiKey = sessionStorage.getItem(LEGACY_API_KEY) ?? localStorage.getItem(LEGACY_API_KEY_DASH)
+  if (secret) sessionStorage.setItem(secretKey(handle), secret)
+  if (apiKey) sessionStorage.setItem(apiKeyKey(handle), apiKey)
+  const list = loadHandles()
+  if (!list.includes(handle)) { list.push(handle); saveHandles(list) }
+  localStorage.setItem(ACTIVE_HANDLE_KEY, handle)
+}
+
 function loadIdentity() {
+  migrateLegacyIdentity()
+  const handle = localStorage.getItem(ACTIVE_HANDLE_KEY) ?? ''
   return {
-    handle: localStorage.getItem(HANDLE_KEY) ?? '',
-    secret: sessionStorage.getItem(SECRET_SESSION_KEY) ?? '',
-    apiKey: sessionStorage.getItem(API_KEY_SESSION_KEY) ?? localStorage.getItem('xstream-api-key') ?? '',
+    handle,
+    secret: handle ? (sessionStorage.getItem(secretKey(handle)) ?? '') : '',
+    apiKey: handle ? (sessionStorage.getItem(apiKeyKey(handle)) ?? '') : '',
   }
 }
 
@@ -70,6 +115,7 @@ export default function App() {
   const [presence, setPresence] = useState<PresenceMark[]>([])
   const [marks, setMarks] = useState<MarkRow[]>([])
   const [frame, setFrame] = useState<FrameView | null>(null)
+  const [pool, setPool] = useState<PoolView | null>(null)
   const [inbox, setInbox] = useState<InboxItem[]>([])
   // Locally-acked inbox keys ("<beach>#<digit>") — dismissed marks won't
   // resurface even if the source beach hasn't tided them out yet.
@@ -101,6 +147,38 @@ export default function App() {
   // Pending liquid card (after ⇧↵, before commit)
   const [pendingLiquid, setPendingLiquid] = useState<string | null>(null)
 
+  // Per-face surface memory — each CADO face remembers where it was last
+  // looking and what it was drafting. Modes have memory: a designer
+  // adjusting rules at one address shouldn't lose their draft when they
+  // flick to character to engage and back. Persisted in localStorage; pure
+  // surface state (no substrate). When a face has no memory yet, falls
+  // back to that face's default_address from the shell.
+  type FaceMemory = { address: string; vapor: string; pendingLiquid: string | null }
+  const emptyMemory = (): FaceMemory => ({ address: '', vapor: '', pendingLiquid: null })
+  const loadFaceMemory = (handle: string): Record<Face, FaceMemory> => {
+    try {
+      const raw = localStorage.getItem(faceStateKey(handle))
+      if (raw) {
+        const parsed = JSON.parse(raw) as Partial<Record<Face, FaceMemory>>
+        return {
+          character: parsed.character ?? emptyMemory(),
+          author: parsed.author ?? emptyMemory(),
+          designer: parsed.designer ?? emptyMemory(),
+          observer: parsed.observer ?? emptyMemory(),
+        }
+      }
+    } catch { /* corrupt — fall through */ }
+    return { character: emptyMemory(), author: emptyMemory(), designer: emptyMemory(), observer: emptyMemory() }
+  }
+  const [faceState, setFaceState] = useState<Record<Face, FaceMemory>>(() => loadFaceMemory(identity.handle))
+  // When the active handle changes (multi-handle switcher), reload that
+  // handle's per-face memory.
+  useEffect(() => { setFaceState(loadFaceMemory(identity.handle)) }, [identity.handle])
+  const persistFaceState = useCallback((next: Record<Face, FaceMemory>) => {
+    setFaceState(next)
+    try { localStorage.setItem(faceStateKey(identity.handle), JSON.stringify(next)) } catch { /* quota */ }
+  }, [identity.handle])
+
   // Zone heights — proportional, draggable
   const [solidHeight, setSolidHeight] = useState(() => Math.round(window.innerHeight * 0.35))
   const [liquidHeight, setLiquidHeight] = useState(() => Math.round(window.innerHeight * 0.30))
@@ -113,6 +191,7 @@ export default function App() {
       beach,
       address: '',
       api_key: identity.apiKey || null,
+      face,
     })
   )
 
@@ -129,6 +208,7 @@ export default function App() {
       onPresence: setPresence,
       onMarks: setMarks,
       onFrame: setFrame,
+      onPool: setPool,
       onInbox: setInbox,
       onError: msg => setLogs(prev => [...prev.slice(-50), `❌ ${msg}`]),
       onLog: msg => setLogs(prev => [...prev.slice(-50), msg]),
@@ -188,6 +268,7 @@ export default function App() {
         api_key: identity.apiKey || null,
         current_beach: beach,
         current_address: currentAddress,
+        face,
       }
       if (kernelRef.current) {
         kernelRef.current.session.agent_id = next.agent_id
@@ -195,17 +276,61 @@ export default function App() {
         kernelRef.current.session.api_key = next.api_key
         kernelRef.current.setBeach(next.current_beach)
         kernelRef.current.setAddress(next.current_address)
+        kernelRef.current.setFace(next.face)
       }
       return next
     })
-  }, [identity.handle, identity.secret, identity.apiKey, beach, currentAddress])
+  }, [identity.handle, identity.secret, identity.apiKey, beach, currentAddress, face])
 
-  // Persist identity changes
+  // Saved-handles list (multi-handle switcher).
+  const [identities, setIdentities] = useState<string[]>(() => loadHandles())
+
+  // Persist identity changes — per-handle keys. Active handle in localStorage;
+  // secret + API key in sessionStorage scoped by handle. The list ensures the
+  // switcher remembers handles across sessions even when their secrets aren't.
   useEffect(() => {
-    if (identity.handle) localStorage.setItem(HANDLE_KEY, identity.handle); else localStorage.removeItem(HANDLE_KEY)
-    if (identity.secret) sessionStorage.setItem(SECRET_SESSION_KEY, identity.secret); else sessionStorage.removeItem(SECRET_SESSION_KEY)
-    if (identity.apiKey) sessionStorage.setItem(API_KEY_SESSION_KEY, identity.apiKey); else sessionStorage.removeItem(API_KEY_SESSION_KEY)
-  }, [identity])
+    if (identity.handle) {
+      localStorage.setItem(ACTIVE_HANDLE_KEY, identity.handle)
+      if (identity.secret) sessionStorage.setItem(secretKey(identity.handle), identity.secret)
+      else sessionStorage.removeItem(secretKey(identity.handle))
+      if (identity.apiKey) sessionStorage.setItem(apiKeyKey(identity.handle), identity.apiKey)
+      else sessionStorage.removeItem(apiKeyKey(identity.handle))
+      // Track handle in the list so the switcher remembers it across visits.
+      setIdentities(prev => {
+        if (prev.includes(identity.handle)) return prev
+        const next = [...prev, identity.handle]
+        saveHandles(next)
+        return next
+      })
+    } else {
+      localStorage.removeItem(ACTIVE_HANDLE_KEY)
+    }
+  }, [identity.handle, identity.secret, identity.apiKey])
+
+  // Switcher actions: switch loads stored secret/apiKey for the handle (may
+  // be empty if the session hasn't unlocked it yet — user re-enters the
+  // passphrase via the form). Forget removes a handle from the list and
+  // wipes its session secrets + face memory.
+  const switchToHandle = useCallback((h: string) => {
+    if (!h || h === identity.handle) return
+    const secret = sessionStorage.getItem(secretKey(h)) ?? ''
+    const apiKey = sessionStorage.getItem(apiKeyKey(h)) ?? ''
+    setIdentity({ handle: h, secret, apiKey })
+  }, [identity.handle])
+  const forgetHandle = useCallback((h: string) => {
+    if (!h) return
+    sessionStorage.removeItem(secretKey(h))
+    sessionStorage.removeItem(apiKeyKey(h))
+    localStorage.removeItem(faceStateKey(h))
+    setIdentities(prev => {
+      const next = prev.filter(x => x !== h)
+      saveHandles(next)
+      return next
+    })
+    if (h === identity.handle) {
+      setIdentity({ handle: '', secret: '', apiKey: '' })
+    }
+  }, [identity.handle])
 
   // Live peer vapour — join a Supabase Realtime channel scoped to (beach,
   // address, frame, entity). Switching face is intentionally NOT a scope
@@ -267,12 +392,24 @@ export default function App() {
   }, [])
 
   const handleFaceChange = useCallback((newFace: Face) => {
-    setFace(newFace)
-    if (shell) {
-      const f = shell.faces.find(x => x.canonical === newFace)
-      if (f && f.default_address) setCurrentAddress(f.default_address)
+    if (newFace === face) return
+    // Snapshot the outgoing face's surface state.
+    const snapshot: FaceMemory = { address: currentAddress, vapor, pendingLiquid }
+    const next = { ...faceState, [face]: snapshot }
+    // Restore the incoming face's state. If the face has no memory yet,
+    // fall back to its shell-defined default_address (existing convention).
+    const incoming = next[newFace]
+    let nextAddress = incoming.address
+    if (!nextAddress && shell) {
+      const sf = shell.faces.find(x => x.canonical === newFace)
+      if (sf && sf.default_address) nextAddress = sf.default_address
     }
-  }, [shell])
+    setFace(newFace)
+    setCurrentAddress(nextAddress)
+    setVapor(incoming.vapor)
+    setPendingLiquid(incoming.pendingLiquid)
+    persistFaceState(next)
+  }, [face, shell, currentAddress, vapor, pendingLiquid, faceState, persistFaceState])
 
   const handleEnterFrame = useCallback(() => {
     if (!frameInput.trim() || !kernelRef.current) return
@@ -427,6 +564,47 @@ export default function App() {
       return
     }
 
+    // pool: <purpose> — create a new pool at the next free beach:2.<N> and
+    // navigate the address bar into it. The pool charter goes in the
+    // underscore at 2.<N>; contributions then flow to 2.<N>.<n> from any
+    // user (incl. the creator) just by typing + ⇧↵ at this address.
+    const poolMatch = trimmed.match(/^pool[:\s]+([\s\S]+)$/i)
+    if (poolMatch) {
+      if (!identity.handle) { reportInfo('Identify first (button → Identity).'); return }
+      const purpose = poolMatch[1].trim()
+      if (!purpose) { reportInfo('Pool needs a purpose: `pool: <what we converge on>`.'); return }
+      const r = await bsp({ agent_id: beach, block: 'beach', spindle: '2' })
+      let nextDigit: string | null = null
+      if (r.ok && 'raw' in r && r.raw && typeof r.raw === 'object') {
+        const root = r.raw as Record<string, PscaleNode>
+        const poolsNode = root['2']
+        if (typeof poolsNode !== 'object' || poolsNode === null) {
+          nextDigit = '1'
+        } else {
+          const ring = poolsNode as Record<string, PscaleNode>
+          for (let d = 1; d <= 9; d++) {
+            if (!(String(d) in ring)) { nextDigit = String(d); break }
+          }
+        }
+      } else {
+        nextDigit = '1'
+      }
+      if (!nextDigit) { reportInfo('All 9 pool slots are taken on this beach.'); return }
+      const w = await bsp({
+        agent_id: beach, block: 'beach',
+        spindle: '2.' + nextDigit,
+        content: { _: purpose },
+      })
+      if (w.ok) {
+        reportInfo(`🌀 pool created at 2.${nextDigit}. Navigated in — type + ⇧↵ to contribute.`)
+        setCurrentAddress('2.' + nextDigit)
+        setVapor('')
+      } else {
+        reportInfo(`pool create failed: ${'error' in w ? w.error : 'unknown'}`)
+      }
+      return
+    }
+
     // keys (publish ed25519 + x25519)
     if (/^keys$/i.test(trimmed)) {
       if (!identity.handle || !identity.secret) { reportInfo('Identify first (button → Identity).'); return }
@@ -437,11 +615,12 @@ export default function App() {
       return
     }
 
-    // Default: pass to the existing pending-liquid → commit flow (mark drop
-    // or in-frame liquid commit, depending on session state).
+    // Default: pass to the existing pending-liquid → commit flow (mark drop,
+    // pool contribution, or in-frame liquid commit, depending on session
+    // state — branched in handleCommit / kernel.dropMark).
     setPendingLiquid(trimmed)
     setVapor('')
-  }, [face, identity.handle, identity.secret])
+  }, [face, identity.handle, identity.secret, beach])
 
   // Click commit on the self liquid card → write to substrate
   const handleCommit = useCallback(async (_cardId: string) => {
@@ -510,21 +689,50 @@ export default function App() {
     return cards
   })()
 
-  // Solid blocks: my contributions (own marks) or frame synthesis
+  // Solid blocks. The substrate determines the surface:
+  //   frame mode  → frame synthesis + own committed solid (entity at .2)
+  //   pool mode   → pool synthesis + pool purpose + every contribution
+  //   beachcombing → my own marks at this address
+  // Frame and pool can't co-exist (frame is its own block; pool is a sub-ring
+  // of the beach block) — the kernel surfaces one or the other.
   const solidBlocks: SolidBlock[] = (() => {
     const out: SolidBlock[] = []
-    if (frame && frame.synthesis) {
-      out.push({
-        id: 'synthesis',
-        title: 'Synthesis',
-        content: frame.synthesis + (frame.synthesis_envelope ? `\n\n${frame.synthesis_envelope}` : ''),
-        timestamp: Date.now(),
-      })
-    }
-    if (frame && session.entity_position) {
-      const my = frame.entities.find(e => e.position === session.entity_position)
-      if (my && my.solid) {
-        out.push({ id: 'self-solid', title: 'You · last committed', content: my.solid, timestamp: Date.now() })
+    if (frame) {
+      if (frame.synthesis) {
+        out.push({
+          id: 'synthesis', title: 'Synthesis',
+          content: frame.synthesis + (frame.synthesis_envelope ? `\n\n${frame.synthesis_envelope}` : ''),
+          timestamp: Date.now(),
+        })
+      }
+      if (session.entity_position) {
+        const my = frame.entities.find(e => e.position === session.entity_position)
+        if (my && my.solid) {
+          out.push({ id: 'self-solid', title: 'You · last committed', content: my.solid, timestamp: Date.now() })
+        }
+      }
+    } else if (pool) {
+      if (pool.synthesis) {
+        out.push({
+          id: 'pool-synthesis', title: 'Synthesis',
+          content: pool.synthesis + (pool.synthesis_envelope ? `\n\n${pool.synthesis_envelope}` : ''),
+          timestamp: Date.now(),
+        })
+      }
+      if (pool.purpose) {
+        out.push({
+          id: 'pool-purpose', title: `Pool · 2.${pool.pool_digit}`,
+          content: pool.purpose, timestamp: Date.now(),
+        })
+      }
+      for (const c of pool.contributions) {
+        out.push({
+          id: `pool-contrib-${c.digit}`,
+          title: c.agent_id || `slot ${c.digit}`,
+          content: c.text,
+          timestamp: c.timestamp ? Date.parse(c.timestamp) : Date.now(),
+          face: c.face,
+        })
       }
     } else {
       // Beachcombing: my own marks at this address
@@ -535,6 +743,7 @@ export default function App() {
           id: `mark-${m.digit}`,
           content: m.text,
           timestamp: m.timestamp ? Date.parse(m.timestamp) : Date.now(),
+          face: m.face,
         })
       }
     }
@@ -565,7 +774,7 @@ export default function App() {
     <div className="app relative" data-theme={theme} data-face={face}>
       {/* Header */}
       <div className="flex items-center gap-2 px-3 h-[44px] border-b border-border/50 text-sm shrink-0 z-10 relative bg-background overflow-x-auto">
-        <span className={`text-xs font-mono ${identity.handle ? 'text-face-accent font-semibold' : 'text-muted-foreground italic'}`}>
+        <span className={`text-xs font-mono ${identity.handle ? 'text-foreground font-semibold' : 'text-muted-foreground italic'}`}>
           {identity.handle || 'anon'}
         </span>
 
@@ -698,6 +907,7 @@ export default function App() {
           secret={identity.secret}
           shell={shell}
           onShellSaved={setShell}
+          onNavigateAddress={setCurrentAddress}
         />
 
         {/* Inbox drawer overlay — cold-contact across watched beaches */}
@@ -732,6 +942,9 @@ export default function App() {
           secret: identity.secret,
           apiKey: identity.apiKey,
           onIdentityChange: setIdentity,
+          identities,
+          onSwitchHandle: switchToHandle,
+          onForgetHandle: forgetHandle,
         }}
       />
     </div>

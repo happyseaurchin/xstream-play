@@ -39,6 +39,9 @@ export interface ViewerDrawerProps {
   secret: string
   shell: AgentShell | null
   onShellSaved?: (next: AgentShell) => void
+  // Author face uses this to enter a pool by clicking it in the list.
+  // Setting the address to "2.<digit>" flips the surface into pool mode.
+  onNavigateAddress?: (addr: string) => void
 }
 
 export function ViewerDrawer(props: ViewerDrawerProps) {
@@ -89,7 +92,7 @@ export function ViewerDrawer(props: ViewerDrawerProps) {
           <FaceCharacterObserver face={props.face} marks={props.marks} presence={props.presence} address={props.address} />
         )}
         {props.face === 'author' && (
-          <FaceAuthor agentId={props.agentId} secret={props.secret} shell={props.shell} beach={props.beach} />
+          <FaceAuthor agentId={props.agentId} secret={props.secret} shell={props.shell} beach={props.beach} onNavigateAddress={props.onNavigateAddress} onClose={props.onClose} />
         )}
         {props.face === 'designer' && (
           <FaceDesigner agentId={props.agentId} secret={props.secret} shell={props.shell} onShellSaved={props.onShellSaved} />
@@ -321,7 +324,7 @@ function FieldRow({ label, hint, value, onChange, multiline }: { label: string; 
 
 interface PoolEntry { digit: string; underscore: string; synthesis: string | null }
 
-function FaceAuthor({ agentId, secret, shell, beach }: { agentId: string; secret: string; shell: AgentShell | null; beach: string }) {
+function FaceAuthor({ agentId, secret, shell, beach, onNavigateAddress, onClose }: { agentId: string; secret: string; shell: AgentShell | null; beach: string; onNavigateAddress?: (addr: string) => void; onClose: () => void }) {
   const [passport, setPassport] = useState<PscaleNode | null>(null)
   const [loadingPassport, setLoadingPassport] = useState(false)
   const [pools, setPools] = useState<PoolEntry[]>([])
@@ -393,17 +396,26 @@ function FaceAuthor({ agentId, secret, shell, beach }: { agentId: string; secret
         <div>
           <div className="text-[11px] text-muted-foreground uppercase tracking-wider mb-1">Pools at this beach (beach:2)</div>
           <ul className="space-y-1.5">
-            {pools.map(p => (
-              <li key={p.digit} className="px-2 py-1.5 border border-border/30 rounded bg-card/30">
-                <div className="flex items-baseline gap-2">
-                  <span className="text-[10px] text-muted-foreground font-mono">2.{p.digit}</span>
-                  <span className="text-sm">{p.underscore || '(no purpose)'}</span>
-                </div>
-                {p.synthesis && (
-                  <div className="text-[11px] text-muted-foreground mt-0.5 italic line-clamp-2">{p.synthesis}</div>
-                )}
-              </li>
-            ))}
+            {pools.map(p => {
+              const addr = `2.${p.digit}`
+              return (
+                <li key={p.digit}>
+                  <button
+                    onClick={() => { if (onNavigateAddress) { onNavigateAddress(addr); onClose() } }}
+                    className="w-full text-left px-2 py-1.5 border border-border/30 rounded bg-card/30 hover:bg-accent/20 transition-colors cursor-pointer"
+                    title={onNavigateAddress ? `Enter pool — sets address to ${addr}` : undefined}
+                  >
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-[10px] text-muted-foreground font-mono">{addr}</span>
+                      <span className="text-sm">{p.underscore || '(no purpose)'}</span>
+                    </div>
+                    {p.synthesis && (
+                      <div className="text-[11px] text-muted-foreground mt-0.5 italic line-clamp-2">{p.synthesis}</div>
+                    )}
+                  </button>
+                </li>
+              )
+            })}
           </ul>
         </div>
       )}

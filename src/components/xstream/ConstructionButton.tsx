@@ -50,6 +50,13 @@ export interface IdentityProps {
   secret: string;
   apiKey: string;
   onIdentityChange: (v: { handle: string; secret: string; apiKey: string }) => void;
+  // Multi-handle: list of saved handles + actions to switch / forget. The
+  // active handle is `handle` above. Each saved handle has its own secret +
+  // API key in sessionStorage; switching loads them (may be empty if the
+  // session hasn't unlocked the handle's secret yet — user re-enters it).
+  identities: string[];
+  onSwitchHandle: (h: string) => void;
+  onForgetHandle: (h: string) => void;
 }
 
 interface ConstructionButtonProps {
@@ -303,6 +310,43 @@ export function ConstructionButton({
 
             {showIdentity && (
               <div className="px-4 pb-3 space-y-2 border-t border-border/40 pt-2">
+                {identity.identities.length > 0 && (
+                  <div className="space-y-1">
+                    <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Saved handles</div>
+                    <ul className="space-y-1">
+                      {identity.identities.map(h => {
+                        const active = h === identity.handle
+                        const hasSecret = typeof window !== 'undefined' && !!sessionStorage.getItem(`xstream:secret:${h}`)
+                        return (
+                          <li key={h} className="flex items-center gap-1">
+                            <button
+                              onClick={() => identity.onSwitchHandle(h)}
+                              disabled={active}
+                              className={`flex-1 text-left text-[11px] font-mono px-2 py-1 rounded border ${
+                                active
+                                  ? 'border-primary/60 bg-primary/10 text-foreground cursor-default'
+                                  : 'border-border/40 text-muted-foreground hover:text-foreground hover:bg-accent/30'
+                              }`}
+                              title={active ? 'active handle' : `switch to ${h}${hasSecret ? '' : ' (passphrase needs re-entry)'}`}
+                            >
+                              {h}
+                              {active && <span className="ml-2 text-[9px] uppercase">active</span>}
+                              {!active && !hasSecret && <span className="ml-2 text-[9px] text-muted-foreground/70">🔒 enter pass</span>}
+                            </button>
+                            <button
+                              onClick={() => { if (confirm(`Forget handle "${h}"? This wipes its session secrets and per-face memory in this browser.`)) identity.onForgetHandle(h) }}
+                              className="text-muted-foreground/60 hover:text-destructive p-1"
+                              title="forget this handle"
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  </div>
+                )}
+                <div className="text-[10px] uppercase tracking-wider text-muted-foreground pt-1">{identity.handle ? 'Edit current' : 'Add identity'}</div>
                 <IdentityField
                   label="handle"
                   hint="public agent_id"
@@ -330,9 +374,9 @@ export function ConstructionButton({
                   <button
                     onClick={forgetIdentity}
                     className="text-[11px] text-muted-foreground hover:text-destructive"
-                    title="clear identity in this browser"
+                    title="clear active identity (passphrase + key cleared from session)"
                   >
-                    forget
+                    sign out
                   </button>
                   <button
                     onClick={saveIdentity}

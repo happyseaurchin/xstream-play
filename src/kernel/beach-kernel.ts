@@ -5,9 +5,12 @@
  * bsp-client only. Each cycle:
  *   1. Heartbeat presence at current_beach:1.<digit>
  *   2. Read presence at current_beach:1, filter by address prefix → live peers
- *   3. Beachcombing mode: read marks at current_beach:1 (filtered by address)
- *      → render in the SOLID stream of the panel.
- *   4. Frame mode (when session.current_frame is set): read the frame disc at
+ *   3. Read marks at current_beach:1 (filtered by address) — drives Solid in
+ *      beachcombing mode.
+ *   4. Pool mode (when session.current_pool is set — derived from address
+ *      `2.<digit>`): project beach:2.<pool> from the same raw and surface
+ *      purpose / synthesis / contributions.
+ *   5. Frame mode (when session.current_frame is set): read the frame disc at
  *      current_beach:current_frame and surface entities + synthesis.
  *
  * The kernel never calls an LLM. Tier-2 paths (soft, medium, synthesise) are
@@ -24,7 +27,13 @@ import {
   type BspReadResult,
   type PscaleNode,
 } from '../lib/bsp-client';
-import type { BeachSession, MarkRow, FrameView, FrameEntity } from './beach-session';
+import { poolFromAddress } from './beach-session';
+import type { BeachSession, MarkRow, FrameView, FrameEntity, PoolView, PoolContribution, Face } from './beach-session';
+
+const FACE_VALUES: ReadonlyArray<Face> = ['character', 'author', 'designer', 'observer'];
+function asFace(v: unknown): Face | null {
+  return typeof v === 'string' && (FACE_VALUES as readonly string[]).includes(v) ? (v as Face) : null;
+}
 
 export interface InboxItem {
   beach: string;             // beach URL where the mark lives
@@ -39,6 +48,7 @@ export interface BeachKernelCallbacks {
   onPresence: (peers: PresenceMark[]) => void;
   onMarks: (marks: MarkRow[]) => void;
   onFrame: (frame: FrameView | null) => void;
+  onPool: (pool: PoolView | null) => void;
   onInbox: (items: InboxItem[]) => void;
   onError: (err: string) => void;
   onLog: (msg: string) => void;
@@ -82,7 +92,7 @@ function readMarks(rawBlock: PscaleNode | null, addressFilter: string): MarkRow[
     if (m === undefined) continue;
     if (typeof m === 'string') {
       if (!m) continue;
-      out.push({ digit: k, agent_id: null, address: null, timestamp: null, text: m, is_presence: false });
+      out.push({ digit: k, agent_id: null, address: null, timestamp: null, text: m, face: null, is_presence: false });
       continue;
     }
     if (typeof m === 'object' && m !== null) {
@@ -90,15 +100,60 @@ function readMarks(rawBlock: PscaleNode | null, addressFilter: string): MarkRow[
       const aid = typeof obj['1'] === 'string' ? (obj['1'] as string) : null;
       const addr = typeof obj['2'] === 'string' ? (obj['2'] as string) : null;
       const ts = typeof obj['3'] === 'string' ? (obj['3'] as string) : null;
+      const face = asFace(obj['4']);
       const text = typeof obj._ === 'string' ? (obj._ as string) : '(structured mark)';
       const presence = isPresenceMark(m);
       // Filter: keep marks whose address starts with the requested prefix
       // (or marks with no address at all, treated as beach-root).
       if (addressFilter && addr && !addr.startsWith(addressFilter)) continue;
-      out.push({ digit: k, agent_id: aid, address: addr, timestamp: ts, text, is_presence: presence });
+      out.push({ digit: k, agent_id: aid, address: addr, timestamp: ts, text, face, is_presence: presence });
     }
   }
   return out;
+}
+
+// Read the pool sub-block at beach:2.<poolDigit> from the whole-beach raw.
+// Same payload the marks read pulls — no extra substrate call needed.
+// Returns null if the pool slot isn't present (user has navigated to a
+// digit that hasn't been opened yet); the surface treats that as "empty
+// pool" and shows just the address.
+function readPool(rawBlock: PscaleNode | null, poolDigit: string): PoolView | null {
+  if (typeof rawBlock !== 'object' || rawBlock === null) return null;
+  const block = rawBlock as Record<string, PscaleNode>;
+  const poolsNode = block['2'];
+  if (typeof poolsNode !== 'object' || poolsNode === null) return null;
+  const pool = (poolsNode as Record<string, PscaleNode>)[poolDigit];
+  if (typeof pool !== 'object' || pool === null) return null;
+  const po = pool as Record<string, PscaleNode>;
+  const purpose = typeof po._ === 'string' ? (po._ as string) : '';
+  let synthesis = '';
+  let envelope: string | null = null;
+  const synthNode = po._synthesis;
+  if (typeof synthNode === 'object' && synthNode !== null) {
+    const sn = synthNode as Record<string, PscaleNode>;
+    if (typeof sn._ === 'string') synthesis = sn._ as string;
+    if (typeof sn._envelope === 'string') envelope = sn._envelope as string;
+  }
+  const contributions: PoolContribution[] = [];
+  for (let d = 1; d <= 9; d++) {
+    const k = String(d);
+    const c = po[k];
+    if (c === undefined) continue;
+    if (typeof c === 'string') {
+      if (!c) continue;
+      contributions.push({ digit: k, agent_id: null, text: c, timestamp: null, face: null });
+      continue;
+    }
+    if (typeof c === 'object' && c !== null) {
+      const co = c as Record<string, PscaleNode>;
+      const aid = typeof co['1'] === 'string' ? (co['1'] as string) : null;
+      const ts = typeof co['3'] === 'string' ? (co['3'] as string) : null;
+      const face = asFace(co['4']);
+      const text = typeof co._ === 'string' ? (co._ as string) : '(structured)';
+      contributions.push({ digit: k, agent_id: aid, text, timestamp: ts, face });
+    }
+  }
+  return { pool_digit: poolDigit, purpose, synthesis, synthesis_envelope: envelope, contributions };
 }
 
 function readFrame(rawBlock: PscaleNode | null): FrameView | null {
@@ -168,14 +223,25 @@ export class BeachKernel {
     this.cb.onLog(`🛑 Beach kernel stopped`);
   }
 
-  /** Update the address; next cycle will re-read marks/presence. */
+  /** Update the address; next cycle will re-read marks/presence. Also
+   * derives current_pool — when the address points into beach:2.<digit>,
+   * the surface flips to pool mode (Solid shows pool contributions, dropMark
+   * writes to the pool ring instead of the marks ring). */
   setAddress(addr: string): void {
     this.session.current_address = addr;
+    this.session.current_pool = poolFromAddress(addr);
   }
 
   /** Update the beach — next cycle re-targets. */
   setBeach(beach: string): void {
     this.session.current_beach = beach;
+  }
+
+  /** Update the active face — tagged into structured marks (position 4) so
+   * the trace carries which operational mode each contribution was made
+   * from. v0.1: not enforced by substrate. */
+  setFace(face: Face): void {
+    this.session.face = face;
   }
 
   /** Enter / leave a frame. */
@@ -184,42 +250,69 @@ export class BeachKernel {
     this.session.entity_position = position;
   }
 
-  /** Drop a free-form mark at current_beach:1.<next free>. Tier-1, no LLM. */
+  /** Drop a free-form mark or pool contribution. Tier-1, no LLM.
+   *
+   * Branching: when current_pool is set (current_address starts `2.<digit>`),
+   * the write lands at beach:2.<pool>.<next-free> as a pool contribution.
+   * Otherwise it lands at beach:1.<next-free> as a beach mark. Both shapes
+   * are structured marks ({_, 1=agent, 2=address, 3=ts}) — pool contributions
+   * are marks at a different ring, not a different shape. */
   async dropMark(text: string): Promise<{ ok: boolean; error?: string }> {
     if (!text.trim()) return { ok: false, error: 'empty' };
     const beach = this.session.current_beach;
     const ts = new Date().toISOString();
-    // Find next-free digit by reading the marks ring.
+    const pool = this.session.current_pool;
+
+    // Read the beach block once; the existing pattern uses raw to walk the
+    // ring, so we can reach either marks (root.1) or pool (root.2.<pool>)
+    // off the same payload.
     const r = await bsp({ agent_id: beach, block: 'beach', spindle: '1' });
-    let nextDigit = '1';
-    if (r.ok && 'raw' in r && r.raw && typeof r.raw === 'object') {
-      const root = r.raw as Record<string, PscaleNode>;
-      const m = root['1'];
-      if (typeof m === 'object' && m !== null) {
-        for (let d = 1; d <= 9; d++) {
-          if (!(String(d) in (m as Record<string, PscaleNode>))) { nextDigit = String(d); break; }
-          if (d === 9) nextDigit = '9'; // overflow — overwrite last
+    const root = (r.ok && 'raw' in r && typeof r.raw === 'object' && r.raw !== null)
+      ? r.raw as Record<string, PscaleNode>
+      : null;
+
+    let ring: Record<string, PscaleNode> | null = null;
+    if (root) {
+      if (pool) {
+        const poolsNode = root['2'];
+        if (typeof poolsNode === 'object' && poolsNode !== null) {
+          const pn = (poolsNode as Record<string, PscaleNode>)[pool];
+          if (typeof pn === 'object' && pn !== null) ring = pn as Record<string, PscaleNode>;
         }
+      } else {
+        const m = root['1'];
+        if (typeof m === 'object' && m !== null) ring = m as Record<string, PscaleNode>;
       }
     }
+
+    let nextDigit = '1';
+    if (ring) {
+      for (let d = 1; d <= 9; d++) {
+        if (!(String(d) in ring)) { nextDigit = String(d); break; }
+        if (d === 9) nextDigit = '9'; // overflow — overwrite last
+      }
+    }
+
+    const spindle = pool ? `2.${pool}.${nextDigit}` : `1.${nextDigit}`;
     const result = await bsp({
       agent_id: beach,
       block: 'beach',
-      spindle: '1.' + nextDigit,
+      spindle,
       content: {
         _: text,
         '1': this.session.agent_id || '(anon)',
         '2': this.session.current_address,
         '3': ts,
+        '4': this.session.face,
       },
     });
     if (result.ok) {
-      this.cb.onLog(`📍 mark dropped at ${beach}:1.${nextDigit}`);
+      this.cb.onLog(`${pool ? '🌀' : '📍'} ${pool ? 'pool contribution' : 'mark'} written at ${beach}:${spindle}`);
       // Trigger an immediate read to refresh the panel
       this.cycle();
     } else {
       const err = 'error' in result ? result.error : 'unknown';
-      this.cb.onError(`mark write failed: ${err ?? 'unknown'}`);
+      this.cb.onError(`${pool ? 'contribution' : 'mark'} write failed: ${err ?? 'unknown'}`);
     }
     return result.ok ? { ok: true } : { ok: false, error: 'error' in result ? result.error : 'unknown' };
   }
@@ -266,13 +359,23 @@ export class BeachKernel {
       const { present } = await presenceRead({ beach, address });
       this.cb.onPresence(present);
 
-      // 3. Marks read (beachcombing + non-presence marks at this address)
+      // 3. Marks read (beachcombing + non-presence marks at this address).
+      //    Same raw response feeds the pool view below — no extra call.
       const ringResult = await bsp({ agent_id: beach, block: 'beach', spindle: '1' });
       const ringRaw = ringResult.ok && 'raw' in ringResult ? ringResult.raw : null;
       const marks = readMarks(ringRaw, address);
       this.cb.onMarks(marks);
 
-      // 4. Frame read (when in a frame)
+      // 4. Pool read — when current_pool is set, project beach:2.<pool> from
+      //    the same raw the marks read pulled. The substrate determines the
+      //    surface: navigate to 2.<digit> and Solid flips to pool view.
+      if (this.session.current_pool) {
+        this.cb.onPool(readPool(ringRaw, this.session.current_pool));
+      } else {
+        this.cb.onPool(null);
+      }
+
+      // 5. Frame read (when in a frame)
       if (this.session.current_frame) {
         const frameResult = await bsp({
           agent_id: beach,
@@ -284,7 +387,7 @@ export class BeachKernel {
         this.cb.onFrame(null);
       }
 
-      // 5. Watched-beach inbox scan — every Nth cycle.
+      // 6. Watched-beach inbox scan — every Nth cycle.
       this.cycleN++;
       if (this.session.agent_id && this.cycleN % BeachKernel.WATCH_EVERY_N_CYCLES === 0 && this.watchedBeaches.length > 0) {
         await this.scanInbox();

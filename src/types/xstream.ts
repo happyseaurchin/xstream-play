@@ -32,6 +32,7 @@ export interface SolidBlock {
   title?: string;
   content: string;
   timestamp: number;
+  face?: Face | null;  // operational mode the contribution was made from (per face-as-mode convention)
 }
 
 export interface Column {
