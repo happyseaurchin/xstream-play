@@ -140,3 +140,18 @@ export interface PoolView {
   synthesis_envelope: string | null; // 2.<pool>._synthesis._envelope
   contributions: PoolContribution[];
 }
+
+/** Beach-root liquid — the shared staging layer at beach:3. Each present agent
+ * has a slot keyed by their presence digit (same digit assignment as
+ * beach:1.<n> presence heartbeats). Structured-mark shape; the underscore is
+ * the agent's CURRENT liquid (overwritten on each propose, cleared on
+ * commit). Stale entries (>60s) are filtered out client-side as departed. */
+export interface LiquidPeer {
+  digit: string;                     // '1'..'9' under beach:3
+  agent_id: string | null;
+  address: string | null;
+  timestamp: string | null;
+  text: string;
+  face: Face | null;
+  is_self: boolean;                  // true when agent_id matches the session's
+}

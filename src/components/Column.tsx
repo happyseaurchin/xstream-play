@@ -26,7 +26,7 @@ import { DraggableSeparator } from './DraggableSeparator'
 import { ViewerDrawer } from './ViewerDrawer'
 import { InboxDrawer } from './InboxDrawer'
 import { BeachKernel, type InboxItem } from '../kernel/beach-kernel'
-import { createBeachSession, type BeachSession, type MarkRow, type FrameView, type PoolView } from '../kernel/beach-session'
+import { createBeachSession, type BeachSession, type MarkRow, type FrameView, type PoolView, type LiquidPeer } from '../kernel/beach-session'
 import { setHiddenRef, beachToRef, resolveRef, bsp, pscaleRegister, pscaleGrainReach, pscaleKeyPublish, type AgentShell, type PresenceMark, type PscaleNode } from '../lib/bsp-client'
 import { joinVapourChannel, deriveScope, type VapourChannelHandle, type VapourBroadcast } from '../lib/realtime'
 import { getBlock, injectBlock } from '../kernel/block-store'
@@ -106,6 +106,7 @@ export function Column(props: ColumnProps) {
   // Live data from kernel
   const [presence, setPresence] = useState<PresenceMark[]>([])
   const [marks, setMarks] = useState<MarkRow[]>([])
+  const [peerLiquid, setPeerLiquid] = useState<LiquidPeer[]>([])
   const [frame, setFrame] = useState<FrameView | null>(null)
   const [pool, setPool] = useState<PoolView | null>(null)
   const [inbox, setInbox] = useState<InboxItem[]>([])
@@ -175,6 +176,7 @@ export function Column(props: ColumnProps) {
       onMarks: setMarks,
       onFrame: setFrame,
       onPool: setPool,
+      onLiquid: setPeerLiquid,
       onInbox: setInbox,
       onError: msg => setLogs(prev => [...prev.slice(-50), `❌ ${msg}`]),
       onLog: msg => setLogs(prev => [...prev.slice(-50), msg]),
@@ -361,8 +363,14 @@ export function Column(props: ColumnProps) {
                 ? { ok: true, scope: `frame:${k.session.current_frame}:${k.session.entity_position}.1 (shared with peers in-frame)` }
                 : { ok: false, scope: 'frame', error: r.error }
             }
+            // Beach mode: shared liquid at beach:3.<presence-digit>. Visible
+            // to peers at the same address (60s staleness window). Also stage
+            // locally so the user sees it as their pending card.
             setPendingLiquid(proposed)
-            return { ok: true, scope: 'local pendingLiquid (beach mode — no shared liquid layer here yet)' }
+            const r = await k.writeBeachLiquid(proposed)
+            return r.ok
+              ? { ok: true, scope: `beach:3.<your-digit> (shared with peers at this address)` }
+              : { ok: false, scope: 'beach-liquid', error: r.error }
           },
         })
         resultText = result.text
@@ -488,6 +496,12 @@ export function Column(props: ColumnProps) {
 
     setPendingLiquid(trimmed)
     setVapor('')
+    // Beach mode: also publish to the shared liquid layer at beach:3 so
+    // peers at this address see it. In-frame, the entity's .1 slot is
+    // written at commit-time via kernel.commitLiquid (different path).
+    if (kernelRef.current && !kernelRef.current.session.current_frame) {
+      kernelRef.current.writeBeachLiquid(trimmed).catch(() => {})
+    }
   }, [face, identity.handle, identity.secret, beach])
 
   const handleCommit = useCallback(async (_cardId: string) => {
@@ -547,6 +561,10 @@ export function Column(props: ColumnProps) {
       await kernelRef.current.commitLiquid(textToWrite)
     } else {
       await kernelRef.current.dropMark(textToWrite)
+      // Clear our slot in beach:3 so peers stop seeing the liquid we just
+      // promoted to a solid mark. Best-effort — failure is logged but
+      // doesn't block the commit.
+      kernelRef.current.clearMyBeachLiquid().catch(() => {})
     }
     setPendingLiquid(null)
   }, [pendingLiquid, identity.handle, identity.secret, identity.apiKey, face, shell, session.medium_model, marks, presence, frame, pool])
@@ -581,8 +599,27 @@ export function Column(props: ColumnProps) {
         })
       }
     } else {
+      // Beach mode: peer liquid from beach:3 takes precedence over bare
+      // presence. A presence entry without a liquid peer for the same agent
+      // shows up as "present" (no text). A liquid peer replaces that with the
+      // peer's current liquid text.
+      const liquidByAgent = new Map<string, LiquidPeer>()
+      for (const lp of peerLiquid) {
+        if (lp.agent_id === identity.handle) continue
+        if (lp.agent_id) liquidByAgent.set(lp.agent_id, lp)
+      }
+      for (const lp of liquidByAgent.values()) {
+        cards.push({
+          id: `liquid-${lp.agent_id}`,
+          userId: `liquid-${lp.agent_id}`,
+          userName: lp.agent_id || 'peer',
+          content: lp.text,
+          timestamp: lp.timestamp ? Date.parse(lp.timestamp) : Date.now(),
+        })
+      }
       for (const p of presence) {
         if (p.agent_id === identity.handle) continue
+        if (p.agent_id && liquidByAgent.has(p.agent_id)) continue // already shown as liquid
         cards.push({
           id: `peer-${p.agent_id}`,
           userId: `peer-${p.agent_id}`,

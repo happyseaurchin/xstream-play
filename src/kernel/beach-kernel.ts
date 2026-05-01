@@ -28,7 +28,7 @@ import {
   type PscaleNode,
 } from '../lib/bsp-client';
 import { poolFromAddress } from './beach-session';
-import type { BeachSession, MarkRow, FrameView, FrameEntity, PoolView, PoolContribution, Face } from './beach-session';
+import type { BeachSession, MarkRow, FrameView, FrameEntity, PoolView, PoolContribution, LiquidPeer, Face } from './beach-session';
 
 const FACE_VALUES: ReadonlyArray<Face> = ['character', 'author', 'designer', 'observer'];
 function asFace(v: unknown): Face | null {
@@ -49,10 +49,13 @@ export interface BeachKernelCallbacks {
   onMarks: (marks: MarkRow[]) => void;
   onFrame: (frame: FrameView | null) => void;
   onPool: (pool: PoolView | null) => void;
+  onLiquid: (peers: LiquidPeer[]) => void;
   onInbox: (items: InboxItem[]) => void;
   onError: (err: string) => void;
   onLog: (msg: string) => void;
 }
+
+const LIQUID_STALENESS_MS = 60_000;
 
 const DEFAULT_POLL_MS = 4000;
 const PRESENCE_DIGIT_CACHE = new Map<string, string>();
@@ -154,6 +157,45 @@ function readPool(rawBlock: PscaleNode | null, poolDigit: string): PoolView | nu
     }
   }
   return { pool_digit: poolDigit, purpose, synthesis, synthesis_envelope: envelope, contributions };
+}
+
+/** Project the beach-root shared-liquid ring at beach:3 from the same raw
+ * payload the marks/pool reads use. Filters by address prefix and staleness
+ * so peers who have moved to another address or gone idle drop out. */
+function readLiquid(
+  rawBlock: PscaleNode | null,
+  addressFilter: string,
+  selfAgentId: string,
+  now: number,
+): LiquidPeer[] {
+  if (typeof rawBlock !== 'object' || rawBlock === null) return [];
+  const block = rawBlock as Record<string, PscaleNode>;
+  const ringNode = block['3'];
+  if (typeof ringNode !== 'object' || ringNode === null) return [];
+  const ring = ringNode as Record<string, PscaleNode>;
+  const out: LiquidPeer[] = [];
+  for (let d = 1; d <= 9; d++) {
+    const k = String(d);
+    const slot = ring[k];
+    if (typeof slot !== 'object' || slot === null) continue;
+    const o = slot as Record<string, PscaleNode>;
+    const text = typeof o._ === 'string' ? (o._ as string) : '';
+    if (!text.trim()) continue; // empty slot — committed/cleared
+    const aid = typeof o['1'] === 'string' ? (o['1'] as string) : null;
+    const addr = typeof o['2'] === 'string' ? (o['2'] as string) : null;
+    const ts = typeof o['3'] === 'string' ? (o['3'] as string) : null;
+    const face = asFace(o['4']);
+    if (addressFilter && addr && !addr.startsWith(addressFilter)) continue;
+    if (ts) {
+      const age = now - Date.parse(ts);
+      if (Number.isFinite(age) && age > LIQUID_STALENESS_MS) continue;
+    }
+    out.push({
+      digit: k, agent_id: aid, address: addr, timestamp: ts,
+      text, face, is_self: !!aid && aid === selfAgentId,
+    });
+  }
+  return out;
 }
 
 function readFrame(rawBlock: PscaleNode | null): FrameView | null {
@@ -338,6 +380,42 @@ export class BeachKernel {
     return result.ok ? { ok: true } : { ok: false, error: 'error' in result ? result.error : 'unknown' };
   }
 
+  /** Write the user's current liquid into the beach-root shared layer at
+   * beach:3.<presence-digit>. Overwrites the same slot each call (the user's
+   * liquid is always one current state, not an append). Empty text clears
+   * the slot — used after commit so the liquid stops rendering for peers. */
+  async writeBeachLiquid(text: string): Promise<{ ok: boolean; error?: string }> {
+    const beach = this.session.current_beach;
+    const aid = this.session.agent_id || '(anon)';
+    const digit = await getPresenceDigit(beach, aid);
+    const ts = new Date().toISOString();
+    const result = await bsp({
+      agent_id: beach,
+      block: 'beach',
+      spindle: '3.' + digit,
+      content: {
+        _: text,
+        '1': aid,
+        '2': this.session.current_address,
+        '3': ts,
+        '4': this.session.face,
+      },
+    });
+    if (!result.ok) {
+      this.cb.onError(`liquid write failed: ${'error' in result ? result.error : 'unknown'}`);
+      return { ok: false, error: 'error' in result ? result.error : 'unknown' };
+    }
+    this.cb.onLog(text.trim() ? `💧 liquid → beach:3.${digit}` : `💧 liquid cleared (beach:3.${digit})`);
+    this.cycle();
+    return { ok: true };
+  }
+
+  /** Clear our slot in beach:3 — used after commit so peers stop seeing the
+   * liquid we just promoted to solid. */
+  async clearMyBeachLiquid(): Promise<{ ok: boolean; error?: string }> {
+    return this.writeBeachLiquid('');
+  }
+
   private async cycle(): Promise<void> {
     if (!this.running || this.cycling) return;
     this.cycling = true;
@@ -365,6 +443,11 @@ export class BeachKernel {
       const ringRaw = ringResult.ok && 'raw' in ringResult ? ringResult.raw : null;
       const marks = readMarks(ringRaw, address);
       this.cb.onMarks(marks);
+
+      // 3b. Beach-root shared liquid (beach:3). Same raw payload — no extra
+      //     network call. Address-filtered and staled at 60s.
+      const liquidPeers = readLiquid(ringRaw, address, aid, Date.now());
+      this.cb.onLiquid(liquidPeers);
 
       // 4. Pool read — when current_pool is set, project beach:2.<pool> from
       //    the same raw the marks read pulled. The substrate determines the
