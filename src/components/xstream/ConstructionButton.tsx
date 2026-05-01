@@ -90,6 +90,10 @@ interface ConstructionButtonProps {
 }
 
 const STORAGE_KEY = "xstream-construction-btn-pos";
+const WIDTH_STORAGE_KEY = "xstream-construction-btn-width";
+const DEFAULT_PANEL_WIDTH = 352; // 22rem
+const MIN_PANEL_WIDTH = 280;
+const MAX_PANEL_WIDTH_FRAC = 0.9; // of viewport
 
 export function ConstructionButton({
   onThemeChange,
@@ -143,6 +147,16 @@ export function ConstructionButton({
     };
   });
   const [isDragging, setIsDragging] = useState(false);
+  const [panelWidth, setPanelWidth] = useState<number>(() => {
+    const saved = localStorage.getItem(WIDTH_STORAGE_KEY);
+    if (saved) {
+      const n = parseInt(saved, 10);
+      if (Number.isFinite(n) && n >= MIN_PANEL_WIDTH) return n;
+    }
+    return DEFAULT_PANEL_WIDTH;
+  });
+  const [isResizing, setIsResizing] = useState(false);
+  const resizeStart = useRef({ x: 0, w: 0 });
   const dragStart = useRef({ x: 0, y: 0 });
   const buttonRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -150,6 +164,34 @@ export function ConstructionButton({
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(position));
   }, [position]);
+
+  useEffect(() => {
+    localStorage.setItem(WIDTH_STORAGE_KEY, String(panelWidth));
+  }, [panelWidth]);
+
+  useEffect(() => {
+    if (!isResizing) return;
+    const handleMouseMove = (e: MouseEvent) => {
+      const dx = resizeStart.current.x - e.clientX; // drag left → grow
+      const max = Math.floor(window.innerWidth * MAX_PANEL_WIDTH_FRAC);
+      const next = Math.max(MIN_PANEL_WIDTH, Math.min(max, resizeStart.current.w + dx));
+      setPanelWidth(next);
+    };
+    const handleMouseUp = () => setIsResizing(false);
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isResizing]);
+
+  const startResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    resizeStart.current = { x: e.clientX, w: panelWidth };
+    setIsResizing(true);
+  }, [panelWidth]);
 
   // Focus textarea when expanded
   useEffect(() => {
@@ -434,7 +476,21 @@ export function ConstructionButton({
 
       {/* Expanded Input Panel */}
       {isExpanded && !isOpen && (
-        <div className="absolute bottom-14 right-0 w-[22rem] glass rounded-lg overflow-hidden shadow-lg animate-slide-up">
+        <div
+          className="absolute bottom-14 right-0 glass rounded-lg overflow-hidden shadow-lg animate-slide-up"
+          style={{ width: panelWidth }}
+        >
+          {/* Left-edge resize handle — drag left to grow the panel.
+              Wider hit-target (10px) with a visible 2px rule centered in it
+              so the affordance is discoverable without hovering. */}
+          <div
+            data-no-drag
+            onMouseDown={startResize}
+            title="drag to resize"
+            className={`group absolute left-0 top-0 bottom-0 w-2.5 cursor-ew-resize z-10 flex items-center justify-center ${isResizing ? 'bg-primary/15' : 'hover:bg-primary/10'}`}
+          >
+            <div className={`h-12 w-1 rounded-full transition-colors ${isResizing ? 'bg-primary' : 'bg-foreground/40 group-hover:bg-primary'}`} />
+          </div>
           <div className="p-3">
             {/* Input row + vertical action column */}
             <div className="flex items-stretch gap-2">
