@@ -480,17 +480,13 @@ export function ConstructionButton({
           className="absolute bottom-14 right-0 glass rounded-lg overflow-hidden shadow-lg animate-slide-up"
           style={{ width: panelWidth }}
         >
-          {/* Left-edge resize handle — drag left to grow the panel.
-              Wider hit-target (10px) with a visible 2px rule centered in it
-              so the affordance is discoverable without hovering. */}
+          {/* Left-edge resize handle — drag left to grow the panel. */}
           <div
             data-no-drag
             onMouseDown={startResize}
             title="drag to resize"
-            className={`group absolute left-0 top-0 bottom-0 w-2.5 cursor-ew-resize z-10 flex items-center justify-center ${isResizing ? 'bg-primary/15' : 'hover:bg-primary/10'}`}
-          >
-            <div className={`h-12 w-1 rounded-full transition-colors ${isResizing ? 'bg-primary' : 'bg-foreground/40 group-hover:bg-primary'}`} />
-          </div>
+            className={`absolute left-0 top-0 bottom-0 w-2.5 cursor-ew-resize z-10 ${isResizing ? 'bg-primary/15' : 'hover:bg-primary/10'}`}
+          />
           <div className="p-3">
             {/* Input row + vertical action column */}
             <div className="flex items-stretch gap-2">
