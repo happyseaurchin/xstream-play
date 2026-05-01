@@ -238,17 +238,28 @@
     --icon-accent: var(--face-designer);
   }
 
+  [data-face="observer"] {
+    --ring: var(--face-observer);
+    --column-accent: var(--face-observer);
+    --icon-accent: var(--face-observer);
+  }
+
   /* Apply face accent to interactive elements within column - use !important to override utility classes */
   [data-face="character"] .icon-accent,
   [data-face="character"] .icon-accent svg {
     color: hsl(var(--face-character)) !important;
   }
-  
+
   [data-face="author"] .icon-accent,
   [data-face="author"] .icon-accent svg {
     color: hsl(var(--face-author)) !important;
   }
-  
+
+  [data-face="observer"] .icon-accent,
+  [data-face="observer"] .icon-accent svg {
+    color: hsl(var(--face-observer)) !important;
+  }
+
   [data-face="designer"] .icon-accent,
   [data-face="designer"] .icon-accent svg {
     color: hsl(var(--face-designer)) !important;
@@ -431,6 +442,10 @@
   
   [data-face="designer"] .bg-face-accent {
     background: hsl(var(--face-designer)) !important;
+  }
+
+  [data-face="observer"] .bg-face-accent {
+    background: hsl(var(--face-observer)) !important;
   }
 
   /* Face accent strip */

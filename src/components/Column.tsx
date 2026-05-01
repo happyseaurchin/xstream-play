@@ -51,6 +51,10 @@ export interface ColumnInputs {
   onQuery: (text: string) => void
   isQuerying: boolean
   placeholder: string
+  // Active face of the focused column — App propagates this to the floating
+  // button so its bg-face-accent / icon-accent rules pick up the right CADO
+  // color (yellow / blue / pink / green).
+  face: Face
 }
 
 export interface ColumnProps {
@@ -609,7 +613,8 @@ export function Column(props: ColumnProps) {
     onQuery: handleQuery,
     isQuerying: softPending,
     placeholder: placeholderText,
-  }), [vapor, handleSubmit, handleQuery, softPending, placeholderText])
+    face,
+  }), [vapor, handleSubmit, handleQuery, softPending, placeholderText, face])
 
   useEffect(() => {
     if (isFocused) onInputsChange(id, inputs)
@@ -648,8 +653,9 @@ export function Column(props: ColumnProps) {
                 key={f}
                 onClick={() => handleFaceChange(f)}
                 className={`text-xs px-2 py-0.5 border-none cursor-pointer transition-colors ${
-                  active ? 'bg-accent text-foreground font-semibold' : 'bg-transparent text-muted-foreground hover:text-foreground'
+                  active ? 'text-white font-semibold' : 'bg-transparent text-muted-foreground hover:text-foreground'
                 }`}
+                style={active ? { background: `hsl(var(--face-${f}))` } : undefined}
                 title={sf?.label || f}
               >
                 {long.charAt(0).toUpperCase()}

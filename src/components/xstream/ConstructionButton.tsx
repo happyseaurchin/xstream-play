@@ -63,6 +63,10 @@ interface ConstructionButtonProps {
   // Menu actions
   onThemeChange: (theme: Theme) => void;
   currentTheme: Theme;
+  // Active CADO face of the focused column. Drives data-face on the button
+  // wrapper so internal `bg-face-accent` and `icon-accent` rules pick up the
+  // right color (yellow=Character, blue=Author, pink=Designer, green=Observer).
+  face?: "character" | "author" | "designer" | "observer";
   // Multi-column controls live in the settings menu so the surface stays
   // calm. Spawn opens a new column inheriting the active one's seed; close
   // is per-column (✕ in each column header).
@@ -90,6 +94,7 @@ const STORAGE_KEY = "xstream-construction-btn-pos";
 export function ConstructionButton({
   onThemeChange,
   currentTheme,
+  face = "character",
   onSpawnColumn,
   columnCount = 1,
   onQuery,
@@ -271,6 +276,7 @@ export function ConstructionButton({
       style={{ left: position.x, top: position.y }}
       onMouseDown={handleMouseDown}
       data-column-id={columnId}
+      data-face={face}
     >
       {/* Settings Menu */}
       {isOpen && (

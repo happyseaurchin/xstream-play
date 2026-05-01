@@ -307,6 +307,7 @@ export default function App() {
       <ConstructionButton
         onThemeChange={setTheme}
         currentTheme={theme}
+        face={focusedInputs?.face ?? 'character'}
         value={focusedInputs?.value ?? ''}
         onChange={focusedInputs?.onChange ?? (() => {})}
         onSubmit={focusedInputs?.onSubmit ?? (() => {})}
