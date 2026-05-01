@@ -76,11 +76,56 @@ function loadIdentity() {
 let columnIdSeq = 0
 const newColumnId = () => `col-${Date.now()}-${columnIdSeq++}`
 
+// Per-column localStorage key (Column owns the actual content; App owns just
+// the descriptor list).
+const COLUMNS_KEY = 'xstream:columns'
+const FOCUSED_COLUMN_KEY = 'xstream:focused-column'
+
 interface ColumnDescriptor {
   id: string
+  // Seed only — Column persists its own current beach/face/address keyed by id.
   initialBeach: string
   initialFace: Face
   initialAddress: string
+}
+
+function loadColumns(): { columns: ColumnDescriptor[]; focusedId: string } {
+  try {
+    const raw = localStorage.getItem(COLUMNS_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const columns = parsed.filter(c => c && typeof c.id === 'string')
+        const focusedId = localStorage.getItem(FOCUSED_COLUMN_KEY) ?? columns[0].id
+        return { columns, focusedId: columns.find(c => c.id === focusedId)?.id ?? columns[0].id }
+      }
+    }
+  } catch { /* corrupt — fresh start */ }
+  // First run — single column with sensible seed.
+  const initialBeach = localStorage.getItem(BEACH_KEY) ?? DEFAULT_BEACH
+  const initialFace = (localStorage.getItem('xstream-face') as Face) || 'character'
+  const id = newColumnId()
+  return { columns: [{ id, initialBeach, initialFace, initialAddress: '' }], focusedId: id }
+}
+
+function saveColumns(columns: ColumnDescriptor[]) {
+  try { localStorage.setItem(COLUMNS_KEY, JSON.stringify(columns)) } catch { /* quota */ }
+}
+
+// When a column is closed, drop its persisted state so old keys don't leak.
+function purgeColumnStorage(columnId: string) {
+  for (const k of [
+    `xstream:column-face:${columnId}`,
+    `xstream:column-beach:${columnId}`,
+    `xstream:column-address:${columnId}`,
+  ]) localStorage.removeItem(k)
+  // Face-state keys are scoped by both handle and column; clear all.
+  for (let i = localStorage.length - 1; i >= 0; i--) {
+    const k = localStorage.key(i)
+    if (k && k.startsWith('xstream:face-state:') && k.endsWith(':' + columnId)) {
+      localStorage.removeItem(k)
+    }
+  }
 }
 
 export default function App() {
@@ -105,15 +150,16 @@ export default function App() {
     })
   }, [])
 
-  // Columns. v0.1: spawn fresh, no persistence across reload. The starting
-  // beach for the first column comes from localStorage; subsequent spawns
-  // inherit from the active column.
-  const [columns, setColumns] = useState<ColumnDescriptor[]>(() => {
-    const initialBeach = localStorage.getItem(BEACH_KEY) ?? DEFAULT_BEACH
-    const initialFace = (localStorage.getItem('xstream-face') as Face) || 'character'
-    return [{ id: newColumnId(), initialBeach, initialFace, initialAddress: '' }]
-  })
-  const [focusedId, setFocusedId] = useState<string>(() => columns[0].id)
+  // Columns persist across reload. Each column carries its own state in
+  // localStorage (face / beach / address / face-memory); App holds just the
+  // ordered descriptor list and the focused id.
+  const [{ columns, focusedId }, setColumnsState] = useState<{ columns: ColumnDescriptor[]; focusedId: string }>(() => loadColumns())
+  const setFocusedId = useCallback((id: string) => {
+    setColumnsState(prev => {
+      try { localStorage.setItem(FOCUSED_COLUMN_KEY, id) } catch { /* quota */ }
+      return { ...prev, focusedId: id }
+    })
+  }, [])
   const [focusedInputs, setFocusedInputs] = useState<ColumnInputs | null>(null)
 
   // Each column reports its inputs up here when it is focused. We store only
@@ -192,39 +238,40 @@ export default function App() {
     }
   }, [identity.handle])
 
-  // Column management.
+  // Column management. Spawn = new column inherits the focused column's
+  // (beach, face, address) as a seed; user diverges from there.
   const spawnColumn = useCallback(() => {
-    setColumns(prev => {
-      // New column inherits the focused column's beach/face/address as a
-      // sensible starting point. The user diverges from there.
-      const focused = prev.find(c => c.id === focusedId) ?? prev[0]
+    setColumnsState(prev => {
+      const focused = prev.columns.find(c => c.id === prev.focusedId) ?? prev.columns[0]
       const newCol: ColumnDescriptor = {
         id: newColumnId(),
         initialBeach: focused?.initialBeach ?? DEFAULT_BEACH,
         initialFace: focused?.initialFace ?? 'character',
         initialAddress: focused?.initialAddress ?? '',
       }
-      const next = [...prev, newCol]
-      // Focus the new column.
-      setFocusedId(newCol.id)
-      return next
+      const nextColumns = [...prev.columns, newCol]
+      saveColumns(nextColumns)
+      try { localStorage.setItem(FOCUSED_COLUMN_KEY, newCol.id) } catch { /* quota */ }
+      return { columns: nextColumns, focusedId: newCol.id }
     })
-  }, [focusedId])
+  }, [])
 
   const closeColumn = useCallback((id: string) => {
-    setColumns(prev => {
-      if (prev.length <= 1) return prev  // can't close the last column
-      const idx = prev.findIndex(c => c.id === id)
+    setColumnsState(prev => {
+      if (prev.columns.length <= 1) return prev
+      const idx = prev.columns.findIndex(c => c.id === id)
       if (idx === -1) return prev
-      const next = prev.filter(c => c.id !== id)
-      // If we closed the focused one, focus a sibling.
-      if (focusedId === id) {
-        const fallback = next[Math.max(0, idx - 1)]
-        setFocusedId(fallback.id)
+      const nextColumns = prev.columns.filter(c => c.id !== id)
+      saveColumns(nextColumns)
+      purgeColumnStorage(id)
+      let nextFocused = prev.focusedId
+      if (prev.focusedId === id) {
+        nextFocused = nextColumns[Math.max(0, idx - 1)].id
+        try { localStorage.setItem(FOCUSED_COLUMN_KEY, nextFocused) } catch { /* quota */ }
       }
-      return next
+      return { columns: nextColumns, focusedId: nextFocused }
     })
-  }, [focusedId])
+  }, [])
 
   return (
     <div className="app relative" data-theme={theme}>
@@ -253,15 +300,6 @@ export default function App() {
             />
           </div>
         ))}
-
-        {/* Spawn-column affordance — anchored to the right edge of the row. */}
-        <button
-          onClick={spawnColumn}
-          className="shrink-0 self-stretch w-8 flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent/20 border-l border-border/30 transition-colors"
-          title="Open another column — same identity, your own face/address"
-        >
-          +
-        </button>
       </div>
 
       {/* Floating button — global. Targets the focused column's input via
@@ -284,6 +322,8 @@ export default function App() {
           onSwitchHandle: switchToHandle,
           onForgetHandle: forgetHandle,
         }}
+        onSpawnColumn={spawnColumn}
+        columnCount={columns.length}
       />
     </div>
   )

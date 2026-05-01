@@ -63,7 +63,8 @@
     /* Face accent colors */
     --face-character: 38 92% 50%;
     --face-author: 215 70% 55%;
-    
+    --face-observer: 152 55% 42%;
+
     /* Construction tool color */
     --face-construction: 270 60% 55%;
     --face-designer: 350 80% 60%;
@@ -178,6 +179,7 @@
     --face-character: 180 100% 50%;
     --face-author: 280 100% 60%;
     --face-designer: 320 100% 60%;
+    --face-observer: 100 80% 55%;
     
     /* Cyber theme legacy mappings */
     --color-text: hsl(180 100% 90%);
@@ -574,3 +576,22 @@
     animation: pulse-subtle 2s ease-in-out infinite;
   }
 }
+
+/* ─── Multi-column visual cues ───────────────────────────────────────────
+ * Per-column face tint on the column header, plus a focused-column outline
+ * in the construction (purple) accent. The outer column-shell carries
+ * data-face=character|author|designer|observer; CSS branches off that.
+ * Tints are subtle (8-10% alpha) so the surface doesn't shout. */
+
+.column-shell { position: relative; }
+.column-shell .column-header-tint { transition: background 200ms ease; }
+.column-shell[data-face="character"] .column-header-tint { background: hsl(var(--face-character) / 0.08); }
+.column-shell[data-face="author"]    .column-header-tint { background: hsl(var(--face-author)    / 0.08); }
+.column-shell[data-face="designer"]  .column-header-tint { background: hsl(var(--face-designer)  / 0.08); }
+.column-shell[data-face="observer"]  .column-header-tint { background: hsl(var(--face-observer)  / 0.08); }
+
+/* Focused column — purple inset outline matching the construction button. */
+.column-shell.column-focused {
+  box-shadow: inset 0 0 0 2px hsl(var(--face-construction) / 0.55);
+}
+.column-shell.column-unfocused { opacity: 0.92; }

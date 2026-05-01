@@ -33,7 +33,16 @@ import type { SoftLLMResponse } from '../types'
 const MIN_ZONE = 80
 const DEFAULT_BEACH = 'https://happyseaurchin.com'
 
-const faceStateKey = (h: string) => `xstream:face-state:${h || '_anon'}`
+// Per-column face memory key. Each column has its own (face → memory) map
+// scoped by both handle AND column id, so the same human in two columns
+// keeps each column's drafts/addresses distinct. Closing a column drops its
+// memory; reload restores the persisted columns and their memory.
+const faceStateKey = (h: string, columnId: string) => `xstream:face-state:${h || '_anon'}:${columnId}`
+// Per-column "current face" so a column reload restores its last face.
+const currentFaceKey = (columnId: string) => `xstream:column-face:${columnId}`
+// Per-column current beach + address so reload restores where this column was.
+const currentBeachKey = (columnId: string) => `xstream:column-beach:${columnId}`
+const currentAddressKey = (columnId: string) => `xstream:column-address:${columnId}`
 
 export interface ColumnInputs {
   value: string
@@ -65,9 +74,22 @@ export interface ColumnProps {
 export function Column(props: ColumnProps) {
   const { id, identity, shell, inboxAcks, onAckInbox, isFocused, onFocus, onClose, onInputsChange } = props
 
-  const [face, setFace] = useState<Face>(props.initialFace ?? 'character')
-  const [beach, setBeach] = useState<string>(props.initialBeach ?? DEFAULT_BEACH)
-  const [currentAddress, setCurrentAddress] = useState(props.initialAddress ?? '')
+  // Per-column persistent state. Restored from localStorage on mount; falls
+  // back to props (initialFace/initialBeach/initialAddress) on first run.
+  const [face, setFace] = useState<Face>(() => {
+    const saved = localStorage.getItem(currentFaceKey(id)) as Face | null
+    return saved ?? props.initialFace ?? 'character'
+  })
+  const [beach, setBeach] = useState<string>(() =>
+    localStorage.getItem(currentBeachKey(id)) ?? props.initialBeach ?? DEFAULT_BEACH
+  )
+  const [currentAddress, setCurrentAddress] = useState<string>(() =>
+    localStorage.getItem(currentAddressKey(id)) ?? props.initialAddress ?? ''
+  )
+  // Persist column-scoped navigation as it changes.
+  useEffect(() => { try { localStorage.setItem(currentFaceKey(id), face) } catch { /* quota */ } }, [id, face])
+  useEffect(() => { try { localStorage.setItem(currentBeachKey(id), beach) } catch { /* quota */ } }, [id, beach])
+  useEffect(() => { try { localStorage.setItem(currentAddressKey(id), currentAddress) } catch { /* quota */ } }, [id, currentAddress])
   const [frameInput, setFrameInput] = useState('')
   const [viewerOpen, setViewerOpen] = useState(false)
   const [inboxOpen, setInboxOpen] = useState(false)
@@ -96,9 +118,9 @@ export function Column(props: ColumnProps) {
   // face within a column restores that face's last (address, vapor, pending).
   type FaceMemory = { address: string; vapor: string; pendingLiquid: string | null }
   const emptyMemory = (): FaceMemory => ({ address: '', vapor: '', pendingLiquid: null })
-  const loadFaceMemory = (handle: string): Record<Face, FaceMemory> => {
+  const loadFaceMemory = (handle: string, columnId: string): Record<Face, FaceMemory> => {
     try {
-      const raw = localStorage.getItem(faceStateKey(handle))
+      const raw = localStorage.getItem(faceStateKey(handle, columnId))
       if (raw) {
         const parsed = JSON.parse(raw) as Partial<Record<Face, FaceMemory>>
         return {
@@ -111,12 +133,12 @@ export function Column(props: ColumnProps) {
     } catch { /* corrupt */ }
     return { character: emptyMemory(), author: emptyMemory(), designer: emptyMemory(), observer: emptyMemory() }
   }
-  const [faceState, setFaceState] = useState<Record<Face, FaceMemory>>(() => loadFaceMemory(identity.handle))
-  useEffect(() => { setFaceState(loadFaceMemory(identity.handle)) }, [identity.handle])
+  const [faceState, setFaceState] = useState<Record<Face, FaceMemory>>(() => loadFaceMemory(identity.handle, id))
+  useEffect(() => { setFaceState(loadFaceMemory(identity.handle, id)) }, [identity.handle, id])
   const persistFaceState = useCallback((next: Record<Face, FaceMemory>) => {
     setFaceState(next)
-    try { localStorage.setItem(faceStateKey(identity.handle), JSON.stringify(next)) } catch { /* quota */ }
-  }, [identity.handle])
+    try { localStorage.setItem(faceStateKey(identity.handle, id), JSON.stringify(next)) } catch { /* quota */ }
+  }, [identity.handle, id])
 
   // Zone heights — proportional, draggable
   const [solidHeight, setSolidHeight] = useState(() => Math.round(window.innerHeight * 0.35))
@@ -608,8 +630,10 @@ export function Column(props: ColumnProps) {
       onMouseDown={onFocus}
       onFocus={onFocus}
     >
-      {/* Per-column header */}
-      <div className="flex items-center gap-2 px-3 h-[44px] border-b border-border/50 text-sm shrink-0 z-10 relative bg-background overflow-x-auto">
+      {/* Per-column header — column-header-tint picks up the column's
+          face accent (subtle 8% alpha) so the user sees CADO-orientation
+          at a glance across multi-column layouts. */}
+      <div className="column-header-tint flex items-center gap-2 px-3 h-[44px] border-b border-border/50 text-sm shrink-0 z-10 relative overflow-x-auto">
         <span className={`text-xs font-mono ${identity.handle ? 'text-foreground font-semibold' : 'text-muted-foreground italic'}`}>
           {identity.handle || 'anon'}
         </span>
