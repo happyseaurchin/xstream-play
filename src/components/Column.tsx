@@ -348,6 +348,22 @@ export function Column(props: ColumnProps) {
             setLogs(prev => [...prev.slice(-50), `🛠 ${name}(${JSON.stringify(input).slice(0, 120)})`])
           },
           onLog: msg => setLogs(prev => [...prev.slice(-50), `· ${msg}`]),
+          // Soft proposes; user commits. In-frame, the proposal is written to
+          // the substrate as the entity's liquid (peers see it). Outside a
+          // frame there's no shared liquid layer yet, so we stage locally as
+          // pendingLiquid for the user to review and commit.
+          onProposeLiquid: async (proposed: string) => {
+            const k = kernelRef.current
+            if (!k) return { ok: false, scope: 'no-kernel', error: 'kernel not ready' }
+            if (k.session.current_frame && k.session.entity_position) {
+              const r = await k.commitLiquid(proposed)
+              return r.ok
+                ? { ok: true, scope: `frame:${k.session.current_frame}:${k.session.entity_position}.1 (shared with peers in-frame)` }
+                : { ok: false, scope: 'frame', error: r.error }
+            }
+            setPendingLiquid(proposed)
+            return { ok: true, scope: 'local pendingLiquid (beach mode — no shared liquid layer here yet)' }
+          },
         })
         resultText = result.text
         summary = result.toolCalls.length > 0

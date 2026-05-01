@@ -122,6 +122,19 @@ export const BSP_TOOLS: AnthropicTool[] = [
     },
   },
   {
+    name: 'propose_liquid',
+    description:
+      'Put a proposal into the user\'s LIQUID layer at the current scope. This is how soft writes — never via bsp. Liquid pools with peer liquid where shared (in-frame, the entity\'s .1 slot). The user then clicks commit to fire medium synthesis, which produces the solid substrate edit. ' +
+      'Use this when the user has asked you to draft, propose, refine, or compose something they intend to commit. Do NOT use this for casual conversational replies — for those, just answer in text. Reply text continues the chat; propose_liquid stages something for the user to commit.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'The proposal text — what you would have the user commit. Will land in liquid; medium synthesises it on commit.' },
+      },
+      required: ['text'],
+    },
+  },
+  {
     name: 'pscale_verify_rider',
     description: 'Deterministic arithmetic check on a Level-2 ecosquared rider. Returns verdict (pass/warn/fail/skip).',
     input_schema: {
@@ -183,6 +196,7 @@ interface ExecutorContext {
   shell: AgentShell | null;
   face: Face;
   onLog?: (msg: string) => void;
+  onProposeLiquid?: (text: string) => Promise<{ ok: boolean; scope: string; error?: string }>;
 }
 
 export async function executeTool(
@@ -192,6 +206,16 @@ export async function executeTool(
   ctx: ExecutorContext
 ): Promise<string> {
   if (name === 'bsp') return executeBsp(input, ctx);
+  if (name === 'propose_liquid') {
+    const text = typeof input.text === 'string' ? input.text.trim() : '';
+    if (!text) return JSON.stringify({ ok: false, error: 'propose_liquid requires non-empty text.' });
+    if (!ctx.onProposeLiquid) {
+      return JSON.stringify({ ok: false, error: 'propose_liquid is not wired in this context (no callback registered).' });
+    }
+    ctx.onLog?.(`💧 propose_liquid: ${text.slice(0, 80)}`);
+    const r = await ctx.onProposeLiquid(text);
+    return JSON.stringify(r);
+  }
   if (name === 'pscale_register') {
     ctx.onLog?.(`mcp pscale_register collective=${input.collective}`);
     const r = await pscaleRegister({
@@ -251,16 +275,15 @@ async function executeBsp(input: Record<string, any>, ctx: ExecutorContext): Pro
   }
   const isWrite = input.content !== undefined;
 
-  // Gate writes via shell:1.<digit>.3 (commit_gates) for active face.
+  // Soft never writes to substrate. To propose into liquid, use propose_liquid.
+  // Substrate edits happen at commit-time via medium-LLM synthesis, not from
+  // soft directly — soft walks (reads) and proposes; the user (or medium)
+  // commits.
   if (isWrite) {
-    const sf = ctx.shell?.faces.find(f => f.canonical === ctx.face);
-    const gates = sf?.commit_gates ?? '';
-    if (!writeAllowed(gates, input.agent_id, input.block, ctx.face)) {
-      return JSON.stringify({
-        ok: false,
-        error: `commit denied — writing to ${input.agent_id}:${input.block} is outside commit gates for ${ctx.face} face. Gates: ${gates || '(empty — using whetstone:3.2 default which forbids writes for this face)'}.`,
-      });
-    }
+    return JSON.stringify({
+      ok: false,
+      error: 'soft-LLM is read-only on the substrate. Use propose_liquid to put your proposal into the liquid layer where it pools with peers; the user clicks commit to fire medium synthesis.',
+    });
   }
 
   const params: BspParams = {
@@ -408,15 +431,22 @@ function softAgentDescription(): string {
  * Designer-face content here is what makes "design through the interface"
  * actually work — the soft-LLM is told it's helping the user edit their shell.
  */
+const FACE_DISCIPLINE =
+  'Discipline — you walk and you propose; you NEVER write to the substrate directly.\n' +
+  ' - bsp() is read-only for you. Use it to walk: shells, passports, frames, pools, marks.\n' +
+  ' - When the user asks you to draft / propose / refine / compose something they intend to act on, use propose_liquid(text). Liquid pools with peer liquid (when shared, e.g. in-frame); the user clicks commit, which fires medium-LLM synthesis to produce the solid substrate edit.\n' +
+  ' - For casual conversation, reflection, or surfacing options, just reply in text. Reply text is the chat; propose_liquid is the proposal you would have the user commit.\n' +
+  ' - Never call bsp() with a content parameter — it will be rejected. Substrate edits happen at commit-time via medium, not from you.';
+
 const FACE_ROLE: Record<Face, string> = {
   character:
-    'Active face is CHARACTER. You are a thinking partner. Help the user move from vapour to committable liquid at this address. The user perceives at this address; their commitment will appear here for peers to see. Reflect, condense, surface adjacent directions. You do not write to the substrate yourself — that is the user\'s act.',
+    'Active face is CHARACTER. You are a thinking partner. Help the user move from vapour to committable liquid at this address. Reflect, condense, surface adjacent directions. When the user is converging on something, propose_liquid the proposed commitment. Otherwise just talk.',
   author:
-    'Active face is AUTHOR. You are a creation partner for shared beach surfaces — frame discs, scene underscores, pool purposes, passport text. You may use bsp() to read what others have published at related addresses for inspiration. When the user asks for content, draft it in their voice, ready for them to commit. Writes you make are to the user\'s own blocks (handle = ' + 'their agent_id) — never to other agents\' shells.',
+    'Active face is AUTHOR. You are a creation partner for shared beach surfaces — frame discs, scene underscores, pool purposes, passport text. Walk peers\' published content for inspiration. When drafting in the user\'s voice, propose_liquid the draft so they can commit; medium will synthesise it into the appropriate solid form.',
   designer:
-    'Active face is DESIGNER. You are a shell editor. The user is configuring their own CADO faces, knowledge_gates, commit_gates, and synthesis recipes. Their shell lives at agent_id=<their handle>, block="shell". Walk whetstone:3 (bsp(agent_id="bsp", block="whetstone", spindle="3")) when you need the default face/tier matrix. To propose a change: explain the diff, then if the user confirms, call bsp() to write it. You may also help them author medium synthesis recipes at shell:1.<face>.synthesis. Beach-level settings live at the beach owner\'s shell — readable, but writable only by that owner.',
+    'Active face is DESIGNER. You are a shell editor. The user is configuring their own CADO faces, knowledge_gates, commit_gates, and synthesis recipes. Their shell lives at agent_id=<their handle>, block="shell". Walk whetstone:3 (bsp(agent_id="bsp", block="whetstone", spindle="3")) when you need the default face/tier matrix. To propose a shell change: explain the diff in text, then propose_liquid the change as a clear delta the user can review and commit. You may also propose medium synthesis recipes at shell:1.<face>.synthesis._. Beach-level settings live at the beach owner\'s shell — readable, but writable only by that owner.',
   observer:
-    'Active face is OBSERVER. You are a curator — read-only. Walk the beach with bsp() to surface patterns across marks, pools, frames at this address. Identify themes, tensions, gaps; do not propose commitments. If the user wants to act, suggest switching to character / author / designer face. Your commit_gates are empty by design.',
+    'Active face is OBSERVER. You are a curator — read-only. Walk the beach with bsp() to surface patterns across marks, pools, frames at this address. Identify themes, tensions, gaps; do not propose commitments via propose_liquid. If the user wants to act, suggest switching to character / author / designer face.',
 };
 
 export function buildSoftSystemPrompt(opts: {
@@ -435,6 +465,8 @@ export function buildSoftSystemPrompt(opts: {
   sections.push('');
   sections.push('# CADO face — role for this turn');
   sections.push(FACE_ROLE[opts.face]);
+  sections.push('');
+  sections.push(FACE_DISCIPLINE);
   sections.push('');
   sections.push('# Active context');
   sections.push(`agent_id: ${opts.agentId || '(anonymous)'}`);
@@ -561,6 +593,7 @@ export interface SoftLLMOptions {
   maxTokens?: number;
   onToolCall?: (name: string, input: unknown) => void;
   onLog?: (msg: string) => void;
+  onProposeLiquid?: (text: string) => Promise<{ ok: boolean; scope: string; error?: string }>;
 }
 
 export interface SoftLLMResult {
@@ -593,6 +626,7 @@ export async function callClaudeWithTools(opts: SoftLLMOptions): Promise<SoftLLM
     shell: opts.shell,
     face: opts.face,
     onLog: opts.onLog,
+    onProposeLiquid: opts.onProposeLiquid,
   };
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
