@@ -18,6 +18,10 @@ import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { SolidZone } from './xstream/SolidZone'
 import { LiquidZone } from './xstream/LiquidZone'
 import { VapourZone } from './xstream/VapourZone'
+import { PaywallBanner } from './xstream/PaywallBanner'
+import { usePaywallGate } from '../kernel/use-paywall-gate'
+import { useStepARegistration } from '../kernel/use-step-a-registration'
+import { useVerificationPoll, loadPersistedWatch } from '../kernel/use-verification-poll'
 import { DraggableSeparator } from './DraggableSeparator'
 import { ViewerDrawer } from './ViewerDrawer'
 import { InboxDrawer } from './InboxDrawer'
@@ -27,6 +31,7 @@ import { setHiddenRef, beachToRef, resolveRef, bsp, pscaleRegister, pscaleGrainR
 import { joinVapourChannel, deriveScope, type VapourChannelHandle, type VapourBroadcast } from '../lib/realtime'
 import { getBlock, injectBlock } from '../kernel/block-store'
 import { callClaudeWithTools, callClaudeViaMcpConnector, composeContext, buildSoftSystemPrompt } from '../kernel/claude-tools'
+import { synthesise, parseRecipe } from '../kernel/medium-llm'
 import type { SolidBlock, LiquidCard, VapourEntry, Face } from '../types/xstream'
 import type { SoftLLMResponse } from '../types'
 
@@ -479,13 +484,56 @@ export function Column(props: ColumnProps) {
       })
       return
     }
+
+    // Commit IS synthesis. Read recipe from shell:1.<face>.synthesis._ if
+    // present (designer-authored override); else use the face default.
+    // Observer never commits.
+    const sf = shell?.faces.find(x => x.canonical === face)
+    const recipeRaw = sf && (sf as unknown as { synthesis?: string }).synthesis
+    const mode = parseRecipe(typeof recipeRaw === 'string' ? recipeRaw : null, face)
+
+    let textToWrite = pendingLiquid
+    if (face === 'observer') {
+      setSoftResponse({
+        id: Date.now().toString(), originalInput: pendingLiquid,
+        text: 'Observer face is read-only. Switch to character / author / designer to commit.',
+        softType: 'info', face, frameId: null,
+      })
+      return
+    }
+    if (mode !== 'bypass' && identity.apiKey) {
+      try {
+        setLogs(prev => [...prev.slice(-50), `🌀 medium synthesising (${typeof mode === 'string' ? mode : 'custom'} · ${face})…`])
+        const r = await synthesise({
+          apiKey: identity.apiKey,
+          model: session.medium_model,
+          agentId: identity.handle,
+          face,
+          pendingLiquid,
+          mode,
+          session: kernelRef.current.session,
+          marks, presence, frame, pool,
+        })
+        if (!r.bypassed) {
+          textToWrite = r.text
+          setLogs(prev => [...prev.slice(-50), `🌀 synthesis: ${r.text.slice(0, 80)}`])
+        }
+      } catch (e) {
+        setSoftResponse({
+          id: Date.now().toString(), originalInput: pendingLiquid,
+          text: `(medium synthesis failed; committing raw): ${e instanceof Error ? e.message : 'unknown'}`,
+          softType: 'info', face, frameId: null,
+        })
+      }
+    }
+
     if (kernelRef.current.session.current_frame) {
-      await kernelRef.current.commitLiquid(pendingLiquid)
+      await kernelRef.current.commitLiquid(textToWrite)
     } else {
-      await kernelRef.current.dropMark(pendingLiquid)
+      await kernelRef.current.dropMark(textToWrite)
     }
     setPendingLiquid(null)
-  }, [pendingLiquid, identity.handle, identity.secret, face])
+  }, [pendingLiquid, identity.handle, identity.secret, identity.apiKey, face, shell, session.medium_model, marks, presence, frame, pool])
 
   const handleCopyToVapor = useCallback((text: string) => {
     setVapor(text)
@@ -601,6 +649,47 @@ export function Column(props: ColumnProps) {
   const placeholderText = identity.apiKey
     ? 'type · ⌘↵ ask soft · ⇧↵ submit'
     : (identity.handle ? 'type · ⇧↵ submit' : 'type to think · identify in button to engage')
+
+  // Paywall gate — read `_tickets` on the face-bound sed: collective for the
+  // current frame. Banner escalates from quiet → active when the user shows
+  // write-intent (vapour non-empty or pending liquid waiting to commit).
+  const paywallStatus = usePaywallGate({
+    face,
+    frame: session.current_frame ?? null,
+    agentId: identity.handle,
+  })
+  const hasWriteIntent = vapor.trim().length > 0
+    || pendingLiquid !== null
+    || (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('paywall') === 'active')
+
+  // Return-from-purchase: when the issuer's success URL hands the buyer back
+  // here with ?ticket_grain=…&ticket_collective=…, the matching column runs
+  // Step A (pscale_register + grain reference write).
+  const stepAStatus = useStepARegistration({
+    agentId: identity.handle,
+    secret: identity.secret,
+    collectiveRef: paywallStatus.kind === 'gated' ? paywallStatus.collectiveRef : null,
+    tickets: paywallStatus.kind === 'gated' ? paywallStatus.tickets : null,
+  })
+
+  // Verifier-audit poll: kicks off when Step A returns `done`, OR when a
+  // persisted watch is found on mount (resumes after reload). Cleared by the
+  // hook on terminal verdict.
+  const persistedWatch = useMemo(() => loadPersistedWatch(id), [id])
+  const watchRegistrationRef =
+    stepAStatus.kind === 'done'
+      ? `${stepAStatus.collective}:${stepAStatus.position}`
+      : persistedWatch?.registrationRef ?? null
+  const watchVerifierId =
+    stepAStatus.kind === 'done'
+      ? (paywallStatus.kind === 'gated' ? paywallStatus.tickets.verifier : null)
+      : persistedWatch?.verifierId ?? null
+  const verificationStatus = useVerificationPoll({
+    columnId: id,
+    registrationRef: watchRegistrationRef,
+    verifierId: watchVerifierId,
+    agentId: identity.handle,
+  })
 
   // ── Floating-button input registration ──
   // When this column is focused, push the inputs (vapor + handlers) up to App
@@ -748,6 +837,7 @@ export function Column(props: ColumnProps) {
       <div className="flex-1 min-h-0 flex flex-col relative">
         <SolidZone blocks={solidBlocks} height={solidHeight} />
         <DraggableSeparator position="top" onDrag={handleTopDrag} />
+        <PaywallBanner status={paywallStatus} hasIntent={hasWriteIntent} stepA={stepAStatus} verification={verificationStatus} />
         <LiquidZone
           cards={liquidCards}
           height={liquidHeight}

@@ -402,6 +402,23 @@ function softAgentDescription(): string {
   return u || '';
 }
 
+/**
+ * Per-CADO-face role addendum. The base soft-agent.json describes the generic
+ * thinking-partner role; this differentiates how soft serves each face.
+ * Designer-face content here is what makes "design through the interface"
+ * actually work — the soft-LLM is told it's helping the user edit their shell.
+ */
+const FACE_ROLE: Record<Face, string> = {
+  character:
+    'Active face is CHARACTER. You are a thinking partner. Help the user move from vapour to committable liquid at this address. The user perceives at this address; their commitment will appear here for peers to see. Reflect, condense, surface adjacent directions. You do not write to the substrate yourself — that is the user\'s act.',
+  author:
+    'Active face is AUTHOR. You are a creation partner for shared beach surfaces — frame discs, scene underscores, pool purposes, passport text. You may use bsp() to read what others have published at related addresses for inspiration. When the user asks for content, draft it in their voice, ready for them to commit. Writes you make are to the user\'s own blocks (handle = ' + 'their agent_id) — never to other agents\' shells.',
+  designer:
+    'Active face is DESIGNER. You are a shell editor. The user is configuring their own CADO faces, knowledge_gates, commit_gates, and synthesis recipes. Their shell lives at agent_id=<their handle>, block="shell". Walk whetstone:3 (bsp(agent_id="bsp", block="whetstone", spindle="3")) when you need the default face/tier matrix. To propose a change: explain the diff, then if the user confirms, call bsp() to write it. You may also help them author medium synthesis recipes at shell:1.<face>.synthesis. Beach-level settings live at the beach owner\'s shell — readable, but writable only by that owner.',
+  observer:
+    'Active face is OBSERVER. You are a curator — read-only. Walk the beach with bsp() to surface patterns across marks, pools, frames at this address. Identify themes, tensions, gaps; do not propose commitments. If the user wants to act, suggest switching to character / author / designer face. Your commit_gates are empty by design.',
+};
+
 export function buildSoftSystemPrompt(opts: {
   agentId: string;
   face: Face;
@@ -415,6 +432,9 @@ export function buildSoftSystemPrompt(opts: {
 
   const sections: string[] = [];
   sections.push(desc);
+  sections.push('');
+  sections.push('# CADO face — role for this turn');
+  sections.push(FACE_ROLE[opts.face]);
   sections.push('');
   sections.push('# Active context');
   sections.push(`agent_id: ${opts.agentId || '(anonymous)'}`);
