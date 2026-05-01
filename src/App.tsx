@@ -17,6 +17,7 @@
 import { useState, useCallback, useEffect } from 'react'
 import { ConstructionButton } from './components/xstream/ConstructionButton'
 import { Column, type ColumnInputs } from './components/Column'
+import { AboutPage } from './components/AboutPage'
 import { readShell, bootstrapShell, type AgentShell } from './lib/bsp-client'
 import type { Theme, Face } from './types/xstream'
 import './App.css'
@@ -129,8 +130,29 @@ function purgeColumnStorage(columnId: string) {
 }
 
 export default function App() {
-  const [identity, setIdentity] = useState(() => loadIdentity())
+  // Lightweight pathname-based routing — no router dependency. /about renders
+  // the explainer page; everything else renders the columns.
+  const [pathname, setPathname] = useState(typeof window !== 'undefined' ? window.location.pathname : '/')
+  useEffect(() => {
+    const onPop = () => setPathname(window.location.pathname)
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [])
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem('xstream-theme') as Theme) || 'light')
+
+  if (pathname === '/about') {
+    return (
+      <div className="app relative" data-theme={theme}>
+        <AboutPage />
+      </div>
+    )
+  }
+
+  return <ColumnsApp theme={theme} setTheme={setTheme} />
+}
+
+function ColumnsApp({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) => void }) {
+  const [identity, setIdentity] = useState(() => loadIdentity())
   const [shell, setShell] = useState<AgentShell | null>(null)
   const [identities, setIdentities] = useState<string[]>(() => loadHandles())
 

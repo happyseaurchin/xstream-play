@@ -286,6 +286,16 @@ export function ConstructionButton({
           </div>
 
           <div className="py-1">
+            <a
+              href="/about"
+              className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-foreground hover:bg-accent/50 transition-colors"
+              title="An /about page explaining what xstream is, how it differs, and where to start"
+            >
+              <span className="h-4 w-4 flex items-center justify-center text-muted-foreground text-xs leading-none">?</span>
+              <span className="flex-1 text-left">What's xstream?</span>
+              <span className="text-[10px] text-muted-foreground font-mono">/about</span>
+            </a>
+
             {onSpawnColumn && (
               <button
                 onClick={() => { onSpawnColumn(); }}
