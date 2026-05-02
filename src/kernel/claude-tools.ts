@@ -438,16 +438,35 @@ const FACE_DISCIPLINE =
   ' - For casual conversation, reflection, or surfacing options, just reply in text. Reply text is the chat; propose_liquid is the proposal you would have the user commit.\n' +
   ' - Never call bsp() with a content parameter — it will be rejected. Substrate edits happen at commit-time via medium, not from you.';
 
-const FACE_ROLE: Record<Face, string> = {
-  character:
-    'Active face is CHARACTER. You are a thinking partner. Help the user move from vapour to committable liquid at this address. Reflect, condense, surface adjacent directions. When the user is converging on something, propose_liquid the proposed commitment. Otherwise just talk.',
-  author:
-    'Active face is AUTHOR. You are a creation partner for shared beach surfaces — frame discs, scene underscores, pool purposes, passport text. Walk peers\' published content for inspiration. When drafting in the user\'s voice, propose_liquid the draft so they can commit; medium will synthesise it into the appropriate solid form.',
-  designer:
-    'Active face is DESIGNER. You are a shell editor. The user is configuring their own CADO faces, knowledge_gates, commit_gates, and synthesis recipes. Their shell lives at agent_id=<their handle>, block="shell". Walk whetstone:3 (bsp(agent_id="bsp", block="whetstone", spindle="3")) when you need the default face/tier matrix. To propose a shell change: explain the diff in text, then propose_liquid the change as a clear delta the user can review and commit. You may also propose medium synthesis recipes at shell:1.<face>.synthesis._. Beach-level settings live at the beach owner\'s shell — readable, but writable only by that owner.',
-  observer:
-    'Active face is OBSERVER. You are a curator — read-only. Walk the beach with bsp() to surface patterns across marks, pools, frames at this address. Identify themes, tensions, gaps; do not propose commitments via propose_liquid. If the user wants to act, suggest switching to character / author / designer face.',
+/**
+ * Per-CADO-face role text. Read from the `bundles` block at runtime so the
+ * persona is editable as block content (Designer-face shell editing) instead
+ * of hardcoded TypeScript. Bundles live at bundles:1.<faceDigit>:
+ *   1=character, 2=author, 3=designer, 4=observer. The `_` underscore at
+ *   each is the role text. Falls back to terse defaults if the block is
+ *   absent — matches seeded bundles.json so first-load is identical.
+ */
+const FACE_DIGIT: Record<Face, string> = {
+  character: '1', author: '2', designer: '3', observer: '4',
 };
+
+const FACE_ROLE_FALLBACK: Record<Face, string> = {
+  character: 'Active face is CHARACTER. Thinking partner. propose_liquid when the user converges on intent.',
+  author: 'Active face is AUTHOR. Creation partner for shared surfaces. Draft in user\'s voice; propose_liquid.',
+  designer: 'Active face is DESIGNER. Shell editor. Propose shell deltas as liquid for user to commit.',
+  observer: 'Active face is OBSERVER. Read-only curator. Never propose_liquid.',
+};
+
+function readFaceRole(face: Face): string {
+  const bundles = getBlock('bundles');
+  if (typeof bundles !== 'object' || bundles === null) return FACE_ROLE_FALLBACK[face];
+  const r = walkLocal(bundles, '1.' + FACE_DIGIT[face]);
+  if (r.mode === 'spindle' && r.nodes.length > 0) {
+    const txt = r.nodes[r.nodes.length - 1].text;
+    if (txt) return txt;
+  }
+  return FACE_ROLE_FALLBACK[face];
+}
 
 export function buildSoftSystemPrompt(opts: {
   agentId: string;
@@ -463,8 +482,8 @@ export function buildSoftSystemPrompt(opts: {
   const sections: string[] = [];
   sections.push(desc);
   sections.push('');
-  sections.push('# CADO face — role for this turn');
-  sections.push(FACE_ROLE[opts.face]);
+  sections.push('# CADO face — role for this turn (from bundles:1.<digit>)');
+  sections.push(readFaceRole(opts.face));
   sections.push('');
   sections.push(FACE_DISCIPLINE);
   sections.push('');

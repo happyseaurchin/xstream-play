@@ -11,6 +11,7 @@
 import mediumAgent from '../../blocks/xstream/medium-agent.json';
 import softAgent from '../../blocks/xstream/soft-agent.json';
 import hardAgent from '../../blocks/xstream/hard-agent.json';
+import bundles from '../../blocks/xstream/bundles.json';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type PscaleNode = string | { [key: string]: any };
@@ -21,6 +22,7 @@ const seeds: Record<string, PscaleNode> = {
   'medium-agent': mediumAgent,
   'soft-agent': softAgent,
   'hard-agent': hardAgent,
+  'bundles': bundles,
 };
 
 for (const [name, block] of Object.entries(seeds)) {

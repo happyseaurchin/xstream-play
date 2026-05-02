@@ -26,19 +26,41 @@ import { messagesApi, logFilmstrip } from './claude-direct';
 import { getBlock } from './block-store';
 import { bsp as walkLocal, collectUnderscore } from './bsp';
 
-export type SynthMode = 'personal' | 'quaker' | 'bypass' | { freeform: string };
+export type SynthMode = 'personal' | 'quaker' | 'bypass' | 'blocked' | { freeform: string };
 
-const DEFAULT_RECIPE: Record<Face, SynthMode> = {
-  character: 'personal',
-  author: 'personal',     // author is producing for shared surfaces but at commit-time, still personal
-  designer: 'bypass',     // designer is editing config; synthesis mangles JSON edits
-  observer: 'bypass',     // observer doesn't commit — guard is in handleCommit too
+/**
+ * Medium recipe per face — read from the `bundles` block at runtime
+ * (bundles:2.<faceDigit>:2). Designer-face shell editing can override.
+ * Code fallbacks match seeded bundles.json so first-load behaves the same.
+ */
+const FACE_DIGIT: Record<Face, string> = {
+  character: '1', author: '2', designer: '3', observer: '4',
 };
+
+const RECIPE_FALLBACK: Record<Face, SynthMode> = {
+  character: 'personal',
+  author: 'personal',
+  designer: 'bypass',
+  observer: 'blocked',
+};
+
+function readBundleRecipe(face: Face): SynthMode {
+  const bundles = getBlock('bundles');
+  if (typeof bundles !== 'object' || bundles === null) return RECIPE_FALLBACK[face];
+  const r = walkLocal(bundles, '2.' + FACE_DIGIT[face] + '.2');
+  if (r.mode === 'spindle' && r.nodes.length > 0) {
+    const txt = r.nodes[r.nodes.length - 1].text;
+    const m = txt.replace(/^mode:\s*/, '').trim().toLowerCase();
+    if (m === 'personal' || m === 'quaker' || m === 'bypass' || m === 'blocked') return m;
+    if (m) return { freeform: txt.trim() };
+  }
+  return RECIPE_FALLBACK[face];
+}
 
 export function parseRecipe(raw: string | null | undefined, face: Face): SynthMode {
   const r = (raw || '').trim().toLowerCase();
-  if (!r) return DEFAULT_RECIPE[face];
-  if (r === 'personal' || r === 'quaker' || r === 'bypass') return r;
+  if (!r) return readBundleRecipe(face);
+  if (r === 'personal' || r === 'quaker' || r === 'bypass' || r === 'blocked') return r;
   return { freeform: raw!.trim() };
 }
 
@@ -79,7 +101,7 @@ export interface SynthesiseResult {
 }
 
 export async function synthesise(opts: SynthesiseOpts): Promise<SynthesiseResult> {
-  if (opts.mode === 'bypass') {
+  if (opts.mode === 'bypass' || opts.mode === 'blocked') {
     return { text: opts.pendingLiquid, mode: opts.mode, bypassed: true };
   }
 

@@ -1,0 +1,76 @@
+{
+  "_": "xstream LLM bundles. Soft / medium / hard × CADO faces. Each leaf names: (1) framing — what role the LLM wakes up into; (2) scoop — bsp address list to compose context (placeholders ${beach}, ${address}, ${frame}, ${handle}, ${face} substituted at runtime); (3) output — where the LLM's product lands (vapour | liquid | solid:<target> | none). The scoop list and framing are editable; soft edits its own bundle by walking shell:bundle:soft.<face> when migrated. For now bundles are seeded here and can move to shell when the designer-face shell editor handles bundles.",
+
+  "1": {
+    "_": "SOFT — engages the user directly. Reads context; produces vapour reply (chat) or proposes liquid (staged for user commit). Never writes substrate directly.",
+    "1": {
+      "_": "soft.character — thinking partner. Reflect, condense, surface options. propose_liquid when user converges on intent.",
+      "1": "scoop: shell:1.1, beach:1, beach:3, beach:_label, presence",
+      "2": "tools: bsp(read-only), propose_liquid",
+      "3": "output: vapour (default) | liquid (on propose)"
+    },
+    "2": {
+      "_": "soft.author — creation partner for shared surfaces (frame discs, scene underscores, pool purposes, passport text). Walk peers' published content for inspiration; draft in user's voice.",
+      "1": "scoop: shell:1.2, beach:_, frame:*:_, pool:*:_, passport:*",
+      "2": "tools: bsp(read-only), propose_liquid",
+      "3": "output: vapour (default) | liquid (on draft)"
+    },
+    "3": {
+      "_": "soft.designer — shell editor. User is configuring CADO gates, synthesis recipes, bundle definitions. Walk whetstone:3 for defaults; propose shell deltas as liquid.",
+      "1": "scoop: shell:*, whetstone:3, bundles",
+      "2": "tools: bsp(read-only), propose_liquid",
+      "3": "output: vapour (default) | liquid (shell delta proposal)"
+    },
+    "4": {
+      "_": "soft.observer — curator. Read-only across the beach; surface patterns, themes, gaps. Never propose_liquid; suggest face switch if user wants to act.",
+      "1": "scoop: beach:1, beach:2, beach:3, frame:*, pool:*, presence",
+      "2": "tools: bsp(read-only)",
+      "3": "output: vapour only"
+    }
+  },
+
+  "2": {
+    "_": "MEDIUM — engages at commit. Reads liquid in scope; synthesises solid. Convention precedence: block:_synthesis_recipe → beach:_synthesis_recipe → shell:1.<face>.synthesis → ecosystem default.",
+    "1": {
+      "_": "medium.character — personal solid. Reframe the user's own commitment in light of recent solid at this address.",
+      "1": "scoop: shell:1.1.synthesis, beach:_synthesis_recipe, beach:1, beach:3, presence",
+      "2": "mode: personal",
+      "3": "output: solid:beach:1 (or frame:position.2 if in-frame)"
+    },
+    "2": {
+      "_": "medium.author — shared solid. Produce frame-disc-quality artifact representing this contribution.",
+      "1": "scoop: shell:1.2.synthesis, beach:_synthesis_recipe, frame:*:_, beach:3",
+      "2": "mode: personal",
+      "3": "output: solid:beach:1 (or frame:position.2 if in-frame; frame:_synthesis if scene-level)"
+    },
+    "3": {
+      "_": "medium.designer — config delta. Synthesis would mangle JSON edits; default bypass. Override per-recipe if explicit.",
+      "1": "scoop: shell:1.3.synthesis",
+      "2": "mode: bypass",
+      "3": "output: solid:shell:* (raw write)"
+    },
+    "4": {
+      "_": "medium.observer — does not commit. Observer face is read-only by design.",
+      "1": "scoop: (none)",
+      "2": "mode: blocked",
+      "3": "output: none"
+    }
+  },
+
+  "3": {
+    "_": "HARD — admin agent for the user. Keeps soft/medium bundles' address lists current as semantic state shifts. Ensures scooped context still resolves; proposes ecosystem-level changes when solid content implies them. Runs on a slower cadence (cron / event-trigger). Not yet wired in client.",
+    "1": "scoop: shell:*, beach:_, recent solid",
+    "2": "operation: validate bundles, propose address list updates",
+    "3": "output: solid:shell:bundle:* (proposes; user confirms)"
+  },
+
+  "4": {
+    "_": "RUNTIME PLACEHOLDERS used by the bundle resolver:",
+    "1": "${beach} — current_beach (federated URL or commons agent_id)",
+    "2": "${address} — current pscale coordinate at the beach",
+    "3": "${frame} — current_frame block name (null if not in-frame)",
+    "4": "${handle} — user's agent_id",
+    "5": "${face} — active CADO face",
+    "6": "${position} — entity_position (in-frame only)"
+  }
+}
