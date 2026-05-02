@@ -672,11 +672,15 @@ export function Column(props: ColumnProps) {
         })
       }
     } else {
+      // Beach mode (no frame, no pool): show ALL substantive marks at this
+      // address — co-presence on a block is the universal social primitive.
+      // Solid is what has emerged here, not just what this user produced.
+      // Self vs peer is a UI tag for SolidZone, not a filter.
       for (const m of marks) {
         if (m.is_presence) continue
-        if (!identity.handle || m.agent_id !== identity.handle) continue
         out.push({
           id: `mark-${m.digit}`,
+          title: m.agent_id && m.agent_id !== identity.handle ? m.agent_id : undefined,
           content: m.text,
           timestamp: m.timestamp ? Date.parse(m.timestamp) : Date.now(),
           face: m.face,
