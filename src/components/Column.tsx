@@ -617,12 +617,20 @@ export function Column(props: ColumnProps) {
           timestamp: lp.timestamp ? Date.parse(lp.timestamp) : Date.now(),
         })
       }
-      for (const p of presence) {
+      // De-dupe presence per agent_id — multiple presence digits or stale
+      // entries can land for the same handle. Keep the freshest.
+      const seenPresence = new Set<string>()
+      const sortedPresence = [...presence].sort((a, b) =>
+        (b.timestamp || '').localeCompare(a.timestamp || ''))
+      for (const p of sortedPresence) {
         if (p.agent_id === identity.handle) continue
         if (p.agent_id && liquidByAgent.has(p.agent_id)) continue // already shown as liquid
+        const dedupeKey = p.agent_id || `anon-${p.timestamp || ''}`
+        if (seenPresence.has(dedupeKey)) continue
+        seenPresence.add(dedupeKey)
         cards.push({
-          id: `peer-${p.agent_id}`,
-          userId: `peer-${p.agent_id}`,
+          id: `peer-${dedupeKey}`,
+          userId: `peer-${dedupeKey}`,
           userName: p.agent_id,
           content: p.summary || `present at ${p.address || '/'}`,
           timestamp: p.timestamp ? Date.parse(p.timestamp) : Date.now(),

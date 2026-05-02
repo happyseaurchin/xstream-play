@@ -105,60 +105,37 @@ export async function synthesise(opts: SynthesiseOpts): Promise<SynthesiseResult
     return { text: opts.pendingLiquid, mode: opts.mode, bypassed: true };
   }
 
+  // Identity + scoop + recipe directive (the bundle's framing). No prose
+  // about how to write or what shape to output.
   const desc = mediumDescription().replace(/\{name\}/g, opts.agentId || 'the user');
-  const rules = mediumSlot('1') || 'Synthesise. Two to four sentences. Specific. Second person, present tense.';
+  const recipe = typeof opts.mode === 'string' ? opts.mode : opts.mode.freeform;
 
   const sections: string[] = [];
   sections.push(desc);
   sections.push('');
-  sections.push(`# Active face: ${opts.face}`);
-  sections.push('');
-  sections.push('# Synthesis directive');
-  if (opts.mode === 'personal') {
-    sections.push('PERSONAL mode. Synthesise the user\'s own commitment, recontextualised in light of what is established at this address. The output is the user\'s solid contribution — first person from their perspective, addressed to the address itself.');
-  } else if (opts.mode === 'quaker') {
-    sections.push('QUAKER mode. Read across all peer liquid in this scope (frame entities .1, or pool contributions). Produce a consensus statement that honours each contribution\'s intention without flattening tension. If contributions disagree, name the disagreement clearly. Do NOT pick a winner.');
-  } else {
-    sections.push('CUSTOM directive (from the user\'s shell): ' + opts.mode.freeform);
-  }
-  sections.push('');
-  sections.push('# Rules');
-  sections.push(rules);
-  sections.push('');
-  sections.push('# Engagement context');
-  sections.push(`Beach: ${opts.session.current_beach}`);
-  sections.push(`Address: ${opts.session.current_address || '(root)'}`);
+  sections.push(`agent_id: ${opts.agentId || '(anonymous)'}`);
+  sections.push(`face: ${opts.face}`);
+  sections.push(`recipe: ${recipe}`);
+  sections.push(`beach: ${opts.session.current_beach}`);
+  sections.push(`address: ${opts.session.current_address || '(root)'}`);
   if (opts.frame) {
-    sections.push(`In-frame: ${opts.session.current_frame} (entity ${opts.session.entity_position})`);
-    if (opts.frame.scene_underscore) sections.push(`Scene: ${opts.frame.scene_underscore}`);
+    sections.push(`frame: ${opts.session.current_frame} entity=${opts.session.entity_position}`);
+    if (opts.frame.scene_underscore) sections.push(`scene: ${opts.frame.scene_underscore}`);
     for (const e of opts.frame.entities) {
-      const me = e.position === opts.session.entity_position ? ' (the user)' : '';
-      if (e.liquid) sections.push(`  entity ${e.position}${me} liquid: ${e.liquid}`);
+      if (e.liquid) sections.push(`  entity ${e.position}${e.position === opts.session.entity_position ? '*' : ''} liquid: ${e.liquid}`);
     }
   } else if (opts.pool) {
-    sections.push(`In-pool: 2.${opts.pool.pool_digit} — ${opts.pool.purpose || '(no purpose set)'}`);
+    sections.push(`pool: 2.${opts.pool.pool_digit} — ${opts.pool.purpose || ''}`);
     for (const c of opts.pool.contributions) {
       sections.push(`  ${c.agent_id || '?'}: ${c.text}`);
     }
   } else {
-    if (opts.presence.length > 0) {
-      sections.push(`Present peers: ${opts.presence.map(p => p.agent_id).filter(a => a !== opts.agentId).join(', ') || '(none other than you)'}`);
-    }
-    const recent = opts.marks
-      .filter(m => !m.is_presence)
-      .slice(-5);
-    if (recent.length > 0) {
-      sections.push('Recent solid at this address:');
-      for (const m of recent) {
-        sections.push(`  ${m.agent_id || '?'}: ${m.text}`);
-      }
-    }
+    const recent = opts.marks.filter(m => !m.is_presence).slice(-5);
+    for (const m of recent) sections.push(`  ${m.agent_id || '?'}: ${m.text}`);
   }
   sections.push('');
-  sections.push('# What the user is committing');
+  sections.push(`# user committing:`);
   sections.push(opts.pendingLiquid);
-  sections.push('');
-  sections.push('Output plain text only. No JSON. No preamble. The synthesised solid only.');
 
   const systemPrompt = sections.join('\n');
   const r = await runBundle({

@@ -276,16 +276,9 @@ async function executeBsp(input: Record<string, any>, ctx: ExecutorContext): Pro
   }
   const isWrite = input.content !== undefined;
 
-  // Soft never writes to substrate. To propose into liquid, use propose_liquid.
-  // Substrate edits happen at commit-time via medium-LLM synthesis, not from
-  // soft directly — soft walks (reads) and proposes; the user (or medium)
-  // commits.
-  if (isWrite) {
-    return JSON.stringify({
-      ok: false,
-      error: 'soft-LLM is read-only on the substrate. Use propose_liquid to put your proposal into the liquid layer where it pools with peers; the user clicks commit to fire medium synthesis.',
-    });
-  }
+  // No hardcoded restriction on writes. The LLM is equipped with bsp-mcp
+  // and the user's session secret; gating, if any, is the LLM's reading
+  // of the user's shell — not a refusal here.
 
   const params: BspParams = {
     agent_id: input.agent_id,
@@ -480,15 +473,13 @@ export function buildSoftSystemPrompt(opts: {
   const slot2 = softAgentSlotLabel('2') || 'Frame: present agents, recent marks, sed stack at address.';
   const slot3 = softAgentSlotLabel('3') || 'Solid history: last 3 solids at this address.';
 
+  // System prompt is data, not instruction. Identity + scoop only. Tool
+  // semantics live in the tool schemas; behaviour shaping (persona, gates,
+  // any custom directives) lives in the user's shell which is part of the
+  // scoop. No discipline lectures, no pedagogical scaffolding.
   const sections: string[] = [];
   sections.push(desc);
   sections.push('');
-  sections.push('# CADO face — role for this turn (from bundles:1.<digit>)');
-  sections.push(readFaceRole(opts.face));
-  sections.push('');
-  sections.push(FACE_DISCIPLINE);
-  sections.push('');
-  sections.push('# Active context');
   sections.push(`agent_id: ${opts.agentId || '(anonymous)'}`);
   sections.push(`face: ${opts.face}`);
   sections.push('');
@@ -500,29 +491,6 @@ export function buildSoftSystemPrompt(opts: {
   sections.push('');
   sections.push(`# ${slot3}`);
   sections.push(opts.ctx.solid_history);
-  sections.push('');
-  sections.push('# How to use bsp — read carefully');
-  sections.push('You hold six tools. The primary is `bsp`. Reads are free; writes pass through commit-gates derived from the user\'s shell at the active face. The five non-geometric primitives (pscale_create_collective, pscale_register, pscale_grain_reach, pscale_key_publish, pscale_verify_rider) are wired via MCP-over-HTTP to bsp.hermitcrab.me. They consume passphrases and create permanent positions — only invoke when the user explicitly asks for them, and never assume their session secret without being told to use it.');
-  sections.push('');
-  sections.push('Walking discipline — pick the right SHAPE (whetstone:2):');
-  sections.push(' - shape derives from spindle length and pscale_attention. P_att = P_end → point. P_att = P_end-1 → ring. P_att < P_end-1 (e.g. negative) → dir/subtree. spindle="" with no P_att → whole. With trailing star → walks the hidden directory.');
-  sections.push(' - bsp() responses always include `raw` (the whole block) alongside `data` (the walked shape). If `data` looks thin, look at `raw` and walk it yourself in your head before deciding the address is empty.');
-  sections.push('');
-  sections.push('Concrete recipes:');
-  sections.push(' - Enumerate marks at a beach: bsp(agent_id=<beach-url>, block="beach", spindle="1", pscale_attention=-2). Returns the dir at "1" — the marks ring as {1: <mark>, 2: <mark>, ...}.');
-  sections.push(' - Each mark is string-or-{_, 1, 2, 3}. The _ IS the mark content; 1/2/3 tag agent / address / timestamp.');
-  sections.push(' - Filter presence vs substantive: presence underscores match /^\\S+ @ \\S+ — present at /. Filter those OUT when listing contributions; keep them when listing presence/peers.');
-  sections.push(' - Read a single mark: bsp(spindle="1.<n>", pscale_attention=-1) returns the {_, 1, 2, 3} object.');
-  sections.push(' - Pool ring: bsp(agent_id=<beach-url>, block="beach", spindle="2.<N>", pscale_attention=-2).');
-  sections.push(' - Passport: bsp(agent_id=<them>, block="passport"). Whole block. _ description, 1 offers, 2 needs, 9 keys.');
-  sections.push(' - Frame disc: bsp(agent_id=<beach-url>, block="frame:<scene>"). Whole block. Entities at 1..9 with .1 liquid / .2 solid; _synthesis at root.');
-  sections.push(' - Cold contact (inbox replacement): drop a structured mark on a beach the recipient watches.');
-  sections.push('');
-  sections.push('When the user asks "what is here?" / "who is around?" / "what has X been thinking about?" — WALK the substrate at the right depth. If your first walk only returned a description, walk deeper. Do not invent. If a block is empty or absent after a real walk, name the gap.');
-  sections.push('');
-  sections.push('Note: the # Recent solid section above already reflects pre-filtered substantive marks at the user\'s current address. If it lists marks, those ARE present — do not contradict it by claiming the beach is empty.');
-  sections.push('');
-  sections.push('Keep your final answer 1–3 sentences, second-person present tense. Brief, grounded, conversational. Never narrate. Reflect, condense, surface options.');
 
   return sections.join('\n');
 }
