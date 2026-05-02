@@ -491,7 +491,7 @@ export function ConstructionButton({
             {/* Input row + vertical action column */}
             <div className="flex items-stretch gap-2">
               {/* Left: query + textarea (stacked) */}
-              <div className="flex-1 flex items-start gap-2 bg-background/50 rounded-lg p-2">
+              <div className="flex-1 flex items-stretch gap-2 bg-background/50 rounded-lg p-2">
                 {/* Query button (Cmd+Enter) */}
                 <button
                   onClick={handleQuery}
@@ -510,16 +510,17 @@ export function ConstructionButton({
                   )}
                 </button>
 
-                {/* Textarea field */}
-                <div className="relative flex-1">
+                {/* Textarea field — fills the panel's vertical space (the
+                    parent row stretches to match the action column on the
+                    right). min-h keeps it readable when the panel is short. */}
+                <div className="relative flex-1 flex">
                   <textarea
                     ref={textareaRef}
                     value={value}
                     onChange={(e) => onChange(e.target.value)}
                     onKeyDown={handleKeyDown}
                     placeholder={placeholder}
-                    rows={3}
-                    className="w-full bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground/50 resize-none pr-6"
+                    className="w-full h-full min-h-[10rem] bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground/50 resize-none pr-6"
                   />
                   {value && (
                     <button
