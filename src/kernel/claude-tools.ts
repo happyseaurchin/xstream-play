@@ -31,6 +31,7 @@ import { bsp as walkLocal, collectUnderscore } from './bsp';
 import { getBlock } from './block-store';
 import type { BeachSession, MarkRow, FrameView } from './beach-session';
 import { messagesApi, logFilmstrip } from './claude-direct';
+import { runBundle } from './run-bundle';
 
 // ── Tool schemas ──
 
@@ -621,10 +622,14 @@ export interface SoftLLMResult {
   toolCalls: Array<{ name: string; input: unknown }>;
 }
 
+/**
+ * Soft bundle entry point — composes context (scoop) + builds system prompt
+ * (framing) + dispatches to the unified runBundle primitive. This is a thin
+ * wrapper now; the loop body lives in run-bundle.ts. Future: replace the
+ * scoop+framing composition with reading bundles:1.<face> directly and
+ * resolving its declared scoop list.
+ */
 export async function callClaudeWithTools(opts: SoftLLMOptions): Promise<SoftLLMResult> {
-  const maxTurns = opts.maxTurns ?? 8;
-  const maxTokens = opts.maxTokens ?? 1024;
-
   const ctx = composeContext({
     session: opts.session,
     shell: opts.shell,
@@ -639,7 +644,6 @@ export async function callClaudeWithTools(opts: SoftLLMOptions): Promise<SoftLLM
     face: opts.face,
     ctx,
   });
-
   const executorCtx: ExecutorContext = {
     session: opts.session,
     shell: opts.shell,
@@ -648,81 +652,23 @@ export async function callClaudeWithTools(opts: SoftLLMOptions): Promise<SoftLLM
     onProposeLiquid: opts.onProposeLiquid,
   };
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const messages: Array<{ role: 'user' | 'assistant'; content: any }> = [
-    { role: 'user', content: opts.userMessage },
-  ];
-  const toolCalls: Array<{ name: string; input: unknown }> = [];
-  let lastUsage: { input_tokens?: number; output_tokens?: number } | undefined;
-  let lastStop: string | null = null;
-
-  for (let turn = 0; turn < maxTurns; turn++) {
-    const data = await messagesApi(opts.apiKey, {
-      model: opts.model,
-      max_tokens: maxTokens,
-      system: systemPrompt,
-      tools: BSP_TOOLS,
-      messages,
-    });
-    lastUsage = data.usage;
-    lastStop = data.stop_reason;
-
-    const content = data.content || [];
-    messages.push({ role: 'assistant', content });
-
-    if (data.stop_reason === 'tool_use') {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const toolUses = content.filter((c: any) => c.type === 'tool_use');
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const toolResults: any[] = [];
-      for (const tu of toolUses) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const t = tu as unknown as { id: string; name: string; input: any };
-        toolCalls.push({ name: t.name, input: t.input });
-        opts.onToolCall?.(t.name, t.input);
-        const result = await executeTool(t.name, t.input, executorCtx);
-        toolResults.push({
-          type: 'tool_result',
-          tool_use_id: t.id,
-          content: result,
-        });
-      }
-      messages.push({ role: 'user', content: toolResults });
-      continue;
-    }
-
-    // end_turn or other terminal
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const text = content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n').trim();
-    logFilmstrip({
-      model: opts.model,
-      system_prompt: systemPrompt,
-      user_prompt: opts.userMessage,
-      response: text,
-      max_tokens: maxTokens,
-      input_tokens: lastUsage?.input_tokens ?? null,
-      output_tokens: lastUsage?.output_tokens ?? null,
-      stop_reason: lastStop,
-      extras: { tool_calls: toolCalls.length, turns: turn + 1 },
-    });
-    return { text: text || '(no response)', turns: turn + 1, toolCalls };
-  }
-
-  // Max turns exhausted — return whatever final text we have.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant') as any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const text = lastAssistant?.content?.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n').trim() || '';
-  logFilmstrip({
+  const r = await runBundle({
+    apiKey: opts.apiKey,
     model: opts.model,
-    system_prompt: systemPrompt,
-    user_prompt: opts.userMessage,
-    response: text || '(max turns)',
-    max_tokens: maxTokens,
-    input_tokens: lastUsage?.input_tokens ?? null,
-    output_tokens: lastUsage?.output_tokens ?? null,
-    stop_reason: lastStop,
-    extras: { tool_calls: toolCalls.length, turns: maxTurns, exhausted: true },
-  });
-  return { text: text || '(soft-LLM exhausted tool-use turns — try a more focused question)', turns: maxTurns, toolCalls };
+    systemPrompt,
+    tools: BSP_TOOLS,
+    toolExecutor: (name, input) => executeTool(name, input, executorCtx),
+    maxTurns: opts.maxTurns ?? 8,
+    maxTokens: opts.maxTokens ?? 1024,
+    telemetry: { tier: 'soft', face: opts.face },
+    onToolCall: opts.onToolCall,
+  }, opts.userMessage);
+
+  return {
+    text: r.text === '(bundle exhausted tool-use turns)'
+      ? '(soft-LLM exhausted tool-use turns — try a more focused question)'
+      : r.text,
+    turns: r.turns,
+    toolCalls: r.toolCalls,
+  };
 }

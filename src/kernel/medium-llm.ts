@@ -22,9 +22,9 @@
 import type { Face } from '../lib/bsp-client';
 import type { BeachSession, MarkRow, FrameView, PoolView } from './beach-session';
 import type { PresenceMark } from '../lib/bsp-client';
-import { messagesApi, logFilmstrip } from './claude-direct';
 import { getBlock } from './block-store';
 import { bsp as walkLocal, collectUnderscore } from './bsp';
+import { runBundle } from './run-bundle';
 
 export type SynthMode = 'personal' | 'quaker' | 'bypass' | 'blocked' | { freeform: string };
 
@@ -161,32 +161,20 @@ export async function synthesise(opts: SynthesiseOpts): Promise<SynthesiseResult
   sections.push('Output plain text only. No JSON. No preamble. The synthesised solid only.');
 
   const systemPrompt = sections.join('\n');
-  const data = await messagesApi(opts.apiKey, {
+  const r = await runBundle({
+    apiKey: opts.apiKey,
     model: opts.model,
-    max_tokens: 600,
-    system: systemPrompt,
-    messages: [{ role: 'user', content: 'Synthesise.' }],
-  });
-  const text = (data.content || [])
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    .filter((c: any) => c.type === 'text')
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    .map((c: any) => c.text)
-    .join('\n')
-    .trim();
-  logFilmstrip({
-    model: opts.model,
-    system_prompt: systemPrompt,
-    user_prompt: opts.pendingLiquid,
-    response: text,
-    max_tokens: 600,
-    input_tokens: data.usage?.input_tokens ?? null,
-    output_tokens: data.usage?.output_tokens ?? null,
-    stop_reason: data.stop_reason ?? null,
-    extras: { tier: 'medium', mode: typeof opts.mode === 'string' ? opts.mode : 'freeform', face: opts.face },
-  });
+    systemPrompt,
+    maxTurns: 1,
+    maxTokens: 600,
+    telemetry: {
+      tier: 'medium',
+      face: opts.face,
+      extras: { mode: typeof opts.mode === 'string' ? opts.mode : 'freeform' },
+    },
+  }, 'Synthesise.');
   return {
-    text: text || opts.pendingLiquid, // fall back to raw on empty response
+    text: r.text === '(no response)' ? opts.pendingLiquid : r.text,
     mode: opts.mode,
     bypassed: false,
   };
