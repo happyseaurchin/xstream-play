@@ -27,7 +27,8 @@ import { ViewerDrawer } from './ViewerDrawer'
 import { InboxDrawer } from './InboxDrawer'
 import { BeachKernel, type InboxItem } from '../kernel/beach-kernel'
 import { createBeachSession, type BeachSession, type MarkRow, type FrameView, type PoolView, type LiquidPeer } from '../kernel/beach-session'
-import { setHiddenRef, beachToRef, resolveRef, bsp, pscaleRegister, pscaleGrainReach, pscaleKeyPublish, type AgentShell, type PresenceMark, type PscaleNode } from '../lib/bsp-client'
+import { setHiddenRef, beachToRef, resolveRef, bsp, pscaleRegister, pscaleGrainReach, pscaleKeyPublish, pscaleVerifyRider, pscaleCreateCollective, type AgentShell, type PresenceMark, type PscaleNode } from '../lib/bsp-client'
+import { SubstrateTray, type SubstrateAct } from './SubstrateTray'
 import { joinVapourChannel, deriveScope, type VapourChannelHandle, type VapourBroadcast } from '../lib/realtime'
 import { getBlock, injectBlock } from '../kernel/block-store'
 import { callClaudeWithTools, callClaudeViaMcpConnector, composeContext, buildSoftSystemPrompt } from '../kernel/claude-tools'
@@ -65,6 +66,10 @@ export interface ColumnInputs {
 export interface ColumnProps {
   id: string
   identity: { handle: string; secret: string; apiKey: string }
+  /** Session-stable pseudo-handle (`anon-XXXXXX`) used as the substrate
+   * agent_id when identity.handle is empty. Lets anonymous tabs participate
+   * in presence/liquid/vapour without typing anything. */
+  anonId: string
   shell: AgentShell | null
   inboxAcks: Set<string>
   onAckInbox: (key: string) => void
@@ -81,7 +86,12 @@ export interface ColumnProps {
 }
 
 export function Column(props: ColumnProps) {
-  const { id, identity, shell, inboxAcks, onAckInbox, isFocused, onFocus, onClose, onInputsChange } = props
+  const { id, identity, anonId, shell, inboxAcks, onAckInbox, isFocused, onFocus, onClose, onInputsChange } = props
+  // Effective substrate id: real handle if typed, else stable anon pseudo.
+  // Used everywhere the kernel writes to the substrate or joins the vapour
+  // channel. UI continues to display identity.handle (or "anon" when empty).
+  const effectiveAgentId = identity.handle || anonId
+  const isAnonymous = !identity.handle
 
   // Per-column persistent state. Restored from localStorage on mount; falls
   // back to props (initialFace/initialBeach/initialAddress) on first run.
@@ -119,8 +129,41 @@ export function Column(props: ColumnProps) {
 
   // Live peer vapour
   const [peerVapour, setPeerVapour] = useState<Record<string, VapourBroadcast>>({})
+  // Vapour transport status — surfaced as a header indicator so the user can
+  // see at a glance whether two-browser vapour will work or is silently dead.
+  // 'pending' = joining, 'subscribed' = live, 'no-transport' = Supabase env
+  // vars missing, 'error' = subscribe failed (auth / network / RLS).
+  const [vapourStatus, setVapourStatus] = useState<'pending' | 'subscribed' | 'no-transport' | 'error'>('pending')
   const vapourChannelRef = useRef<VapourChannelHandle | null>(null)
   const vapourBroadcastDebounceRef = useRef<number | null>(null)
+
+  // Per-handle vapour mute. Scoped to the user's own handle so muting "noisy"
+  // in one tab persists to every column for that user; anonymous tabs skip
+  // muting (their own peers are likely impossible to identify reliably).
+  const muteKey = identity.handle ? `xstream:vapour-mutes:${identity.handle}` : null
+  const [mutedHandles, setMutedHandles] = useState<Set<string>>(() => {
+    if (!muteKey) return new Set()
+    try {
+      const raw = localStorage.getItem(muteKey)
+      return new Set(raw ? JSON.parse(raw) as string[] : [])
+    } catch { return new Set() }
+  })
+  useEffect(() => {
+    if (!muteKey) { setMutedHandles(new Set()); return }
+    try {
+      const raw = localStorage.getItem(muteKey)
+      setMutedHandles(new Set(raw ? JSON.parse(raw) as string[] : []))
+    } catch { setMutedHandles(new Set()) }
+  }, [muteKey])
+  const toggleMute = useCallback((aid: string) => {
+    if (!muteKey || !aid) return
+    setMutedHandles(prev => {
+      const next = new Set(prev)
+      if (next.has(aid)) next.delete(aid); else next.add(aid)
+      try { localStorage.setItem(muteKey, JSON.stringify([...next])) } catch { /* quota */ }
+      return next
+    })
+  }, [muteKey])
 
   const [pendingLiquid, setPendingLiquid] = useState<string | null>(null)
 
@@ -157,12 +200,13 @@ export function Column(props: ColumnProps) {
   // Session — kernel mirrors its fields
   const [session, setSession] = useState<BeachSession>(() =>
     createBeachSession({
-      agent_id: identity.handle,
+      agent_id: effectiveAgentId,
       secret: identity.secret,
       beach,
       address: currentAddress,
       api_key: identity.apiKey || null,
       face,
+      is_anonymous: isAnonymous,
     })
   )
 
@@ -216,33 +260,45 @@ export function Column(props: ColumnProps) {
     setSession(prev => {
       const next: BeachSession = {
         ...prev,
-        agent_id: identity.handle,
+        agent_id: effectiveAgentId,
         secret: identity.secret,
+        is_anonymous: isAnonymous,
         api_key: identity.apiKey || null,
         current_beach: beach,
         current_address: currentAddress,
         face,
       }
       if (kernelRef.current) {
+        const prevAgentId = kernelRef.current.session.agent_id
         kernelRef.current.session.agent_id = next.agent_id
         kernelRef.current.session.secret = next.secret
+        kernelRef.current.session.is_anonymous = next.is_anonymous
         kernelRef.current.session.api_key = next.api_key
         kernelRef.current.setBeach(next.current_beach)
         kernelRef.current.setAddress(next.current_address)
         kernelRef.current.setFace(next.face)
+        // Logout / handle-switch: actively release the previous identity's
+        // presence + liquid slots so peers see them depart immediately
+        // (not after the 30s staleness window).
+        if (prevAgentId && prevAgentId !== next.agent_id) {
+          kernelRef.current.releasePresence(prevAgentId).catch(() => {})
+        }
       }
       return next
     })
-  }, [identity.handle, identity.secret, identity.apiKey, beach, currentAddress, face])
+  }, [effectiveAgentId, isAnonymous, identity.secret, identity.apiKey, beach, currentAddress, face])
 
   // Live peer vapour — channel scope keyed by (beach, address, frame, entity).
+  // Anonymous tabs join too, using their stable anon-XXXXXX id, so two
+  // strangers at the same address see each other's keystrokes without
+  // either typing a handle.
   useEffect(() => {
     if (vapourChannelRef.current) {
       vapourChannelRef.current.leave().catch(() => {})
       vapourChannelRef.current = null
     }
     setPeerVapour({})
-    if (!identity.handle) return
+    setVapourStatus('pending')
     const scope = deriveScope({
       beach,
       address: currentAddress,
@@ -251,18 +307,20 @@ export function Column(props: ColumnProps) {
     })
     const handle = joinVapourChannel({
       scope,
-      agent_id: identity.handle,
+      agent_id: effectiveAgentId,
       face,
       onPeer: msg => { setPeerVapour(prev => ({ ...prev, [msg.agent_id]: msg })) },
+      onStatus: (status) => setVapourStatus(status),
     })
     if (handle) vapourChannelRef.current = handle
+    else setVapourStatus('no-transport')
     return () => {
       if (vapourChannelRef.current) {
         vapourChannelRef.current.leave().catch(() => {})
         vapourChannelRef.current = null
       }
     }
-  }, [identity.handle, beach, currentAddress, session.current_frame, session.entity_position, face])
+  }, [effectiveAgentId, beach, currentAddress, session.current_frame, session.entity_position, face])
 
   // Broadcast our vapour as it changes, debounced ~80 ms.
   useEffect(() => {
@@ -357,19 +415,22 @@ export function Column(props: ColumnProps) {
           onProposeLiquid: async (proposed: string) => {
             const k = kernelRef.current
             if (!k) return { ok: false, scope: 'no-kernel', error: 'kernel not ready' }
+            if (face === 'observer') {
+              return { ok: false, scope: 'observer', error: 'Observer face is read-only — propose_liquid blocked.' }
+            }
             if (k.session.current_frame && k.session.entity_position) {
               const r = await k.commitLiquid(proposed)
               return r.ok
                 ? { ok: true, scope: `frame:${k.session.current_frame}:${k.session.entity_position}.1 (shared with peers in-frame)` }
                 : { ok: false, scope: 'frame', error: r.error }
             }
-            // Beach mode: shared liquid at beach:3.<presence-digit>. Visible
-            // to peers at the same address (60s staleness window). Also stage
-            // locally so the user sees it as their pending card.
+            // Beach mode: shared liquid at beach:7.<address>.<your-digit>.
+            // Visible to peers at the same address (60s staleness window).
+            // Also stage locally so the user sees it as their pending card.
             setPendingLiquid(proposed)
             const r = await k.writeBeachLiquid(proposed)
             return r.ok
-              ? { ok: true, scope: `beach:3.<your-digit> (shared with peers at this address)` }
+              ? { ok: true, scope: `beach:7.${k.session.current_address || '<root>'}.<your-digit> (shared with peers at this address)` }
               : { ok: false, scope: 'beach-liquid', error: r.error }
           },
         })
@@ -403,6 +464,11 @@ export function Column(props: ColumnProps) {
       id: Date.now().toString(), originalInput: text, text: msg,
       softType: 'info', face, frameId: null,
     })
+
+    // Observer face is read-only across V/L/S. Identity/substrate verbs
+    // (passport / register / engage / pool / keys) are still allowed below
+    // because they're sovereign acts of the user, not engagement on the
+    // shared frame. Only the default fallback (text → liquid) is gated.
 
     const passportMatch = trimmed.match(/^passport[:\s]+([\s\S]+)$/i)
     if (passportMatch) {
@@ -494,11 +560,18 @@ export function Column(props: ColumnProps) {
       return
     }
 
+    if (face === 'observer') {
+      reportInfo('Observer face is read-only. Switch to character / author / designer to stage liquid.')
+      return
+    }
+
     setPendingLiquid(trimmed)
     setVapor('')
-    // Beach mode: also publish to the shared liquid layer at beach:3 so
-    // peers at this address see it. In-frame, the entity's .1 slot is
-    // written at commit-time via kernel.commitLiquid (different path).
+    // Beach mode: also publish to the location-keyed liquid layer at
+    // beach:7.<address>.<digit> so peers at this address see it. Anonymous
+    // tabs publish too — the anon-XXXXXX pseudo-handle is what identifies
+    // the slot. In-frame, the entity's .1 slot is written at commit-time
+    // via kernel.commitLiquid (different path).
     if (kernelRef.current && !kernelRef.current.session.current_frame) {
       kernelRef.current.writeBeachLiquid(trimmed).catch(() => {})
     }
@@ -561,7 +634,7 @@ export function Column(props: ColumnProps) {
       await kernelRef.current.commitLiquid(textToWrite)
     } else {
       await kernelRef.current.dropMark(textToWrite)
-      // Clear our slot in beach:3 so peers stop seeing the liquid we just
+      // Clear our liquid slot so peers stop seeing the liquid we just
       // promoted to a solid mark. Best-effort — failure is logged but
       // doesn't block the commit.
       kernelRef.current.clearMyBeachLiquid().catch(() => {})
@@ -572,6 +645,53 @@ export function Column(props: ColumnProps) {
   const handleCopyToVapor = useCallback((text: string) => {
     setVapor(text)
   }, [])
+
+  // Substrate tray — direct calls to the five non-geometric primitives.
+  // Each act surfaces a result via softResponse (info type) so the user sees
+  // success/failure inline without leaving the column.
+  const handleTrayAct = useCallback(async (act: SubstrateAct) => {
+    const reportInfo = (msg: string) => setSoftResponse({
+      id: Date.now().toString(), originalInput: act.kind, text: msg,
+      softType: 'info', face, frameId: null,
+    })
+    if (!identity.handle && act.kind !== 'verify_rider') {
+      reportInfo('Identify first (button → Identity).')
+      return
+    }
+    if (!identity.secret && act.kind !== 'verify_rider') {
+      reportInfo('Passphrase required for substrate writes.')
+      return
+    }
+    try {
+      if (act.kind === 'register') {
+        reportInfo(`📝 registering at sed:${act.collective}…`)
+        const r = await pscaleRegister({ collective: act.collective, declaration: act.declaration, passphrase: identity.secret })
+        reportInfo(r.ok ? `📝 ${r.message}` : `register failed: ${r.message}`)
+      } else if (act.kind === 'grain_reach') {
+        reportInfo(`🤝 reaching to ${act.partner}…`)
+        const r = await pscaleGrainReach({
+          agent_id: identity.handle, partner_agent_id: act.partner,
+          description: act.purpose || `${identity.handle}↔${act.partner}`,
+          my_side_content: act.purpose || '(reaching)', my_passphrase: identity.secret,
+        })
+        reportInfo(r.ok ? `🤝 ${r.message}` : `reach failed: ${r.message}`)
+      } else if (act.kind === 'key_publish') {
+        reportInfo(`🔑 deriving + publishing keys…`)
+        const r = await pscaleKeyPublish({ agent_id: identity.handle, secret: identity.secret })
+        reportInfo(r.ok ? `🔑 ${r.message}` : `key publish failed: ${r.message}`)
+      } else if (act.kind === 'create_collective') {
+        reportInfo(`🌐 creating sed:${act.name}…`)
+        const r = await pscaleCreateCollective({ collective: act.name, conventions: act.description, creator_passphrase: identity.secret })
+        reportInfo(r.ok ? `🌐 ${r.message}` : `create_collective failed: ${r.message}`)
+      } else if (act.kind === 'verify_rider') {
+        reportInfo(`✓ verifying ${act.rider_id}…`)
+        const r = await pscaleVerifyRider({ sender_agent_id: act.rider_id })
+        reportInfo(r.ok ? `✓ ${r.message}` : `verify failed: ${r.message}`)
+      }
+    } catch (e) {
+      reportInfo(`tray error: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }, [face, identity.handle, identity.secret])
 
   // ── Derived data for the zones ──
 
@@ -599,13 +719,13 @@ export function Column(props: ColumnProps) {
         })
       }
     } else {
-      // Beach mode: peer liquid from beach:3 takes precedence over bare
-      // presence. A presence entry without a liquid peer for the same agent
-      // shows up as "present" (no text). A liquid peer replaces that with the
-      // peer's current liquid text.
+      // Beach mode: peer liquid from beach:7.<address> takes precedence over
+      // bare presence. A presence entry without a liquid peer for the same
+      // agent shows up as "present" (no text). A liquid peer replaces that
+      // with the peer's current liquid text.
       const liquidByAgent = new Map<string, LiquidPeer>()
       for (const lp of peerLiquid) {
-        if (lp.agent_id === identity.handle) continue
+        if (lp.agent_id === effectiveAgentId) continue
         if (lp.agent_id) liquidByAgent.set(lp.agent_id, lp)
       }
       for (const lp of liquidByAgent.values()) {
@@ -623,7 +743,7 @@ export function Column(props: ColumnProps) {
       const sortedPresence = [...presence].sort((a, b) =>
         (b.timestamp || '').localeCompare(a.timestamp || ''))
       for (const p of sortedPresence) {
-        if (p.agent_id === identity.handle) continue
+        if (p.agent_id === effectiveAgentId) continue
         if (p.agent_id && liquidByAgent.has(p.agent_id)) continue // already shown as liquid
         const dedupeKey = p.agent_id || `anon-${p.timestamp || ''}`
         if (seenPresence.has(dedupeKey)) continue
@@ -701,7 +821,11 @@ export function Column(props: ColumnProps) {
   const VAPOUR_STALENESS_MS = 12_000
   const now = Date.now()
   const vapourEntries: VapourEntry[] = Object.values(peerVapour)
-    .filter(p => p.vapour_text.trim().length > 0 && (now - p.ts) < VAPOUR_STALENESS_MS)
+    .filter(p =>
+      p.vapour_text.trim().length > 0
+      && (now - p.ts) < VAPOUR_STALENESS_MS
+      && !mutedHandles.has(p.agent_id)
+    )
     .map(p => ({
       id: `peer-vapour-${p.agent_id}`,
       userId: p.agent_id,
@@ -868,6 +992,9 @@ export function Column(props: ColumnProps) {
 
         <div className="ml-auto flex items-center gap-1.5 shrink-0">
           {identity.handle && (
+            <SubstrateTray agentId={identity.handle} onAct={handleTrayAct} />
+          )}
+          {identity.handle && (
             <button
               onClick={() => setInboxOpen(v => !v)}
               className={`text-xs px-2 py-0.5 rounded border border-border/50 transition-colors relative ${inboxOpen ? 'bg-accent text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
@@ -885,6 +1012,19 @@ export function Column(props: ColumnProps) {
           </button>
           <span className="text-xs text-muted-foreground" title="presence at this address">
             {presence.length > 0 ? `🟢 ${presence.length}` : '·'}
+          </span>
+          <span
+            className="text-xs"
+            title={
+              vapourStatus === 'subscribed' ? 'vapour channel live'
+              : vapourStatus === 'pending' ? 'vapour subscribing…'
+              : vapourStatus === 'no-transport' ? 'vapour transport unavailable (Supabase env vars missing?)'
+              : 'vapour subscribe failed (network / auth / RLS)'
+            }
+          >
+            {vapourStatus === 'subscribed' ? '☁️'
+              : vapourStatus === 'pending' ? '☁️…'
+              : '⚠️'}
           </span>
           {onClose && (
             <button
@@ -916,6 +1056,7 @@ export function Column(props: ColumnProps) {
           entries={vapourEntries}
           softResponse={softPending ? null : softResponse}
           onDismissSoftResponse={() => setSoftResponse(null)}
+          onMutePeer={muteKey ? toggleMute : undefined}
         />
 
         <ViewerDrawer

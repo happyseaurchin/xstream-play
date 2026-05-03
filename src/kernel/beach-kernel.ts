@@ -159,9 +159,42 @@ function readPool(rawBlock: PscaleNode | null, poolDigit: string): PoolView | nu
   return { pool_digit: poolDigit, purpose, synthesis, synthesis_envelope: envelope, contributions };
 }
 
-/** Project the beach-root shared-liquid ring at beach:3 from the same raw
- * payload the marks/pool reads use. Filters by address prefix and staleness
- * so peers who have moved to another address or gone idle drop out. */
+/** Detect whether a node is a structured liquid/mark slot (has the canonical
+ * {_, 1, 2, 3} shape). Used to recognise leaf slots while walking the
+ * address-rooted liquid tree at any depth. */
+function isLiquidSlot(node: PscaleNode): node is Record<string, PscaleNode> {
+  if (typeof node !== 'object' || node === null) return false;
+  const o = node as Record<string, PscaleNode>;
+  return typeof o._ === 'string'
+    && typeof o['1'] === 'string'
+    && typeof o['2'] === 'string'
+    && typeof o['3'] === 'string';
+}
+
+/** Walk a sub-tree collecting every liquid-slot we encounter. Recurses into
+ * digit children only (numeric keys 1–9); never crosses into named child
+ * directories. Slots themselves are NOT recursed into — their content is
+ * terminal. */
+function collectLiquidSlots(node: PscaleNode, out: Array<{ digit: string; slot: Record<string, PscaleNode> }>): void {
+  if (typeof node !== 'object' || node === null) return;
+  const obj = node as Record<string, PscaleNode>;
+  for (const k of Object.keys(obj)) {
+    if (!/^[1-9]$/.test(k)) continue;
+    const child = obj[k];
+    if (isLiquidSlot(child)) {
+      out.push({ digit: k, slot: child as Record<string, PscaleNode> });
+    } else if (typeof child === 'object' && child !== null) {
+      collectLiquidSlots(child, out);
+    }
+  }
+}
+
+/** Project location-keyed liquid (beach:7.<address>.<digit>) — the ephemeral
+ * coordination ring sharded by address. Each present agent occupies one
+ * <digit> slot under their current_address. Visibility is address-prefix:
+ * a viewer at address X sees every slot whose stored address starts with X
+ * (so a root viewer sees everyone; a deep viewer sees only their region).
+ * The 60s staleness filter drops idle peers. */
 function readLiquid(
   rawBlock: PscaleNode | null,
   addressFilter: string,
@@ -170,28 +203,25 @@ function readLiquid(
 ): LiquidPeer[] {
   if (typeof rawBlock !== 'object' || rawBlock === null) return [];
   const block = rawBlock as Record<string, PscaleNode>;
-  const ringNode = block['3'];
-  if (typeof ringNode !== 'object' || ringNode === null) return [];
-  const ring = ringNode as Record<string, PscaleNode>;
+  const root = block['7'];
+  if (typeof root !== 'object' || root === null) return [];
+  const slots: Array<{ digit: string; slot: Record<string, PscaleNode> }> = [];
+  collectLiquidSlots(root, slots);
   const out: LiquidPeer[] = [];
-  for (let d = 1; d <= 9; d++) {
-    const k = String(d);
-    const slot = ring[k];
-    if (typeof slot !== 'object' || slot === null) continue;
-    const o = slot as Record<string, PscaleNode>;
-    const text = typeof o._ === 'string' ? (o._ as string) : '';
+  for (const { digit, slot } of slots) {
+    const text = typeof slot._ === 'string' ? (slot._ as string) : '';
     if (!text.trim()) continue; // empty slot — committed/cleared
-    const aid = typeof o['1'] === 'string' ? (o['1'] as string) : null;
-    const addr = typeof o['2'] === 'string' ? (o['2'] as string) : null;
-    const ts = typeof o['3'] === 'string' ? (o['3'] as string) : null;
-    const face = asFace(o['4']);
+    const aid = typeof slot['1'] === 'string' ? (slot['1'] as string) : null;
+    const addr = typeof slot['2'] === 'string' ? (slot['2'] as string) : null;
+    const ts = typeof slot['3'] === 'string' ? (slot['3'] as string) : null;
+    const face = asFace(slot['4']);
     if (addressFilter && addr && !addr.startsWith(addressFilter)) continue;
     if (ts) {
       const age = now - Date.parse(ts);
       if (Number.isFinite(age) && age > LIQUID_STALENESS_MS) continue;
     }
     out.push({
-      digit: k, agent_id: aid, address: addr, timestamp: ts,
+      digit, agent_id: aid, address: addr, timestamp: ts,
       text, face, is_self: !!aid && aid === selfAgentId,
     });
   }
@@ -284,6 +314,42 @@ export class BeachKernel {
    * from. v0.1: not enforced by substrate. */
   setFace(face: Face): void {
     this.session.face = face;
+  }
+
+  /** Hand off from one agent_id to another — typically logout (handle →
+   * anon-XXXXXX) or handle-switch. Writes empty to the previous agent_id's
+   * presence digit and liquid slot at the current address so peers see the
+   * old identity disappear immediately rather than waiting for the 30s
+   * staleness window. The new identity will claim a fresh presence digit on
+   * the next cycle naturally. Best-effort — failures are logged but never
+   * block the handoff. */
+  async releasePresence(prevAgentId: string): Promise<void> {
+    if (!prevAgentId) return;
+    const beach = this.session.current_beach;
+    const address = this.session.current_address;
+    try {
+      const digit = await getPresenceDigit(beach, prevAgentId);
+      const ts = new Date().toISOString();
+      // Empty presence mark — peers' read-side filter requires non-empty
+      // structured fields, so this looks "departed" to them.
+      await bsp({
+        agent_id: beach, block: 'beach', spindle: '1.' + digit,
+        content: { _: '', '1': prevAgentId, '2': address, '3': ts },
+      });
+      // Empty liquid slot at beach:7.<address>.<digit> so peers stop seeing
+      // any in-flight liquid from the old identity.
+      const liquidSpindle = address ? `7.${address}.${digit}` : `7.${digit}`;
+      await bsp({
+        agent_id: beach, block: 'beach', spindle: liquidSpindle,
+        content: { _: '', '1': prevAgentId, '2': address, '3': ts },
+      });
+      // Drop the cached digit so any future heartbeats by the same id
+      // re-claim cleanly rather than re-using the now-empty slot.
+      PRESENCE_DIGIT_CACHE.delete(`${beach}::${prevAgentId}`);
+      this.cb.onLog(`👋 released ${prevAgentId} presence at beach:1.${digit} and liquid:${liquidSpindle}`);
+    } catch (e) {
+      this.cb.onError(`presence release failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   /** Enter / leave a frame. */
@@ -380,23 +446,31 @@ export class BeachKernel {
     return result.ok ? { ok: true } : { ok: false, error: 'error' in result ? result.error : 'unknown' };
   }
 
-  /** Write the user's current liquid into the beach-root shared layer at
-   * beach:3.<presence-digit>. Overwrites the same slot each call (the user's
-   * liquid is always one current state, not an append). Empty text clears
-   * the slot — used after commit so the liquid stops rendering for peers. */
+  /** Write the user's current liquid at beach:7.<address>.<presence-digit> —
+   * the location-keyed shared layer. Sharded by address: peers at the same
+   * address share a 9-slot ring; peers elsewhere are out of scope. Overwrites
+   * the same slot each call (one current state, not append). Empty text
+   * clears the slot — used after commit so peers stop rendering it.
+   *
+   * Position 7 is unallocated by protocol-pscale-beach-v2 (1=marks, 2=pools,
+   * 3=reaches, 8=conventions, 9=metadata), so this convention is xstream's
+   * own without conflicting with the canonical beach shape. */
   async writeBeachLiquid(text: string): Promise<{ ok: boolean; error?: string }> {
     const beach = this.session.current_beach;
     const aid = this.session.agent_id || '(anon)';
     const digit = await getPresenceDigit(beach, aid);
+    const address = this.session.current_address;
     const ts = new Date().toISOString();
+    // Spindle: 7.<address-segments>.<digit> — root liquid is just 7.<digit>.
+    const spindle = address ? `7.${address}.${digit}` : `7.${digit}`;
     const result = await bsp({
       agent_id: beach,
       block: 'beach',
-      spindle: '3.' + digit,
+      spindle,
       content: {
         _: text,
         '1': aid,
-        '2': this.session.current_address,
+        '2': address,
         '3': ts,
         '4': this.session.face,
       },
@@ -405,13 +479,13 @@ export class BeachKernel {
       this.cb.onError(`liquid write failed: ${'error' in result ? result.error : 'unknown'}`);
       return { ok: false, error: 'error' in result ? result.error : 'unknown' };
     }
-    this.cb.onLog(text.trim() ? `💧 liquid → beach:3.${digit}` : `💧 liquid cleared (beach:3.${digit})`);
+    this.cb.onLog(text.trim() ? `💧 liquid → beach:${spindle}` : `💧 liquid cleared (beach:${spindle})`);
     this.cycle();
     return { ok: true };
   }
 
-  /** Clear our slot in beach:3 — used after commit so peers stop seeing the
-   * liquid we just promoted to solid. */
+  /** Clear our slot — used after commit so peers stop seeing the liquid we
+   * just promoted to a mark. */
   async clearMyBeachLiquid(): Promise<{ ok: boolean; error?: string }> {
     return this.writeBeachLiquid('');
   }
@@ -424,7 +498,8 @@ export class BeachKernel {
       const address = this.session.current_address;
       const aid = this.session.agent_id || '(anon)';
 
-      // 1. Heartbeat presence (only if we have a non-anonymous agent_id)
+      // 1. Heartbeat presence. Anonymous tabs heartbeat too (using their
+      //    anon-XXXXXX pseudo-handle) so peers see them as live participants.
       if (this.session.agent_id) {
         const digit = await getPresenceDigit(beach, aid);
         await presenceHeartbeat({
@@ -444,8 +519,10 @@ export class BeachKernel {
       const marks = readMarks(ringRaw, address);
       this.cb.onMarks(marks);
 
-      // 3b. Beach-root shared liquid (beach:3). Same raw payload — no extra
-      //     network call. Address-filtered and staled at 60s.
+      // 3b. Location-keyed shared liquid (beach:7.<address>.<digit>). Same
+      //     raw payload — position 7 is part of the beach block. Address-
+      //     prefix filtered (so a viewer at root sees every slot, a viewer
+      //     at 5.3 sees slots at 5.3.* etc.) and staled at 60s.
       const liquidPeers = readLiquid(ringRaw, address, aid, Date.now());
       this.cb.onLiquid(liquidPeers);
 
@@ -470,9 +547,12 @@ export class BeachKernel {
         this.cb.onFrame(null);
       }
 
-      // 6. Watched-beach inbox scan — every Nth cycle.
+      // 6. Watched-beach inbox scan — every Nth cycle. Anonymous tabs
+      //    skip the scan: there's no durable handle for marks to be tagged
+      //    "for me" against, and the anon-XXXXXX pseudo isn't communicated
+      //    to other agents who'd need it to direct messages.
       this.cycleN++;
-      if (this.session.agent_id && this.cycleN % BeachKernel.WATCH_EVERY_N_CYCLES === 0 && this.watchedBeaches.length > 0) {
+      if (!this.session.is_anonymous && this.session.agent_id && this.cycleN % BeachKernel.WATCH_EVERY_N_CYCLES === 0 && this.watchedBeaches.length > 0) {
         await this.scanInbox();
       }
     } catch (e) {

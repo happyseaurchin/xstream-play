@@ -24,6 +24,27 @@ import './App.css'
 
 const ACTIVE_HANDLE_KEY = 'xstream:active-handle'
 const HANDLES_LIST_KEY = 'xstream:handles'
+const ANON_ID_KEY = 'xstream:anon-id'
+
+/** Stable anonymous pseudo-handle for this browser. Generated once and
+ * persisted in localStorage so the user is the same "anon" across reloads
+ * (lets them leave a mark and come back to find replies tagged at them).
+ * Form: `anon-<6-char-base36>`. Used as the substrate agent_id when the
+ * user hasn't typed a real handle. UI continues to display "anon" — the
+ * suffix only matters at the substrate layer for distinguishing two
+ * anonymous tabs and giving each its own presence digit / liquid slot /
+ * vapour identity. */
+function getOrCreateAnonId(): string {
+  try {
+    const existing = localStorage.getItem(ANON_ID_KEY)
+    if (existing && existing.startsWith('anon-')) return existing
+    const id = `anon-${Math.random().toString(36).slice(2, 8)}`
+    localStorage.setItem(ANON_ID_KEY, id)
+    return id
+  } catch {
+    return `anon-${Math.random().toString(36).slice(2, 8)}`
+  }
+}
 // Legacy single-handle keys, kept for one-time migration into the per-handle scheme.
 const LEGACY_HANDLE_KEY = 'xstream:handle'
 const LEGACY_SECRET_KEY = 'xstream:secret'
@@ -51,17 +72,35 @@ function saveHandles(list: string[]) {
   try { localStorage.setItem(HANDLES_LIST_KEY, JSON.stringify(list)) } catch { /* quota */ }
 }
 
+const MIGRATION_DONE_KEY = 'xstream:legacy-migrated'
+
 function migrateLegacyIdentity() {
-  if (localStorage.getItem(ACTIVE_HANDLE_KEY)) return
+  // Run at most once. Without this guard, signing out (which clears
+  // ACTIVE_HANDLE_KEY) would let the next page load re-resurrect the legacy
+  // handle from LEGACY_HANDLE_KEY — making logout look broken.
+  if (localStorage.getItem(MIGRATION_DONE_KEY)) return
+  if (localStorage.getItem(ACTIVE_HANDLE_KEY)) {
+    // Already migrated in some earlier session before this guard existed.
+    // Mark it done and exit so we never run again.
+    localStorage.setItem(MIGRATION_DONE_KEY, '1')
+    return
+  }
   const handle = localStorage.getItem(LEGACY_HANDLE_KEY)
-  if (!handle) return
-  const secret = sessionStorage.getItem(LEGACY_SECRET_KEY)
-  const apiKey = sessionStorage.getItem(LEGACY_API_KEY) ?? localStorage.getItem(LEGACY_API_KEY_DASH)
-  if (secret) sessionStorage.setItem(secretKey(handle), secret)
-  if (apiKey) sessionStorage.setItem(apiKeyKey(handle), apiKey)
-  const list = loadHandles()
-  if (!list.includes(handle)) { list.push(handle); saveHandles(list) }
-  localStorage.setItem(ACTIVE_HANDLE_KEY, handle)
+  if (handle) {
+    const secret = sessionStorage.getItem(LEGACY_SECRET_KEY)
+    const apiKey = sessionStorage.getItem(LEGACY_API_KEY) ?? localStorage.getItem(LEGACY_API_KEY_DASH)
+    if (secret) sessionStorage.setItem(secretKey(handle), secret)
+    if (apiKey) sessionStorage.setItem(apiKeyKey(handle), apiKey)
+    const list = loadHandles()
+    if (!list.includes(handle)) { list.push(handle); saveHandles(list) }
+    localStorage.setItem(ACTIVE_HANDLE_KEY, handle)
+  }
+  // Drop legacy keys so they can never resurrect the handle on a future load.
+  localStorage.removeItem(LEGACY_HANDLE_KEY)
+  localStorage.removeItem(LEGACY_API_KEY_DASH)
+  sessionStorage.removeItem(LEGACY_SECRET_KEY)
+  sessionStorage.removeItem(LEGACY_API_KEY)
+  localStorage.setItem(MIGRATION_DONE_KEY, '1')
 }
 
 function loadIdentity() {
@@ -155,6 +194,9 @@ function ColumnsApp({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) =>
   const [identity, setIdentity] = useState(() => loadIdentity())
   const [shell, setShell] = useState<AgentShell | null>(null)
   const [identities, setIdentities] = useState<string[]>(() => loadHandles())
+  // Stable anon id for this browser. Used as substrate agent_id when no
+  // handle is typed; UI still displays "anon".
+  const [anonId] = useState<string>(() => getOrCreateAnonId())
 
   // Inbox acks — global to the user, shared across columns. A mark dismissed
   // in one column shouldn't haunt the user in another.
@@ -308,6 +350,7 @@ function ColumnsApp({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) =>
             <Column
               id={col.id}
               identity={identity}
+              anonId={anonId}
               shell={shell}
               onShellSaved={setShell}
               inboxAcks={inboxAcks}

@@ -70,9 +70,14 @@ export function joinVapourChannel(opts: {
   agent_id: string;
   face: string;
   onPeer: (msg: VapourBroadcast) => void;
+  onStatus?: (status: 'subscribed' | 'no-transport' | 'error', detail?: string) => void;
 }): VapourChannelHandle | null {
   const sb = getSupabase();
-  if (!sb) return null;
+  if (!sb) {
+    console.warn('[vapour] no Supabase client — VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY missing? Vapour channel will not subscribe.');
+    opts.onStatus?.('no-transport', 'no Supabase client (env vars missing?)');
+    return null;
+  }
 
   const channel: RealtimeChannel = sb.channel(opts.scope, {
     config: { broadcast: { self: false, ack: false } },
@@ -85,7 +90,17 @@ export function joinVapourChannel(opts: {
     opts.onPeer(msg);
   });
 
-  channel.subscribe();
+  channel.subscribe(status => {
+    // Surface the subscription state so callers can show a UI indicator.
+    // 'SUBSCRIBED' → joined; 'CHANNEL_ERROR' / 'TIMED_OUT' / 'CLOSED' → not.
+    if (status === 'SUBSCRIBED') {
+      console.info('[vapour] subscribed:', opts.scope);
+      opts.onStatus?.('subscribed');
+    } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+      console.warn('[vapour] subscribe failed:', status, opts.scope);
+      opts.onStatus?.('error', status);
+    }
+  });
 
   return {
     scope: opts.scope,

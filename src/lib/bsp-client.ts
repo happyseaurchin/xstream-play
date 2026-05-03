@@ -1,28 +1,34 @@
 /**
- * bsp-client.ts — browser-side bsp() client for the bsp-mcp commons.
+ * bsp-client.ts — browser-side bsp() client for federated beaches.
  *
  * Implements the whetstone signature:
  *   bsp(agent_id, block, spindle, pscale_attention, content?, face?, tier?, secret?, gray?)
  *
- * Read when content is omitted; write when content is provided. Selection shape
- * derives from (spindle length, pscale_attention) per whetstone:2. Modifiers
- * (face, tier, secret, gray) compose without altering the geometry.
+ * Single dispatch path: every bsp() call routes to a federated beach via
+ * /.well-known/pscale-beach.
+ *   - URL agent_id (`https://…`) → that beach, with `block` as given.
+ *   - Bare name (`alice`) → DEFAULT_BEACH, with block namespaced as
+ *     `<handle>__<role>` (sibling-block convention; the beach hosts per-user
+ *     blocks alongside its canonical `beach`).
+ *   - sed:/grain: prefixes are NOT addressable via bsp() — use the MCP-HTTP
+ *     primitives (`pscale_register`, `pscale_grain_reach`, etc.) which route
+ *     through the bsp-mcp server. Calls with sed:/grain: agent_ids will be
+ *     attempted at DEFAULT_BEACH for diagnostic purposes only.
  *
- * Substrate dispatch by block name prefix per whetstone:3.6 — ordinary names
- * route to pscale_blocks; sed: and grain: prefixes are reserved for future
- * registration and grain substrates (passthrough today, server-validated later).
- *
- * URL-prefixed agent_ids (matching ^https?://) currently fall through to the
- * commons. When bsp-mcp Stage 3 (WellKnownAdapter) ships, those route to the
- * remote /.well-known/pscale-beach endpoint instead — change is a single
- * dispatch branch.
+ * No central commons, no local apply-spindle, no local lock checks — write
+ * semantics are the federated server's responsibility. Read when content is
+ * omitted; write when content is provided.
  *
  * Higher-level helpers (presence heartbeat/read, shell read) sit on top of
  * the core bsp() function.
  */
 
-import { getSupabase } from './supabase';
 import { bsp as walkBlock, collectUnderscore } from '../kernel/bsp';
+
+// The default beach for bare-name agent_ids. Until per-user blocks are gated
+// per-beach (paywall/membership), this is the public xstream beach. Override
+// by passing a URL agent_id explicitly (the URL form takes precedence).
+const DEFAULT_BEACH = 'https://happyseaurchin.com';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type PscaleNode = string | { [key: string]: any };
@@ -67,29 +73,26 @@ export interface BspWriteResult {
   error?: string;
 }
 
-// ── SHA-256 (matches pscale-mcp's hashBlockPassphrase) ──
-
-async function sha256Hex(data: string): Promise<string> {
-  const buf = new TextEncoder().encode(data);
-  const hash = await crypto.subtle.digest('SHA-256', buf);
-  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
-async function hashBlockPassphrase(secret: string, agentId: string, name: string, position: string): Promise<string> {
-  return sha256Hex(secret + 'block:' + agentId + ':' + name + ':' + position);
-}
-
 // ── Substrate I/O ──
 
 interface BlockRow {
   owner_id: string;
   name: string;
   block: PscaleNode;
-  position_hashes: Record<string, string>;
 }
 
 function isUrlAgent(agentId: string): boolean {
   return agentId.startsWith('http://') || agentId.startsWith('https://');
+}
+
+/** Resolve a (agent_id, block) request into a federated dispatch target.
+ * URL agent_id → that beach, block unchanged. Bare/sed/grain agent_ids →
+ * DEFAULT_BEACH with block namespaced as `<agent_id>__<block>` so each
+ * caller's per-user blocks live as siblings of the beach's canonical block.
+ */
+function resolveDispatch(agentId: string, blockName: string): { agent_id: string; block: string } {
+  if (isUrlAgent(agentId)) return { agent_id: agentId, block: blockName };
+  return { agent_id: DEFAULT_BEACH, block: `${agentId}__${blockName}` };
 }
 
 /**
@@ -120,14 +123,14 @@ async function loadBlockFederated(agentId: string, name: string): Promise<BlockR
       return null;
     }
     const block = await r.json() as PscaleNode;
-    return { owner_id: agentId, name, block, position_hashes: {} };
+    return { owner_id: agentId, name, block };
   } catch (e) {
     console.warn('[bsp federated] fetch failed:', e);
     return null;
   }
 }
 
-async function saveBlockFederated(agentId: string, name: string, block: PscaleNode, params: { spindle?: string; pscale_attention?: number; secret?: string }): Promise<{ ok: boolean; error?: string }> {
+async function saveBlockFederated(agentId: string, name: string, block: PscaleNode, params: { spindle?: string; pscale_attention?: number; secret?: string; new_lock?: string }): Promise<{ ok: boolean; error?: string }> {
   const url = agentId.replace(/\/+$/, '') + '/.well-known/pscale-beach';
   const body: Record<string, unknown> = {
     block: name,
@@ -136,6 +139,7 @@ async function saveBlockFederated(agentId: string, name: string, block: PscaleNo
   };
   if (params.pscale_attention !== undefined) body.pscale_attention = params.pscale_attention;
   if (params.secret) body.secret = params.secret;
+  if (params.new_lock) body.new_lock = params.new_lock;
   try {
     const r = await fetch(url, {
       method: 'POST',
@@ -153,40 +157,6 @@ async function saveBlockFederated(agentId: string, name: string, block: PscaleNo
     console.warn('[bsp federated] write threw:', e);
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
-}
-
-async function loadBlock(agentId: string, name: string): Promise<BlockRow | null> {
-  if (isUrlAgent(agentId)) return loadBlockFederated(agentId, name);
-  const sb = getSupabase();
-  if (!sb) return null;
-  const { data, error } = await sb
-    .from('pscale_blocks')
-    .select('owner_id, name, block, position_hashes')
-    .eq('owner_id', agentId)
-    .eq('name', name)
-    .maybeSingle();
-  if (error) {
-    console.warn('[bsp] loadBlock error:', error.message);
-    return null;
-  }
-  return data as BlockRow | null;
-}
-
-async function saveBlock(agentId: string, name: string, block: PscaleNode, positionHashes: Record<string, string>): Promise<{ ok: boolean; error?: string }> {
-  if (isUrlAgent(agentId)) {
-    return saveBlockFederated(agentId, name, block, {});
-  }
-  const sb = getSupabase();
-  if (!sb) return { ok: false, error: 'Supabase not configured' };
-  const { error } = await sb.from('pscale_blocks').upsert({
-    owner_id: agentId,
-    name,
-    block_type: 'general',
-    block,
-    position_hashes: positionHashes,
-    updated_at: new Date().toISOString(),
-  }, { onConflict: 'owner_id,name' });
-  return error ? { ok: false, error: error.message } : { ok: true };
 }
 
 // ── Spindle parsing & shape derivation ──
@@ -244,38 +214,6 @@ function walkForShape(block: PscaleNode, parsed: ParsedSpindle, pAtt: number | u
   }
 }
 
-// ── Write at spindle (mutates block, returns new block) ──
-
-function applyWrite(block: PscaleNode, parsed: ParsedSpindle, content: PscaleNode): PscaleNode {
-  if (parsed.digits.length === 0) return content;
-  const root = (typeof block === 'object' && block !== null) ? { ...(block as Record<string, PscaleNode>) } : {};
-  let cursor = root as Record<string, PscaleNode>;
-  for (let i = 0; i < parsed.digits.length - 1; i++) {
-    const k = parsed.digits[i] === '0' ? '_' : parsed.digits[i];
-    const next = cursor[k];
-    if (typeof next !== 'object' || next === null) {
-      cursor[k] = {};
-    } else {
-      cursor[k] = { ...(next as Record<string, PscaleNode>) };
-    }
-    cursor = cursor[k] as Record<string, PscaleNode>;
-  }
-  const lastDigit = parsed.digits[parsed.digits.length - 1];
-  cursor[lastDigit === '0' ? '_' : lastDigit] = content;
-  return root;
-}
-
-// ── Lock check ──
-
-async function checkLock(row: BlockRow | null, agentId: string, name: string, secret: string | undefined): Promise<string | null> {
-  if (!row) return null;
-  const stored = row.position_hashes?._;
-  if (!stored) return null;
-  if (!secret) return 'Block is locked. Secret required.';
-  const computed = await hashBlockPassphrase(secret, agentId, name, '_');
-  return computed === stored ? null : 'Incorrect secret.';
-}
-
 // ── Core bsp() ──
 
 export async function bsp(params: BspParams): Promise<BspReadResult | BspWriteResult> {
@@ -284,40 +222,26 @@ export async function bsp(params: BspParams): Promise<BspReadResult | BspWriteRe
   const isWrite = content !== undefined || new_lock !== undefined;
   const shape = deriveShape(parsed, pscale_attention, isWrite);
 
-  // Federated write — server handles the spindle apply per v2 §2.2.
-  if (isWrite && isUrlAgent(agent_id)) {
-    const r = await saveBlockFederated(agent_id, blockName, (content ?? null) as PscaleNode, {
+  // Single dispatch path: URL → that beach; bare → default beach sibling.
+  // No central commons, no local apply, no local lock-check — federated
+  // server owns all write semantics including spindle apply and locks.
+  const dispatch = resolveDispatch(agent_id, blockName);
+
+  if (isWrite) {
+    const r = await saveBlockFederated(dispatch.agent_id, dispatch.block, (content ?? null) as PscaleNode, {
       spindle: spindle ?? '',
       pscale_attention,
       secret,
+      new_lock,
     });
     return r.ok ? { ok: true, shape } : { ok: false, shape, error: r.error };
   }
 
-  // Commons (or any read).
-  const row = await loadBlock(agent_id, blockName);
-
-  if (!isWrite) {
-    if (!row) return { ok: true, shape, data: null, raw: null };
-    const data = walkForShape(row.block, parsed, pscale_attention, shape);
-    return { ok: true, shape, data, raw: row.block };
-  }
-
-  // Commons write — read+mutate+upsert (no remote spindle-apply).
-  const lockErr = await checkLock(row, agent_id, blockName, secret);
-  if (lockErr) return { ok: false, shape, error: lockErr };
-
-  const baseBlock = row?.block ?? {};
-  const newBlock = content !== undefined ? applyWrite(baseBlock, parsed, content as PscaleNode) : baseBlock;
-  // Lock semantics R1/R2: unlocked block + new_lock → set lock without
-  // needing secret. R4: locked + secret (already verified) + new_lock →
-  // rotate. Position is rooted at '_' for v0.1.
-  const positionHashes = { ...(row?.position_hashes ?? {}) };
-  if (new_lock) {
-    positionHashes._ = await hashBlockPassphrase(new_lock, agent_id, blockName, '_');
-  }
-  const result = await saveBlock(agent_id, blockName, newBlock, positionHashes);
-  return result.ok ? { ok: true, shape } : { ok: false, shape, error: result.error };
+  // Read.
+  const row = await loadBlockFederated(dispatch.agent_id, dispatch.block);
+  if (!row) return { ok: true, shape, data: null, raw: null };
+  const data = walkForShape(row.block, parsed, pscale_attention, shape);
+  return { ok: true, shape, data, raw: row.block };
 }
 
 // ── Helpers: presence (per docs/presence-via-marks.md) ──

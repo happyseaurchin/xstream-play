@@ -16,9 +16,16 @@
 export type Face = 'character' | 'author' | 'designer' | 'observer';
 
 export interface BeachSession {
-  /** Identity. agent_id is the public handle; secret stays in sessionStorage. */
+  /** Identity. agent_id is the public handle when set, or a session-stable
+   * `anon-XXXXXX` pseudo-handle when the user hasn't identified — so anonymous
+   * tabs still get a unique presence digit / liquid slot / vapour identity
+   * without forcing a handle. is_anonymous discriminates: true when the
+   * agent_id is the auto-minted anon pseudo, false when the user typed a
+   * handle. Secret stays in sessionStorage when set; anonymous tabs have
+   * empty secret. */
   agent_id: string;
   secret: string;
+  is_anonymous: boolean;
 
   /** Active face — operational mode-of-engagement. v0.1: not enforced by
    * substrate; tagged into structured marks (position 4) so the surface
@@ -58,10 +65,12 @@ export function createBeachSession(opts: {
   address?: string;
   api_key?: string | null;
   face?: Face;
+  is_anonymous?: boolean;
 }): BeachSession {
   return {
     agent_id: opts.agent_id,
     secret: opts.secret,
+    is_anonymous: opts.is_anonymous ?? false,
     face: opts.face ?? 'observer',
     current_beach: opts.beach,
     current_address: opts.address ?? '',
@@ -73,7 +82,12 @@ export function createBeachSession(opts: {
     last_solid: null,
     api_key: opts.api_key ?? null,
     medium_model: 'claude-sonnet-4-6',
-    soft_model: 'claude-haiku-4-5-20251001',
+    // Sonnet 4.6 (not Haiku 4.5) for soft. The substrate-navigation
+    // workload — walking reaches/passports/marks, extracting fields,
+    // chaining pscale_* calls with session secrets — is a multi-step
+    // reasoning task that Haiku consistently loses the thread on.
+    // The cost premium is small relative to "bsp-mcp is unusable" UX.
+    soft_model: 'claude-sonnet-4-6',
   };
 }
 
@@ -141,13 +155,15 @@ export interface PoolView {
   contributions: PoolContribution[];
 }
 
-/** Beach-root liquid — the shared staging layer at beach:3. Each present agent
- * has a slot keyed by their presence digit (same digit assignment as
- * beach:1.<n> presence heartbeats). Structured-mark shape; the underscore is
- * the agent's CURRENT liquid (overwritten on each propose, cleared on
- * commit). Stale entries (>60s) are filtered out client-side as departed. */
+/** Location-keyed liquid — the shared staging layer at beach:7.<address>.<n>.
+ * Sharded by address: peers at the same address share a 9-slot ring; viewers
+ * at a shallower address see all slots beneath them (prefix match). Each
+ * present agent occupies one digit slot keyed by their presence digit.
+ * Structured-slot shape; the underscore is the agent's CURRENT liquid
+ * (overwritten on each propose, cleared on commit). Stale entries (>60s) are
+ * filtered out client-side as departed. */
 export interface LiquidPeer {
-  digit: string;                     // '1'..'9' under beach:3
+  digit: string;                     // '1'..'9' under beach:7.<address>
   agent_id: string | null;
   address: string | null;
   timestamp: string | null;
