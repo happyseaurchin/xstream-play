@@ -617,14 +617,9 @@ export function Column(props: ColumnProps) {
       })
       return
     }
-    if (!identity.handle || !identity.secret) {
-      setSoftResponse({
-        id: Date.now().toString(), originalInput: sourceText ?? '',
-        text: 'Identify (button → Identity → handle + passphrase) to commit to the substrate.',
-        softType: 'info', face, frameId: null,
-      })
-      return
-    }
+    // No identity gate — marks at beach:1 are open writes; anon commits
+    // succeed via the anon-XXXXXX pseudo-handle. Synthesis requires an
+    // API key but is bypassed cleanly when one isn't present.
 
     setIsCommitting(true)
     try {
@@ -635,7 +630,7 @@ export function Column(props: ColumnProps) {
       const mode = parseRecipe(typeof recipeRaw === 'string' ? recipeRaw : null, face)
 
       let textToWrite = sourceText ?? ''
-      if (mode !== 'bypass' && identity.apiKey && sourceText) {
+      if (mode !== 'bypass' && identity.apiKey && sourceText && identity.handle) {
         try {
           setLogs(prev => [...prev.slice(-50), `🌀 medium synthesising (${typeof mode === 'string' ? mode : 'custom'} · ${face})…`])
           const r = await synthesise({
@@ -866,9 +861,15 @@ export function Column(props: ColumnProps) {
       isSelf: false,
     }))
 
-  const placeholderText = identity.apiKey
-    ? 'type · ⌘↵ ask soft · ⇧↵ submit'
-    : (identity.handle ? 'type · ⇧↵ submit' : 'type to think · identify in button to engage')
+  // Tri-state placeholder mirrors the V/L/S cycle the button drives:
+  //   pending liquid → "commit solid (⇧↵)"  the next ⇧↵ promotes to solid
+  //   has text       → "submit liquid (⇧↵)"  the next ⇧↵ writes liquid
+  //   neither        → the canonical hint     teaches the V/L/S vocabulary
+  const placeholderText = hasPending
+    ? 'commit solid content (⇧↵)'
+    : (vapor.trim()
+        ? 'submit liquid intention (⇧↵)'
+        : 'type vapour thinking · submit liquid intention · commit solid content')
 
   // Paywall gate — read `_tickets` on the face-bound sed: collective for the
   // current frame. Banner escalates from quiet → active when the user shows
