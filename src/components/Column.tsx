@@ -61,6 +61,15 @@ export interface ColumnInputs {
   // button so its bg-face-accent / icon-accent rules pick up the right CADO
   // color (yellow / blue / pink / green).
   face: Face
+  // True when the focused column has a non-empty self-liquid slot on the
+  // substrate. Drives the button's submit↑ ↔ commit● morph.
+  pendingLiquid: boolean
+  // Commit the focused column's pending liquid — runs medium-LLM synthesis,
+  // promotes to solid (mark or frame entity solid), clears the liquid slot.
+  onCommit: () => void
+  // True while the medium-LLM synthesis + substrate writes for commit are
+  // in flight. Drives the button's spinner state.
+  isCommitting: boolean
 }
 
 export interface ColumnProps {
@@ -165,10 +174,15 @@ export function Column(props: ColumnProps) {
     })
   }, [muteKey])
 
-  const [pendingLiquid, setPendingLiquid] = useState<string | null>(null)
+  // Self liquid is no longer kept as local state — it's read from the
+  // substrate (peerLiquid filtered for is_self) so self and peer cards go
+  // through one truth-path. The button's commit-vs-submit state is derived
+  // from this substrate read; no awaitingEcho flag because a 1.5s poll
+  // makes the round-trip feel-fast enough.
+  const [isCommitting, setIsCommitting] = useState(false)
 
   // Per-face surface memory — lives per-handle in localStorage so flicking
-  // face within a column restores that face's last (address, vapor, pending).
+  // face within a column restores that face's last (address, vapor).
   type FaceMemory = { address: string; vapor: string; pendingLiquid: string | null }
   const emptyMemory = (): FaceMemory => ({ address: '', vapor: '', pendingLiquid: null })
   const loadFaceMemory = (handle: string, columnId: string): Record<Face, FaceMemory> => {
@@ -345,7 +359,10 @@ export function Column(props: ColumnProps) {
 
   const handleFaceChange = useCallback((newFace: Face) => {
     if (newFace === face) return
-    const snapshot: FaceMemory = { address: currentAddress, vapor, pendingLiquid }
+    // pendingLiquid is now substrate-derived per-(beach, address), so no
+    // need to snapshot it across face changes — it'll re-derive from the
+    // substrate at the new face's address.
+    const snapshot: FaceMemory = { address: currentAddress, vapor, pendingLiquid: null }
     const next = { ...faceState, [face]: snapshot }
     const incoming = next[newFace]
     let nextAddress = incoming.address
@@ -356,9 +373,8 @@ export function Column(props: ColumnProps) {
     setFace(newFace)
     setCurrentAddress(nextAddress)
     setVapor(incoming.vapor)
-    setPendingLiquid(incoming.pendingLiquid)
     persistFaceState(next)
-  }, [face, shell, currentAddress, vapor, pendingLiquid, faceState, persistFaceState])
+  }, [face, shell, currentAddress, vapor, faceState, persistFaceState])
 
   const handleEnterFrame = useCallback(() => {
     if (!frameInput.trim() || !kernelRef.current) return
@@ -408,10 +424,11 @@ export function Column(props: ColumnProps) {
             setLogs(prev => [...prev.slice(-50), `🛠 ${name}(${JSON.stringify(input).slice(0, 120)})`])
           },
           onLog: msg => setLogs(prev => [...prev.slice(-50), `· ${msg}`]),
-          // Soft proposes; user commits. In-frame, the proposal is written to
-          // the substrate as the entity's liquid (peers see it). Outside a
-          // frame there's no shared liquid layer yet, so we stage locally as
-          // pendingLiquid for the user to review and commit.
+          // Soft proposes; user commits. The propose lands as the user's
+          // liquid slot on the substrate (frame entity .1 in-frame, or
+          // beach:7.<address>.<digit> on the beach). The next poll cycle
+          // returns it as is_self in peerLiquid → drives the button to
+          // commit●. No local pending state — substrate is the truth.
           onProposeLiquid: async (proposed: string) => {
             const k = kernelRef.current
             if (!k) return { ok: false, scope: 'no-kernel', error: 'kernel not ready' }
@@ -424,10 +441,6 @@ export function Column(props: ColumnProps) {
                 ? { ok: true, scope: `frame:${k.session.current_frame}:${k.session.entity_position}.1 (shared with peers in-frame)` }
                 : { ok: false, scope: 'frame', error: r.error }
             }
-            // Beach mode: shared liquid at beach:7.<address>.<your-digit>.
-            // Visible to peers at the same address (60s staleness window).
-            // Also stage locally so the user sees it as their pending card.
-            setPendingLiquid(proposed)
             const r = await k.writeBeachLiquid(proposed)
             return r.ok
               ? { ok: true, scope: `beach:7.${k.session.current_address || '<root>'}.<your-digit> (shared with peers at this address)` }
@@ -565,82 +578,102 @@ export function Column(props: ColumnProps) {
       return
     }
 
-    setPendingLiquid(trimmed)
     setVapor('')
-    // Beach mode: also publish to the location-keyed liquid layer at
-    // beach:7.<address>.<digit> so peers at this address see it. Anonymous
-    // tabs publish too — the anon-XXXXXX pseudo-handle is what identifies
-    // the slot. In-frame, the entity's .1 slot is written at commit-time
-    // via kernel.commitLiquid (different path).
+    // Publish to the location-keyed liquid layer at beach:7.<address>.<digit>.
+    // The next poll cycle returns this as is_self in peerLiquid; the button
+    // morphs from submit↑ to commit●. No local pending state — substrate
+    // is the single source of truth, surface mirrors it. Anonymous tabs
+    // publish too — the anon-XXXXXX pseudo-handle is what identifies the
+    // slot. In-frame, the entity's .1 slot is written at commit-time via
+    // kernel.commitLiquid (different path).
     if (kernelRef.current && !kernelRef.current.session.current_frame) {
       kernelRef.current.writeBeachLiquid(trimmed).catch(() => {})
     }
   }, [face, identity.handle, identity.secret, beach])
 
-  const handleCommit = useCallback(async (_cardId: string) => {
-    if (!pendingLiquid || !kernelRef.current) return
+  // Self-liquid source — read from the substrate echo, not local state.
+  // myLiquidSlot is the only "do I have something pending to commit?" truth.
+  const myLiquidSlot = peerLiquid.find(lp => lp.is_self) ?? null
+  const myLiquidText = myLiquidSlot && myLiquidSlot.text.trim() ? myLiquidSlot.text : null
+  const hasPending = myLiquidText !== null
+
+  const handleCommit = useCallback(async () => {
+    if (!kernelRef.current) return
+    // Re-read the slot at commit time (peerLiquid changes between renders;
+    // capture inside the callback to avoid a stale closure overwriting fresh
+    // text the user just typed into their substrate slot).
+    const slot = kernelRef.current.session.current_frame
+      ? null
+      : peerLiquid.find(lp => lp.is_self)
+    const sourceText = slot?.text?.trim()
+      ? slot.text
+      : null
+    if (!sourceText && !kernelRef.current.session.current_frame) return
+    if (face === 'observer') {
+      setSoftResponse({
+        id: Date.now().toString(), originalInput: sourceText ?? '',
+        text: 'Observer face is read-only. Switch to character / author / designer to commit.',
+        softType: 'info', face, frameId: null,
+      })
+      return
+    }
     if (!identity.handle || !identity.secret) {
       setSoftResponse({
-        id: Date.now().toString(), originalInput: pendingLiquid,
+        id: Date.now().toString(), originalInput: sourceText ?? '',
         text: 'Identify (button → Identity → handle + passphrase) to commit to the substrate.',
         softType: 'info', face, frameId: null,
       })
       return
     }
 
-    // Commit IS synthesis. Read recipe from shell:1.<face>.synthesis._ if
-    // present (designer-authored override); else use the face default.
-    // Observer never commits.
-    const sf = shell?.faces.find(x => x.canonical === face)
-    const recipeRaw = sf && (sf as unknown as { synthesis?: string }).synthesis
-    const mode = parseRecipe(typeof recipeRaw === 'string' ? recipeRaw : null, face)
+    setIsCommitting(true)
+    try {
+      // Commit IS synthesis. Read recipe from shell:1.<face>.synthesis._ if
+      // present (designer-authored override); else use the face default.
+      const sf = shell?.faces.find(x => x.canonical === face)
+      const recipeRaw = sf && (sf as unknown as { synthesis?: string }).synthesis
+      const mode = parseRecipe(typeof recipeRaw === 'string' ? recipeRaw : null, face)
 
-    let textToWrite = pendingLiquid
-    if (face === 'observer') {
-      setSoftResponse({
-        id: Date.now().toString(), originalInput: pendingLiquid,
-        text: 'Observer face is read-only. Switch to character / author / designer to commit.',
-        softType: 'info', face, frameId: null,
-      })
-      return
-    }
-    if (mode !== 'bypass' && identity.apiKey) {
-      try {
-        setLogs(prev => [...prev.slice(-50), `🌀 medium synthesising (${typeof mode === 'string' ? mode : 'custom'} · ${face})…`])
-        const r = await synthesise({
-          apiKey: identity.apiKey,
-          model: session.medium_model,
-          agentId: identity.handle,
-          face,
-          pendingLiquid,
-          mode,
-          session: kernelRef.current.session,
-          marks, presence, frame, pool,
-        })
-        if (!r.bypassed) {
-          textToWrite = r.text
-          setLogs(prev => [...prev.slice(-50), `🌀 synthesis: ${r.text.slice(0, 80)}`])
+      let textToWrite = sourceText ?? ''
+      if (mode !== 'bypass' && identity.apiKey && sourceText) {
+        try {
+          setLogs(prev => [...prev.slice(-50), `🌀 medium synthesising (${typeof mode === 'string' ? mode : 'custom'} · ${face})…`])
+          const r = await synthesise({
+            apiKey: identity.apiKey,
+            model: session.medium_model,
+            agentId: identity.handle,
+            face,
+            pendingLiquid: sourceText,
+            mode,
+            session: kernelRef.current.session,
+            marks, presence, frame, pool,
+          })
+          if (!r.bypassed) {
+            textToWrite = r.text
+            setLogs(prev => [...prev.slice(-50), `🌀 synthesis: ${r.text.slice(0, 80)}`])
+          }
+        } catch (e) {
+          setSoftResponse({
+            id: Date.now().toString(), originalInput: sourceText,
+            text: `(medium synthesis failed; committing raw): ${e instanceof Error ? e.message : 'unknown'}`,
+            softType: 'info', face, frameId: null,
+          })
         }
-      } catch (e) {
-        setSoftResponse({
-          id: Date.now().toString(), originalInput: pendingLiquid,
-          text: `(medium synthesis failed; committing raw): ${e instanceof Error ? e.message : 'unknown'}`,
-          softType: 'info', face, frameId: null,
-        })
       }
-    }
 
-    if (kernelRef.current.session.current_frame) {
-      await kernelRef.current.commitLiquid(textToWrite)
-    } else {
-      await kernelRef.current.dropMark(textToWrite)
-      // Clear our liquid slot so peers stop seeing the liquid we just
-      // promoted to a solid mark. Best-effort — failure is logged but
-      // doesn't block the commit.
-      kernelRef.current.clearMyBeachLiquid().catch(() => {})
+      if (kernelRef.current.session.current_frame) {
+        await kernelRef.current.commitLiquid(textToWrite)
+      } else {
+        await kernelRef.current.dropMark(textToWrite)
+        // Clear our liquid slot so the next poll's substrate read no longer
+        // returns is_self → button reverts from commit● to faded/submit.
+        // Best-effort — failure is logged but doesn't block the commit.
+        kernelRef.current.clearMyBeachLiquid().catch(() => {})
+      }
+    } finally {
+      setIsCommitting(false)
     }
-    setPendingLiquid(null)
-  }, [pendingLiquid, identity.handle, identity.secret, identity.apiKey, face, shell, session.medium_model, marks, presence, frame, pool])
+  }, [peerLiquid, identity.handle, identity.secret, identity.apiKey, face, shell, session.medium_model, marks, presence, frame, pool])
 
   const handleCopyToVapor = useCallback((text: string) => {
     setVapor(text)
@@ -697,15 +730,10 @@ export function Column(props: ColumnProps) {
 
   const liquidCards: LiquidCard[] = (() => {
     const cards: LiquidCard[] = []
-    if (pendingLiquid) {
-      cards.push({
-        id: 'self-pending',
-        userId: 'self',
-        userName: identity.handle || 'anon',
-        content: pendingLiquid,
-        timestamp: Date.now(),
-      })
-    }
+    // No self-card — the floating button reflects "you have something pending"
+    // via its commit● state, derived from the substrate (myLiquidSlot above).
+    // Self and peers go through one truth-path: peer-cards rendered from the
+    // substrate; self surfaced only as a button state.
     if (frame && session.entity_position) {
       for (const e of frame.entities) {
         if (e.position === session.entity_position) continue
@@ -848,7 +876,7 @@ export function Column(props: ColumnProps) {
     agentId: identity.handle,
   })
   const hasWriteIntent = vapor.trim().length > 0
-    || pendingLiquid !== null
+    || hasPending
     || (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('paywall') === 'active')
 
   // Return-from-purchase: when the issuer's success URL hands the buyer back
@@ -881,9 +909,9 @@ export function Column(props: ColumnProps) {
   })
 
   // ── Floating-button input registration ──
-  // When this column is focused, push the inputs (vapor + handlers) up to App
-  // so the global ConstructionButton can drive this column. Re-pushed whenever
-  // any input-shape value changes; cleared on unmount.
+  // When this column is focused, push the inputs (vapor + handlers + pending
+  // state) up to App so the global ConstructionButton can drive this column.
+  // Re-pushed whenever any input-shape value changes; cleared on unmount.
   const inputs = useMemo<ColumnInputs>(() => ({
     value: vapor,
     onChange: setVapor,
@@ -892,7 +920,10 @@ export function Column(props: ColumnProps) {
     isQuerying: softPending,
     placeholder: placeholderText,
     face,
-  }), [vapor, handleSubmit, handleQuery, softPending, placeholderText, face])
+    pendingLiquid: hasPending,
+    onCommit: handleCommit,
+    isCommitting,
+  }), [vapor, handleSubmit, handleQuery, softPending, placeholderText, face, hasPending, handleCommit, isCommitting])
 
   useEffect(() => {
     if (isFocused) onInputsChange(id, inputs)
@@ -1047,8 +1078,6 @@ export function Column(props: ColumnProps) {
           cards={liquidCards}
           height={liquidHeight}
           currentUserId="self"
-          isLoading={false}
-          onCommit={handleCommit}
           onCopyToVapor={handleCopyToVapor}
         />
         <DraggableSeparator position="bottom" onDrag={handleBottomDrag} />

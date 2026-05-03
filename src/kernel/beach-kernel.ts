@@ -57,7 +57,11 @@ export interface BeachKernelCallbacks {
 
 const LIQUID_STALENESS_MS = 60_000;
 
-const DEFAULT_POLL_MS = 4000;
+// 1.5s — keeps the substrate echo within UI-feel time so "submit liquid →
+// button morphs to commit●" round-trips fast enough that no local self-pending
+// state is needed. Federated beach reads are cheap and the staleness windows
+// (30s presence, 60s liquid) absorb the higher cadence comfortably.
+const DEFAULT_POLL_MS = 1500;
 const PRESENCE_DIGIT_CACHE = new Map<string, string>();
 
 async function getPresenceDigit(beach: string, agentId: string): Promise<string> {

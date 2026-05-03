@@ -8,6 +8,8 @@ import {
   GripVertical,
   Zap,
   ArrowRight,
+  ArrowUp,
+  CircleDot,
   Loader2,
   ChevronDown,
   MapPin,
@@ -75,11 +77,19 @@ interface ConstructionButtonProps {
   // Input actions
   onQuery: (text: string) => void;
   onSubmit: (text: string) => void;
+  // Commit the focused column's pending liquid (substrate-derived).
+  onCommit?: () => void;
   // Controlled input
   value: string;
   onChange: (value: string) => void;
   // State
   isQuerying?: boolean;
+  // True when the focused column has a non-empty self-liquid slot on the
+  // substrate. Drives the button's morph from submit↑ to commit●.
+  pendingLiquid?: boolean;
+  // True while medium-LLM synthesis + substrate writes for commit are in
+  // flight. Drives the button's spinner state.
+  isCommitting?: boolean;
   placeholder?: string;
   // Column awareness (for future multi-column)
   columnId?: string;
@@ -103,9 +113,12 @@ export function ConstructionButton({
   columnCount = 1,
   onQuery,
   onSubmit,
+  onCommit,
   value,
   onChange,
   isQuerying = false,
+  pendingLiquid = false,
+  isCommitting = false,
   placeholder = "Type your thought...",
   columnId,
   identity,
@@ -244,6 +257,24 @@ export function ConstructionButton({
     }
   };
 
+  const handleCommit = () => {
+    if (onCommit && pendingLiquid && !isCommitting) {
+      onCommit();
+    }
+  };
+
+  // Single-button state machine — the action arrow at the bottom of the
+  // input panel reflects whichever step is currently meaningful:
+  //   isCommitting → spinner (committing in progress, read-only)
+  //   value.trim() → submit↑  (write what's typed to liquid)
+  //   pendingLiquid → commit● (promote substrate-pending liquid to solid)
+  //   else → faded ↑          (nothing to do)
+  const actionMode: 'committing' | 'submit' | 'commit' | 'idle' =
+    isCommitting ? 'committing'
+    : value.trim() ? 'submit'
+    : pendingLiquid ? 'commit'
+    : 'idle';
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") {
       if (e.metaKey || e.ctrlKey) {
@@ -251,9 +282,15 @@ export function ConstructionButton({
         e.preventDefault();
         handleQuery();
       } else if (e.shiftKey) {
-        // Shift+Enter → Submit to Liquid
+        // Shift+Enter → "do whatever's next" — submit if prompt has text,
+        // else commit pending liquid if any. Mirrors the action-button
+        // dispatcher so the keyboard and the button stay in lockstep.
         e.preventDefault();
-        handleSubmit();
+        if (value.trim()) {
+          handleSubmit();
+        } else if (pendingLiquid && !isCommitting) {
+          handleCommit();
+        }
       }
       // Plain Enter → newline (default textarea behavior)
     } else if (e.key === "Escape") {
@@ -580,15 +617,39 @@ export function ConstructionButton({
                   );
                 })}
 
-                {/* Submit (Shift+Enter) — sits at the bottom of the column,
-                    visually anchoring the action stack as the commit step. */}
+                {/* Action button — single affordance, four states.
+                    Submit (⇧↵) when prompt has text; Commit (●) when there's
+                    a substrate-pending liquid slot for this user; spinner
+                    while committing; faded otherwise. The icon and click
+                    handler swap together so one button does whichever step
+                    is currently meaningful. */}
                 <button
-                  onClick={handleSubmit}
-                  disabled={!value.trim()}
-                  className="h-8 w-8 rounded-md flex items-center justify-center bg-face-accent text-white disabled:opacity-30 disabled:cursor-not-allowed hover:opacity-90 transition-opacity mt-1"
-                  title="Submit (⇧↵)"
+                  onClick={
+                    actionMode === 'submit' ? handleSubmit
+                    : actionMode === 'commit' ? handleCommit
+                    : () => {}
+                  }
+                  disabled={actionMode === 'idle' || actionMode === 'committing'}
+                  className={`h-8 w-8 rounded-md flex items-center justify-center text-white disabled:cursor-not-allowed transition-opacity mt-1 ${
+                    actionMode === 'commit'
+                      ? 'bg-face-accent hover:opacity-90'
+                      : actionMode === 'submit'
+                        ? 'bg-face-accent hover:opacity-90'
+                        : actionMode === 'committing'
+                          ? 'bg-face-accent opacity-70 cursor-wait'
+                          : 'bg-face-accent opacity-30'
+                  }`}
+                  title={
+                    actionMode === 'submit' ? 'Submit to liquid (⇧↵)'
+                    : actionMode === 'commit' ? 'Commit liquid → solid'
+                    : actionMode === 'committing' ? 'Committing…'
+                    : 'Nothing to do'
+                  }
                 >
-                  <ArrowRight className="h-4 w-4" />
+                  {actionMode === 'committing' ? <Loader2 className="h-4 w-4 animate-spin" />
+                    : actionMode === 'commit' ? <CircleDot className="h-4 w-4" />
+                    : actionMode === 'submit' ? <ArrowUp className="h-4 w-4" />
+                    : <ArrowRight className="h-4 w-4" />}
                 </button>
               </div>
             </div>

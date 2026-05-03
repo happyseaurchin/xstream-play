@@ -379,6 +379,9 @@ function ColumnsApp({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) =>
         onQuery={focusedInputs?.onQuery ?? (() => {})}
         isQuerying={focusedInputs?.isQuerying ?? false}
         placeholder={focusedInputs?.placeholder ?? 'open a column to start typing'}
+        pendingLiquid={focusedInputs?.pendingLiquid ?? false}
+        onCommit={focusedInputs?.onCommit ?? (() => {})}
+        isCommitting={focusedInputs?.isCommitting ?? false}
         identity={{
           handle: identity.handle,
           secret: identity.secret,
