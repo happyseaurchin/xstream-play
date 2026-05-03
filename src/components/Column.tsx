@@ -753,14 +753,17 @@ export function Column(props: ColumnProps) {
       // with the peer's current liquid text.
       const liquidByAgent = new Map<string, LiquidPeer>()
       for (const lp of peerLiquid) {
-        if (lp.agent_id === effectiveAgentId) continue
+        // Include self too — renders as a peer-card with a `(you)` label
+        // so the user sees their own submission alongside peers. Same
+        // render path for self and peers; one substrate truth.
         if (lp.agent_id) liquidByAgent.set(lp.agent_id, lp)
       }
       for (const lp of liquidByAgent.values()) {
+        const isSelf = lp.agent_id === effectiveAgentId
         cards.push({
           id: `liquid-${lp.agent_id}`,
           userId: `liquid-${lp.agent_id}`,
-          userName: lp.agent_id || 'peer',
+          userName: (lp.agent_id || 'peer') + (isSelf ? ' (you)' : ''),
           content: lp.text,
           timestamp: lp.timestamp ? Date.parse(lp.timestamp) : Date.now(),
         })
