@@ -704,11 +704,19 @@ export function Column(props: ColumnProps) {
         // every slot at the address — collective absorbed (brainstorm). The
         // governance variants (`consent`, `referenced`) require committed-flag
         // state on slots and land in a follow-up; they fall back to `self`.
+        //
+        // AWAIT the clear so the button doesn't revert via 60s staleness
+        // eviction — and so any clear-write rejection surfaces in the
+        // filmstrip log instead of being silently swallowed.
         const k = kernelRef.current
-        if (collective.clearPolicy === 'all') {
-          k.clearLiquidAtAddress(peerLiquid.map(p => ({ digit: p.digit }))).catch(() => {})
-        } else {
-          k.clearMyBeachLiquid().catch(() => {})
+        try {
+          if (collective.clearPolicy === 'all') {
+            await k.clearLiquidAtAddress(peerLiquid.map(p => ({ digit: p.digit })))
+          } else {
+            await k.clearMyBeachLiquid()
+          }
+        } catch (e) {
+          setLogs(prev => [...prev.slice(-50), `❌ liquid clear failed: ${e instanceof Error ? e.message : String(e)}`])
         }
       }
     } finally {

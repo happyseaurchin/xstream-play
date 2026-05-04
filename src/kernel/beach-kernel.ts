@@ -480,6 +480,7 @@ export class BeachKernel {
         '3': ts,
         '4': this.session.face,
       },
+      secret: this.session.secret || undefined,
     });
     if (result.ok) {
       this.cb.onLog(`${pool ? '🌀' : '📍'} ${pool ? 'pool contribution' : 'mark'} written at ${beach}:${spindle}`);
@@ -541,6 +542,12 @@ export class BeachKernel {
         '3': ts,
         '4': this.session.face,
       },
+      // Pass session secret when present so handle+passphrase users can
+      // overwrite their own slot (federated beach may set a per-slot lock
+      // on first write under a secret-bearing identity; subsequent writes
+      // without it are rejected silently — exactly the bug observed for
+      // the post-commit clearMyBeachLiquid path).
+      secret: this.session.secret || undefined,
     });
     if (!result.ok) {
       this.cb.onError(`liquid write failed: ${'error' in result ? result.error : 'unknown'}`);
@@ -577,6 +584,7 @@ export class BeachKernel {
         block: 'beach',
         spindle,
         content: { _: '', '1': '', '2': address, '3': new Date().toISOString(), '4': null },
+        secret: this.session.secret || undefined,
       });
       if (r.ok) cleared++; else errors++;
     }
