@@ -27,6 +27,7 @@ import { ViewerDrawer } from './ViewerDrawer'
 import { InboxDrawer } from './InboxDrawer'
 import { BeachKernel, type InboxItem } from '../kernel/beach-kernel'
 import { createBeachSession, type BeachSession, type MarkRow, type FrameView, type PoolView, type LiquidPeer } from '../kernel/beach-session'
+import { resolveSetting, type SettingsBlock } from '../kernel/settings-reader'
 import { setHiddenRef, beachToRef, resolveRef, bsp, pscaleRegister, pscaleGrainReach, pscaleKeyPublish, pscaleVerifyRider, pscaleCreateCollective, type AgentShell, type PresenceMark, type PscaleNode } from '../lib/bsp-client'
 import { SubstrateTray, type SubstrateAct } from './SubstrateTray'
 import { joinVapourChannel, deriveScope, type VapourChannelHandle, type VapourBroadcast } from '../lib/realtime'
@@ -129,6 +130,9 @@ export function Column(props: ColumnProps) {
   const [frame, setFrame] = useState<FrameView | null>(null)
   const [pool, setPool] = useState<PoolView | null>(null)
   const [inbox, setInbox] = useState<InboxItem[]>([])
+  // Beach-level settings sub-block (beach:5). Phase A: just this layer +
+  // built-in defaults. Phase B will add per-user (shell.settings).
+  const [beachSettings, setBeachSettings] = useState<SettingsBlock>(null)
   const [, setLogs] = useState<string[]>([])
 
   // Vapour
@@ -236,6 +240,7 @@ export function Column(props: ColumnProps) {
       onPool: setPool,
       onLiquid: setPeerLiquid,
       onInbox: setInbox,
+      onSettings: setBeachSettings,
       onError: msg => setLogs(prev => [...prev.slice(-50), `❌ ${msg}`]),
       onLog: msg => setLogs(prev => [...prev.slice(-50), msg]),
     })
@@ -844,7 +849,16 @@ export function Column(props: ColumnProps) {
     return out
   })()
 
-  const VAPOUR_STALENESS_MS = 12_000
+  // Resolved via the substrate-as-program settings reader. Beach Designer
+  // can override by writing to beach:5 (e.g. via console:
+  //   bsp({ agent_id: <beach>, block: 'beach', spindle: '5',
+  //         content: { _: 'xstream settings', vapour: { staleness_ms: 5000 } } })
+  // Default 12000ms applies until a beach setting is authored.
+  const VAPOUR_STALENESS_MS = resolveSetting(
+    { beach_settings: beachSettings },
+    'vapour.staleness_ms',
+    12_000
+  )
   const now = Date.now()
   const vapourEntries: VapourEntry[] = Object.values(peerVapour)
     .filter(p =>

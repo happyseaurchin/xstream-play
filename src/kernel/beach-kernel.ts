@@ -29,6 +29,7 @@ import {
 } from '../lib/bsp-client';
 import { poolFromAddress } from './beach-session';
 import type { BeachSession, MarkRow, FrameView, FrameEntity, PoolView, PoolContribution, LiquidPeer, Face } from './beach-session';
+import { extractBeachSettings, type SettingsBlock } from './settings-reader';
 
 const FACE_VALUES: ReadonlyArray<Face> = ['character', 'author', 'designer', 'observer'];
 function asFace(v: unknown): Face | null {
@@ -51,6 +52,10 @@ export interface BeachKernelCallbacks {
   onPool: (pool: PoolView | null) => void;
   onLiquid: (peers: LiquidPeer[]) => void;
   onInbox: (items: InboxItem[]) => void;
+  /** Beach-level settings sub-block (beach:5). Updated each cycle from the
+   * existing per-cycle beach read — no extra substrate calls. Phase A: only
+   * per-beach settings; Phase B will add per-user (shell) and per-rendezvous. */
+  onSettings: (settings: SettingsBlock) => void;
   onError: (err: string) => void;
   onLog: (msg: string) => void;
 }
@@ -529,6 +534,10 @@ export class BeachKernel {
       //     at 5.3 sees slots at 5.3.* etc.) and staled at 60s.
       const liquidPeers = readLiquid(ringRaw, address, aid, Date.now());
       this.cb.onLiquid(liquidPeers);
+
+      // 3c. xstream client settings (beach:5). Same raw payload — extracted
+      //     synchronously, no extra call. Phase A: per-beach layer only.
+      this.cb.onSettings(extractBeachSettings(ringRaw));
 
       // 4. Pool read — when current_pool is set, project beach:2.<pool> from
       //    the same raw the marks read pulled. The substrate determines the
