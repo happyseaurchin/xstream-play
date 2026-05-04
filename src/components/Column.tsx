@@ -80,6 +80,9 @@ export interface ColumnProps {
    * agent_id when identity.handle is empty. Lets anonymous tabs participate
    * in presence/liquid/vapour without typing anything. */
   anonId: string
+  /** Per-user settings sub-block (shell:5). Phase B: layered above per-beach
+   * in the resolveSetting precedence chain. Updated when shell reloads. */
+  userSettings: SettingsBlock
   shell: AgentShell | null
   inboxAcks: Set<string>
   onAckInbox: (key: string) => void
@@ -96,7 +99,7 @@ export interface ColumnProps {
 }
 
 export function Column(props: ColumnProps) {
-  const { id, identity, anonId, shell, inboxAcks, onAckInbox, isFocused, onFocus, onClose, onInputsChange } = props
+  const { id, identity, anonId, userSettings, shell, inboxAcks, onAckInbox, isFocused, onFocus, onClose, onInputsChange } = props
   // Effective substrate id: real handle if typed, else stable anon pseudo.
   // Used everywhere the kernel writes to the substrate or joins the vapour
   // channel. UI continues to display identity.handle (or "anon" when empty).
@@ -256,6 +259,13 @@ export function Column(props: ColumnProps) {
     kernelRef.current.setWatchedBeaches(shell?.watched_beaches ?? [])
   }, [shell])
 
+  // Push per-user settings into the kernel so its internal getSetting() walks
+  // the per-user layer too (presence staleness, liquid staleness, inbox cadence).
+  useEffect(() => {
+    if (!kernelRef.current) return
+    kernelRef.current.setUserSettings(userSettings)
+  }, [userSettings])
+
   // Wire agent block hidden directories on beach change
   useEffect(() => {
     const beachRef = beachToRef(beach)
@@ -341,16 +351,23 @@ export function Column(props: ColumnProps) {
     }
   }, [effectiveAgentId, beach, currentAddress, session.current_frame, session.entity_position, face])
 
-  // Broadcast our vapour as it changes, debounced ~80 ms.
+  // Broadcast our vapour as it changes, debounced. Debounce window is
+  // resolved from settings (default 80ms) so beaches with chatty users can
+  // raise the floor (e.g. 200ms) without changing client code.
   useEffect(() => {
     if (!vapourChannelRef.current) return
+    const debounceMs = resolveSetting(
+      { beach_settings: beachSettings, user_settings: userSettings },
+      'vapour.debounce_ms',
+      80,
+    )
     if (vapourBroadcastDebounceRef.current) {
       window.clearTimeout(vapourBroadcastDebounceRef.current)
     }
     vapourBroadcastDebounceRef.current = window.setTimeout(() => {
       vapourChannelRef.current?.broadcast(vapor)
-    }, 80)
-  }, [vapor])
+    }, debounceMs)
+  }, [vapor, beachSettings, userSettings])
 
   // ── Handlers ──
 
@@ -849,13 +866,13 @@ export function Column(props: ColumnProps) {
     return out
   })()
 
-  // Resolved via the substrate-as-program settings reader. Beach Designer
-  // can override by writing to beach:5 (e.g. via console:
-  //   bsp({ agent_id: <beach>, block: 'beach', spindle: '5',
-  //         content: { _: 'xstream settings', vapour: { staleness_ms: 5000 } } })
-  // Default 12000ms applies until a beach setting is authored.
+  // Resolved via the substrate-as-program settings reader. Precedence:
+  // per-user (shell:5) → per-beach (beach:5) → built-in default (12000ms).
+  // Designer can override per-user by writing shell:5; per-beach by writing
+  // beach:5. Whole-object replacement (pscale spindles can't address named
+  // children individually).
   const VAPOUR_STALENESS_MS = resolveSetting(
-    { beach_settings: beachSettings },
+    { beach_settings: beachSettings, user_settings: userSettings },
     'vapour.staleness_ms',
     12_000
   )

@@ -29,7 +29,7 @@ import {
 } from '../lib/bsp-client';
 import { poolFromAddress } from './beach-session';
 import type { BeachSession, MarkRow, FrameView, FrameEntity, PoolView, PoolContribution, LiquidPeer, Face } from './beach-session';
-import { extractBeachSettings, type SettingsBlock } from './settings-reader';
+import { extractBeachSettings, resolveSetting, type SettingsBlock } from './settings-reader';
 
 const FACE_VALUES: ReadonlyArray<Face> = ['character', 'author', 'designer', 'observer'];
 function asFace(v: unknown): Face | null {
@@ -60,7 +60,6 @@ export interface BeachKernelCallbacks {
   onLog: (msg: string) => void;
 }
 
-const LIQUID_STALENESS_MS = 60_000;
 
 // 1.5s — keeps the substrate echo within UI-feel time so "submit liquid →
 // button morphs to commit●" round-trips fast enough that no local self-pending
@@ -209,6 +208,7 @@ function readLiquid(
   addressFilter: string,
   selfAgentId: string,
   now: number,
+  stalenessMs: number,
 ): LiquidPeer[] {
   if (typeof rawBlock !== 'object' || rawBlock === null) return [];
   const block = rawBlock as Record<string, PscaleNode>;
@@ -227,7 +227,7 @@ function readLiquid(
     if (addressFilter && addr && !addr.startsWith(addressFilter)) continue;
     if (ts) {
       const age = now - Date.parse(ts);
-      if (Number.isFinite(age) && age > LIQUID_STALENESS_MS) continue;
+      if (Number.isFinite(age) && age > stalenessMs) continue;
     }
     out.push({
       digit, agent_id: aid, address: addr, timestamp: ts,
@@ -276,11 +276,31 @@ export class BeachKernel {
   // its underscore mentions the user's agent_id (cold-contact convention).
   private watchedBeaches: string[] = [];
   private cycleN = 0;
-  private static WATCH_EVERY_N_CYCLES = 5;       // 5 × 4s = 20s
+
+  // Cached settings for substrate-as-program resolution. Updated each cycle
+  // from beach:5 (synchronously, from the existing beach read) and on each
+  // identity change from shell:5 (via setUserSettings). Read internally via
+  // getSetting which walks user → beach → built-in default.
+  private cachedBeachSettings: SettingsBlock = null;
+  private cachedUserSettings: SettingsBlock = null;
 
   constructor(session: BeachSession, callbacks: BeachKernelCallbacks) {
     this.session = session;
     this.cb = callbacks;
+  }
+
+  /** Plug in the user's settings sub-block (shell:5). Caller invokes when the
+   * shell loads (App.tsx) and on identity change. Phase B: per-user settings. */
+  setUserSettings(settings: SettingsBlock): void {
+    this.cachedUserSettings = settings;
+  }
+
+  private getSetting<T>(path: string, defaultValue: T): T {
+    return resolveSetting(
+      { beach_settings: this.cachedBeachSettings, user_settings: this.cachedUserSettings },
+      path,
+      defaultValue,
+    );
   }
 
   /** Update the watched-beach list; next watch tick uses these. */
@@ -517,8 +537,9 @@ export class BeachKernel {
         });
       }
 
-      // 2. Presence read
-      const { present } = await presenceRead({ beach, address });
+      // 2. Presence read — staleness resolved from settings (beach:5 / shell:5)
+      const presenceStaleness = this.getSetting('presence.staleness_ms', DEFAULT_PRESENCE_STALENESS_MS);
+      const { present } = await presenceRead({ beach, address, stalenessMs: presenceStaleness });
       this.cb.onPresence(present);
 
       // 3. Marks read (beachcombing + non-presence marks at this address).
@@ -531,13 +552,17 @@ export class BeachKernel {
       // 3b. Location-keyed shared liquid (beach:7.<address>.<digit>). Same
       //     raw payload — position 7 is part of the beach block. Address-
       //     prefix filtered (so a viewer at root sees every slot, a viewer
-      //     at 5.3 sees slots at 5.3.* etc.) and staled at 60s.
-      const liquidPeers = readLiquid(ringRaw, address, aid, Date.now());
+      //     at 5.3 sees slots at 5.3.* etc.) and staled per setting.
+      const liquidStaleness = this.getSetting('liquid.staleness_ms', DEFAULT_LIQUID_STALENESS_MS);
+      const liquidPeers = readLiquid(ringRaw, address, aid, Date.now(), liquidStaleness);
       this.cb.onLiquid(liquidPeers);
 
       // 3c. xstream client settings (beach:5). Same raw payload — extracted
-      //     synchronously, no extra call. Phase A: per-beach layer only.
-      this.cb.onSettings(extractBeachSettings(ringRaw));
+      //     synchronously, no extra call. Cache locally for kernel use, AND
+      //     surface to the column for component-side resolveSetting calls.
+      const beachSettings = extractBeachSettings(ringRaw);
+      this.cachedBeachSettings = beachSettings;
+      this.cb.onSettings(beachSettings);
 
       // 4. Pool read — when current_pool is set, project beach:2.<pool> from
       //    the same raw the marks read pulled. The substrate determines the
@@ -560,12 +585,13 @@ export class BeachKernel {
         this.cb.onFrame(null);
       }
 
-      // 6. Watched-beach inbox scan — every Nth cycle. Anonymous tabs
-      //    skip the scan: there's no durable handle for marks to be tagged
-      //    "for me" against, and the anon-XXXXXX pseudo isn't communicated
-      //    to other agents who'd need it to direct messages.
+      // 6. Watched-beach inbox scan — every Nth cycle (resolved from settings).
+      //    Anonymous tabs skip the scan: there's no durable handle for marks
+      //    to be tagged "for me" against, and the anon-XXXXXX pseudo isn't
+      //    communicated to other agents who'd need it to direct messages.
       this.cycleN++;
-      if (!this.session.is_anonymous && this.session.agent_id && this.cycleN % BeachKernel.WATCH_EVERY_N_CYCLES === 0 && this.watchedBeaches.length > 0) {
+      const watchEveryN = this.getSetting('inbox.watch_every_n_cycles', DEFAULT_INBOX_WATCH_EVERY_N_CYCLES);
+      if (!this.session.is_anonymous && this.session.agent_id && this.cycleN % watchEveryN === 0 && this.watchedBeaches.length > 0) {
         await this.scanInbox();
       }
     } catch (e) {

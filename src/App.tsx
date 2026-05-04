@@ -19,6 +19,7 @@ import { ConstructionButton } from './components/xstream/ConstructionButton'
 import { Column, type ColumnInputs } from './components/Column'
 import { AboutPage } from './components/AboutPage'
 import { readShell, bootstrapShell, type AgentShell } from './lib/bsp-client'
+import { extractUserSettings, type SettingsBlock } from './kernel/settings-reader'
 import type { Theme, Face } from './types/xstream'
 import './App.css'
 
@@ -197,6 +198,9 @@ function ColumnsApp({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) =>
   // Stable anon id for this browser. Used as substrate agent_id when no
   // handle is typed; UI still displays "anon".
   const [anonId] = useState<string>(() => getOrCreateAnonId())
+  // Per-user settings sub-block (shell:5). Derived from the loaded shell.
+  // Phase B: per-user wins over per-beach in the precedence chain.
+  const userSettings: SettingsBlock = extractUserSettings(shell?.raw ?? null)
 
   // Inbox acks — global to the user, shared across columns. A mark dismissed
   // in one column shouldn't haunt the user in another.
@@ -351,6 +355,7 @@ function ColumnsApp({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) =>
               id={col.id}
               identity={identity}
               anonId={anonId}
+              userSettings={userSettings}
               shell={shell}
               onShellSaved={setShell}
               inboxAcks={inboxAcks}
