@@ -370,3 +370,61 @@ All federated. All sovereign per beach / per community. All edited via the same 
 xstream-play is the reference implementation of this pattern. The substrate-as-program direction makes it a *toolkit* for federated coordination — V/L/S happens to be the canvas, but the underlying mechanism (interpreters reading substrate-authored policy) serves any rule-bound process. Governance is the high-stakes case; chat / brainstorm / RPG are the immediate test cases.
 
 The line between code and pscale isn't a technical question — it's the question of what the kernel knows by being shipped vs. what it learns by reading. Phase A starts the answer; phase D demonstrates the value; phase G generalises it.
+
+---
+
+## Appendix — Environmental checks before phase A
+
+Six pre-flight checks worth running before any phase starts. They give 80% of the predictive insight at zero implementation cost. Three are data-gathering against live infrastructure; three are design pinning that goes back into this document.
+
+### Branch strategy per phase
+
+Risk-tiered, not all-or-nothing:
+
+| Phase | Risk | Where | Why |
+|---|---|---|---|
+| A (settings reader + 1 setting) | very low | current branch direct | half-day work, single hook, easy `git revert` |
+| B (generalise L1) | low–medium | current branch direct | each setting migrates independently; per-commit revert |
+| C (recipe runner) | medium | sub-branch `feature/recipe-runner` | changes soft + medium prompt assembly; preview URL before xstream.onen.ai |
+| D (collective synthesis) | **high** | sub-branch `feature/collective-synthesis` | multi-user race conditions; needs orchestrated 3-browser testing |
+| E (verb dispatcher) | low after C–D | current branch direct | pattern established; verbs independent and per-verb revertable |
+| F (cycle walker) | defer | n/a | only build when needed |
+| G (state-block walker) | low (independent) | sub-branch `feature/state-block-walker` | new affordance; doesn't touch existing UX |
+
+Pattern: anything that changes user-observable existing behaviour → sub-branch with preview URL. Anything additive or per-item revertable → direct.
+
+### Data-gathering checks (run against live infra)
+
+**Check 1 — Substrate call-volume baseline.** Instrument the kernel for one minute at typical load. Count federated requests per active column per second. Project post-phase-A (settings reads × precedence depth) and post-phase-D (gather across all liquid slots). If projected load exceeds 10 reqs/sec per column, caching strategy needs to be tighter than the default below.
+
+**Check 2 — Vercel KV headroom.** Open the xstream-play project's Vercel dashboard → Storage → KV. Note current requests/day and bandwidth. If at <30% of limits, substrate-as-program is comfortably affordable. If at >70%, design phases A–D with caching as a hard requirement, not an optional optimisation.
+
+**Check 3 — Supabase realtime headroom.** Open Supabase project → Realtime. Note concurrent connections and message rate. The vapour transport already uses this; phase D doesn't add to it. But if we're near limits already, vapour scope partitioning (per-grain channels etc.) becomes urgent.
+
+### Design pinning (go into this document, not code)
+
+**Check 4 — Reader cache strategy.** Decision pinned now: **TTL = 10s for settings; no cache for liquid/marks/presence.** Settings change manually via Designer face; 10s lag is invisible. Liquid/marks/presence are the realtime stream — staleness windows already absorb their refresh cadence; an additional cache would just add confusion.
+
+**Check 5 — Race-condition semantics for phase D.** Pinned cases:
+- A and B both typing; A submits liquid, B is mid-keystroke; A commits 1s later. **B's vapour-not-yet-submitted is NOT included.** Only liquid is gathered.
+- A and B both submit liquid 100ms apart; A commits at +500ms. **B's liquid may or may not be in A's read** depending on poll timing. This is acceptable for brainstorm and group-write use cases. For governance, recipes MUST set `commit_gate: quorum_n` to make timing deterministic.
+- A commits with `clear_all` policy; B is still typing more for THEIR liquid slot. **B's liquid slot gets clobbered.** This is the exact reason `clear_all` is opt-in per recipe. Default is `clear_self_only`.
+- Recommendation: governance recipes use `commit_gate: quorum_<n>` + `clear_referenced` (only slots actually used in synthesis are cleared). Brainstorm recipes use `commit_gate: single` + `clear_all` (collective absorbed). Co-writing recipes use `commit_gate: single` + `clear_self_only` (each author retains autonomy over their own slot).
+
+**Check 6 — Versioning convention.** Pinned now: every conventions block carries `9.version: <semver-string>`. Interpreter accepts a range; reads outside range fail loud with a user-visible "convention version <X> not supported by this client; please update." This prevents Designer-authored shape drift from silently mis-interpreting at the kernel.
+
+### Block-size projection (run during phase A)
+
+A sanity check, not pre-flight: once the conventions block is sketched (during phase A), measure its JSON size when fully populated through phase E. If >100KB, slice into sub-blocks per category. If >500KB, the conventions-as-one-block model is wrong and we revisit.
+
+### Pre-flight checklist
+
+Before phase A starts:
+- [ ] Check 1 (call-volume baseline) — instrument-and-measure, ~30 min
+- [ ] Check 2 (Vercel KV headroom) — dashboard read, ~5 min
+- [ ] Check 3 (Supabase realtime headroom) — dashboard read, ~5 min
+- [x] Check 4 (cache strategy) — pinned above
+- [x] Check 5 (race-condition semantics) — pinned above
+- [x] Check 6 (versioning) — pinned above
+
+Result: substrate budget known, transport budget known, collective-synthesis semantics fixed at the design level, cache + versioning policies pinned. Phases A through E proceed with no remaining open architectural questions.
