@@ -29,7 +29,13 @@ import { BeachKernel, type InboxItem } from '../kernel/beach-kernel'
 import { createBeachSession, type BeachSession, type MarkRow, type FrameView, type PoolView, type LiquidPeer } from '../kernel/beach-session'
 import { resolveSetting, SETTINGS, type SettingsBlock } from '../kernel/settings-reader'
 import { setHiddenRef, beachToRef, resolveRef, bsp, pscaleRegister, pscaleGrainReach, pscaleKeyPublish, pscaleVerifyRider, pscaleCreateCollective, type AgentShell, type PresenceMark, type PscaleNode } from '../lib/bsp-client'
-import { SubstrateTray, type SubstrateAct } from './SubstrateTray'
+// SubstrateTray was rendered into the column header in the pre-button-tray
+// era. Its verbs (register / reach / keys / passport / create-collective)
+// now live on the floating ConstructionButton; the handler also lives there
+// or in handleSubmit's verb-router. The header copy was duplicating the
+// button — removed so registering a handle no longer mutates the header.
+//
+// import { SubstrateTray, type SubstrateAct } from './SubstrateTray'
 import { joinVapourChannel, deriveScope, type VapourChannelHandle, type VapourBroadcast } from '../lib/realtime'
 import { getBlock, injectBlock } from '../kernel/block-store'
 import { callClaudeWithTools, callClaudeViaMcpConnector, buildSoftRecipePrompt } from '../kernel/claude-tools'
@@ -715,51 +721,13 @@ export function Column(props: ColumnProps) {
   }, [])
 
   // Substrate tray — direct calls to the five non-geometric primitives.
-  // Each act surfaces a result via softResponse (info type) so the user sees
-  // success/failure inline without leaving the column.
-  const handleTrayAct = useCallback(async (act: SubstrateAct) => {
-    const reportInfo = (msg: string) => setSoftResponse({
-      id: Date.now().toString(), originalInput: act.kind, text: msg,
-      softType: 'info', face, frameId: null,
-    })
-    if (!identity.handle && act.kind !== 'verify_rider') {
-      reportInfo('Identify first (button → Identity).')
-      return
-    }
-    if (!identity.secret && act.kind !== 'verify_rider') {
-      reportInfo('Passphrase required for substrate writes.')
-      return
-    }
-    try {
-      if (act.kind === 'register') {
-        reportInfo(`📝 registering at sed:${act.collective}…`)
-        const r = await pscaleRegister({ collective: act.collective, declaration: act.declaration, passphrase: identity.secret })
-        reportInfo(r.ok ? `📝 ${r.message}` : `register failed: ${r.message}`)
-      } else if (act.kind === 'grain_reach') {
-        reportInfo(`🤝 reaching to ${act.partner}…`)
-        const r = await pscaleGrainReach({
-          agent_id: identity.handle, partner_agent_id: act.partner,
-          description: act.purpose || `${identity.handle}↔${act.partner}`,
-          my_side_content: act.purpose || '(reaching)', my_passphrase: identity.secret,
-        })
-        reportInfo(r.ok ? `🤝 ${r.message}` : `reach failed: ${r.message}`)
-      } else if (act.kind === 'key_publish') {
-        reportInfo(`🔑 deriving + publishing keys…`)
-        const r = await pscaleKeyPublish({ agent_id: identity.handle, secret: identity.secret })
-        reportInfo(r.ok ? `🔑 ${r.message}` : `key publish failed: ${r.message}`)
-      } else if (act.kind === 'create_collective') {
-        reportInfo(`🌐 creating sed:${act.name}…`)
-        const r = await pscaleCreateCollective({ collective: act.name, conventions: act.description, creator_passphrase: identity.secret })
-        reportInfo(r.ok ? `🌐 ${r.message}` : `create_collective failed: ${r.message}`)
-      } else if (act.kind === 'verify_rider') {
-        reportInfo(`✓ verifying ${act.rider_id}…`)
-        const r = await pscaleVerifyRider({ sender_agent_id: act.rider_id })
-        reportInfo(r.ok ? `✓ ${r.message}` : `verify failed: ${r.message}`)
-      }
-    } catch (e) {
-      reportInfo(`tray error: ${e instanceof Error ? e.message : String(e)}`)
-    }
-  }, [face, identity.handle, identity.secret])
+  // handleTrayAct was the handler for the (now-removed) header SubstrateTray.
+  // The verbs it dispatched (register / grain_reach / key_publish /
+  // create_collective / verify_rider) are reachable today via:
+  //   - the floating ConstructionButton's verb tray
+  //   - handleSubmit's verb-router (e.g. "register sed:<c> <decl>")
+  //   - the soft-LLM with bsp-mcp tools
+  // No live caller; removed alongside the tray render.
 
   // ── Derived data for the zones ──
 
@@ -1085,9 +1053,10 @@ export function Column(props: ColumnProps) {
         )}
 
         <div className="ml-auto flex items-center gap-1.5 shrink-0">
-          {identity.handle && (
-            <SubstrateTray agentId={identity.handle} onAct={handleTrayAct} />
-          )}
+          {/* SubstrateTray (reach / register / keys / passport / planet) lives
+              on the floating ConstructionButton — it was duplicated here from
+              the pre-button-tray era. Removed so registering a handle no
+              longer mutates the header. */}
           {identity.handle && (
             <button
               onClick={() => setInboxOpen(v => !v)}
