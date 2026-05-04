@@ -20,7 +20,7 @@
  */
 
 import type { Face } from '../lib/bsp-client';
-import type { BeachSession, MarkRow, FrameView, PoolView } from './beach-session';
+import type { BeachSession, MarkRow, FrameView, PoolView, LiquidPeer } from './beach-session';
 import type { PresenceMark } from '../lib/bsp-client';
 import { getBlock } from './block-store';
 import { bsp as walkLocal } from './bsp';
@@ -77,6 +77,9 @@ interface SynthesiseOpts {
   presence: PresenceMark[];
   frame: FrameView | null;
   pool: PoolView | null;
+  /** All live liquid slots at beach:7.<address>, including self. Phase D —
+   * medium synthesises across the rendezvous, not just the committer's slot. */
+  peerLiquid: LiquidPeer[];
   settingsContext: SettingsContext;
 }
 
@@ -104,6 +107,7 @@ export async function synthesise(opts: SynthesiseOpts): Promise<SynthesiseResult
       session: opts.session, shell: null, face: opts.face,
       marks: opts.marks, presence: opts.presence,
       frame: opts.frame, pool: opts.pool,
+      peerLiquid: opts.peerLiquid,
       pendingLiquid: opts.pendingLiquid,
       recipeDirective: directive,
     },

@@ -519,6 +519,34 @@ export class BeachKernel {
     return this.writeBeachLiquid('');
   }
 
+  /** Phase D collective clear — wipes every liquid slot at beach:7.<address>.
+   * Used by recipes with `clear_policy: all` (brainstorm / collective absorbed
+   * into solid). One write per occupied slot; missing slots are no-ops. The
+   * liquid presence cache supplies the slot list, so this requires a recent
+   * cycle's view (no extra read).
+   *
+   * NOTE: This is a polite-collision API — peers writing concurrently may have
+   * their fresh liquid clobbered. Recipes that use `clear_all` accept that;
+   * recipes that don't want it stay on the default `clear_self_only`. */
+  async clearLiquidAtAddress(slots: Array<{ digit: string }>): Promise<{ ok: boolean; cleared: number; errors: number }> {
+    const beach = this.session.current_beach;
+    const address = this.session.current_address;
+    let cleared = 0; let errors = 0;
+    for (const { digit } of slots) {
+      const spindle = address ? `7.${address}.${digit}` : `7.${digit}`;
+      const r = await bsp({
+        agent_id: beach,
+        block: 'beach',
+        spindle,
+        content: { _: '', '1': '', '2': address, '3': new Date().toISOString(), '4': null },
+      });
+      if (r.ok) cleared++; else errors++;
+    }
+    if (cleared > 0) this.cb.onLog(`💧 cleared ${cleared} liquid slot(s) at beach:7.${address || ''}`);
+    if (errors > 0) this.cb.onError(`liquid clear had ${errors} error(s)`);
+    return { ok: errors === 0, cleared, errors };
+  }
+
   private async cycle(): Promise<void> {
     if (!this.running || this.cycling) return;
     this.cycling = true;

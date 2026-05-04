@@ -34,6 +34,7 @@ import { joinVapourChannel, deriveScope, type VapourChannelHandle, type VapourBr
 import { getBlock, injectBlock } from '../kernel/block-store'
 import { callClaudeWithTools, callClaudeViaMcpConnector, buildSoftRecipePrompt } from '../kernel/claude-tools'
 import { synthesise, parseRecipe } from '../kernel/medium-llm'
+import { resolveRecipe, getCollectivePolicy } from '../kernel/recipe-runner'
 import type { SolidBlock, LiquidCard, VapourEntry, Face } from '../types/xstream'
 import type { SoftLLMResponse } from '../types'
 
@@ -653,11 +654,16 @@ export function Column(props: ColumnProps) {
       const sf = shell?.faces.find(x => x.canonical === face)
       const recipeRaw = sf && (sf as unknown as { synthesis?: string }).synthesis
       const mode = parseRecipe(typeof recipeRaw === 'string' ? recipeRaw : null, face)
+      const settingsContext = { beach_settings: beachSettings, user_settings: userSettings }
+      // Phase D: collective policy is per-recipe. Resolve here so both medium
+      // (gather) and the post-commit clear honour the same authored policy.
+      const mediumRecipe = resolveRecipe('medium', face, settingsContext)
+      const collective = getCollectivePolicy(mediumRecipe)
 
       let textToWrite = sourceText ?? ''
       if (mode !== 'bypass' && identity.apiKey && sourceText && identity.handle) {
         try {
-          setLogs(prev => [...prev.slice(-50), `🌀 medium synthesising (${typeof mode === 'string' ? mode : 'custom'} · ${face})…`])
+          setLogs(prev => [...prev.slice(-50), `🌀 medium synthesising (${typeof mode === 'string' ? mode : 'custom'} · ${face} · ${peerLiquid.length} liquid slot${peerLiquid.length === 1 ? '' : 's'})…`])
           const r = await synthesise({
             apiKey: identity.apiKey,
             model: session.medium_model,
@@ -667,7 +673,8 @@ export function Column(props: ColumnProps) {
             mode,
             session: kernelRef.current.session,
             marks, presence, frame, pool,
-            settingsContext: { beach_settings: beachSettings, user_settings: userSettings },
+            peerLiquid,
+            settingsContext,
           })
           if (!r.bypassed) {
             textToWrite = r.text
@@ -686,15 +693,22 @@ export function Column(props: ColumnProps) {
         await kernelRef.current.commitLiquid(textToWrite)
       } else {
         await kernelRef.current.dropMark(textToWrite)
-        // Clear our liquid slot so the next poll's substrate read no longer
-        // returns is_self → button reverts from commit● to faded/submit.
-        // Best-effort — failure is logged but doesn't block the commit.
-        kernelRef.current.clearMyBeachLiquid().catch(() => {})
+        // Phase D: clear behaviour is policy-driven. `self` (default) clears
+        // only the committer's slot — peer autonomy preserved. `all` clears
+        // every slot at the address — collective absorbed (brainstorm). The
+        // governance variants (`consent`, `referenced`) require committed-flag
+        // state on slots and land in a follow-up; they fall back to `self`.
+        const k = kernelRef.current
+        if (collective.clearPolicy === 'all') {
+          k.clearLiquidAtAddress(peerLiquid.map(p => ({ digit: p.digit }))).catch(() => {})
+        } else {
+          k.clearMyBeachLiquid().catch(() => {})
+        }
       }
     } finally {
       setIsCommitting(false)
     }
-  }, [peerLiquid, identity.handle, identity.secret, identity.apiKey, face, shell, session.medium_model, marks, presence, frame, pool])
+  }, [peerLiquid, identity.handle, identity.secret, identity.apiKey, face, shell, session.medium_model, marks, presence, frame, pool, beachSettings, userSettings])
 
   const handleCopyToVapor = useCallback((text: string) => {
     setVapor(text)
