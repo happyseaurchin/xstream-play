@@ -26,12 +26,11 @@
  * branch 4 underscores name the slots; we fill them from live state.
  */
 
-import { bsp as bspCall, pscaleRegister, pscaleGrainReach, pscaleKeyPublish, pscaleCreateCollective, pscaleVerifyRider, type BspParams, type BspReadResult, type BspWriteResult, type Face, type Tier, type AgentShell, type PscaleNode, type PresenceMark } from '../lib/bsp-client';
-import { bsp as walkLocal, collectUnderscore } from './bsp';
-import { getBlock } from './block-store';
+import { bsp as bspCall, pscaleRegister, pscaleGrainReach, pscaleKeyPublish, pscaleCreateCollective, pscaleVerifyRider, type BspParams, type BspReadResult, type BspWriteResult, type Face, type Tier, type AgentShell, type PresenceMark } from '../lib/bsp-client';
 import type { BeachSession, MarkRow, FrameView } from './beach-session';
-import { messagesApi, logFilmstrip } from './claude-direct';
-import { runBundle } from './run-bundle';
+import { logFilmstrip } from './claude-direct';
+import { resolveRecipe, runRecipe, buildRecipeSystemPrompt } from './recipe-runner';
+import type { SettingsContext } from './settings-reader';
 
 // ── Tool schemas ──
 
@@ -312,188 +311,11 @@ async function executeBsp(input: Record<string, any>, ctx: ExecutorContext): Pro
   }
 }
 
-// ── Context composition (fills soft-agent branch 4 slots) ──
-
-export interface ContextSlots {
-  shell_summary: string;
-  frame_summary: string;
-  solid_history: string;
-  user_message: string;
-}
-
-function shellSummary(shell: AgentShell | null, activeFace: Face): string {
-  if (!shell) return '(no shell — anonymous user, or shell not yet bootstrapped)';
-  const sf = shell.faces.find(f => f.canonical === activeFace);
-  const lines: string[] = [];
-  if (shell.description) lines.push(shell.description);
-  lines.push(`Active face: ${activeFace}`);
-  if (sf) {
-    if (sf.label) lines.push(`  ${sf.label}`);
-    if (sf.default_address) lines.push(`  default address: ${sf.default_address}`);
-    lines.push(`  knowledge_gates: ${sf.knowledge_gates || '(empty — default scope)'}`);
-    lines.push(`  commit_gates:    ${sf.commit_gates || '(empty — see whetstone:3.2 fallback)'}`);
-    if (sf.persona) lines.push(`  persona: ${sf.persona}`);
-  }
-  if (shell.watched_beaches.length) lines.push(`Watched beaches: ${shell.watched_beaches.join(', ')}`);
-  if (shell.block_manifest.length) lines.push(`Block manifest: ${shell.block_manifest.join(', ')}`);
-  return lines.join('\n');
-}
-
-function frameSummary(frame: FrameView | null, presence: PresenceMark[], session: BeachSession): string {
-  if (frame) {
-    const lines: string[] = [];
-    lines.push(`In-frame: ${session.current_frame} (entity ${session.entity_position}) at ${session.current_beach}`);
-    if (frame.scene_underscore) lines.push(`Scene: ${frame.scene_underscore}`);
-    if (frame.synthesis) lines.push(`Synthesis: ${frame.synthesis}`);
-    if (frame.synthesis_envelope) lines.push(`  envelope: ${frame.synthesis_envelope}`);
-    for (const e of frame.entities) {
-      const me = e.position === session.entity_position ? ' (you)' : '';
-      const liquid = e.liquid ? ` liquid="${e.liquid.slice(0, 80)}"` : '';
-      const solid = e.solid ? ` solid="${e.solid.slice(0, 80)}"` : '';
-      lines.push(`  entity ${e.position}${me}: ${e.underscore || '(no underscore)'}${liquid}${solid}`);
-    }
-    return lines.join('\n');
-  }
-  // Beachcombing
-  const lines: string[] = [];
-  lines.push(`Beachcombing at ${session.current_beach}:${session.current_address || '(root)'}`);
-  if (presence.length === 0) {
-    lines.push('No present peers.');
-  } else {
-    lines.push(`Present peers (${presence.length}):`);
-    for (const p of presence.slice(0, 10)) {
-      lines.push(`  ${p.agent_id} @ ${p.address || '(root)'} — ${p.timestamp}`);
-    }
-  }
-  return lines.join('\n');
-}
-
-function solidHistory(marks: MarkRow[], session: BeachSession): string {
-  // Last 3 substantive (non-presence) marks at the current address.
-  const filtered = marks
-    .filter(m => !m.is_presence)
-    .filter(m => !session.current_address || (m.address ?? '').startsWith(session.current_address))
-    .slice(-3);
-  if (filtered.length === 0) return '(no recent solid at this address)';
-  return filtered
-    .map(m => `${m.timestamp || '?'} — ${m.agent_id || '?'}: ${m.text}`)
-    .join('\n');
-}
-
-export function composeContext(opts: {
-  session: BeachSession;
-  shell: AgentShell | null;
-  face: Face;
-  marks: MarkRow[];
-  presence: PresenceMark[];
-  frame: FrameView | null;
-  userMessage: string;
-}): ContextSlots {
-  return {
-    shell_summary: shellSummary(opts.shell, opts.face),
-    frame_summary: frameSummary(opts.frame, opts.presence, opts.session),
-    solid_history: solidHistory(opts.marks, opts.session),
-    user_message: opts.userMessage,
-  };
-}
-
-// ── System prompt (walk soft-agent branch 4 for slot labels) ──
-
-function softAgentSlotLabel(digit: string): string {
-  // Walk the in-memory soft-agent block at spindle "4.<digit>". The terminal
-  // chain entry holds the slot label as authored in the block; we do NOT
-  // reinvent the slot names.
-  const block = getBlock('soft-agent');
-  if (!block) return '';
-  const result = walkLocal(block, '4.' + digit);
-  if (result.mode === 'spindle' && result.nodes.length > 0) {
-    return result.nodes[result.nodes.length - 1].text;
-  }
-  return '';
-}
-
-function softAgentDescription(): string {
-  const block = getBlock('soft-agent');
-  if (!block) return '';
-  const u = collectUnderscore(block);
-  return u || '';
-}
-
-/**
- * Per-CADO-face role addendum. The base soft-agent.json describes the generic
- * thinking-partner role; this differentiates how soft serves each face.
- * Designer-face content here is what makes "design through the interface"
- * actually work — the soft-LLM is told it's helping the user edit their shell.
- */
-const FACE_DISCIPLINE =
-  'Discipline — you walk and you propose; you NEVER write to the substrate directly.\n' +
-  ' - bsp() is read-only for you. Use it to walk: shells, passports, frames, pools, marks.\n' +
-  ' - When the user asks you to draft / propose / refine / compose something they intend to act on, use propose_liquid(text). Liquid pools with peer liquid (when shared, e.g. in-frame); the user clicks commit, which fires medium-LLM synthesis to produce the solid substrate edit.\n' +
-  ' - For casual conversation, reflection, or surfacing options, just reply in text. Reply text is the chat; propose_liquid is the proposal you would have the user commit.\n' +
-  ' - Never call bsp() with a content parameter — it will be rejected. Substrate edits happen at commit-time via medium, not from you.';
-
-/**
- * Per-CADO-face role text. Read from the `bundles` block at runtime so the
- * persona is editable as block content (Designer-face shell editing) instead
- * of hardcoded TypeScript. Bundles live at bundles:1.<faceDigit>:
- *   1=character, 2=author, 3=designer, 4=observer. The `_` underscore at
- *   each is the role text. Falls back to terse defaults if the block is
- *   absent — matches seeded bundles.json so first-load is identical.
- */
-const FACE_DIGIT: Record<Face, string> = {
-  character: '1', author: '2', designer: '3', observer: '4',
-};
-
-const FACE_ROLE_FALLBACK: Record<Face, string> = {
-  character: 'Active face is CHARACTER. Thinking partner. propose_liquid when the user converges on intent.',
-  author: 'Active face is AUTHOR. Creation partner for shared surfaces. Draft in user\'s voice; propose_liquid.',
-  designer: 'Active face is DESIGNER. Shell editor. Propose shell deltas as liquid for user to commit.',
-  observer: 'Active face is OBSERVER. Read-only curator. Never propose_liquid.',
-};
-
-function readFaceRole(face: Face): string {
-  const bundles = getBlock('bundles');
-  if (typeof bundles !== 'object' || bundles === null) return FACE_ROLE_FALLBACK[face];
-  const r = walkLocal(bundles, '1.' + FACE_DIGIT[face]);
-  if (r.mode === 'spindle' && r.nodes.length > 0) {
-    const txt = r.nodes[r.nodes.length - 1].text;
-    if (txt) return txt;
-  }
-  return FACE_ROLE_FALLBACK[face];
-}
-
-export function buildSoftSystemPrompt(opts: {
-  agentId: string;
-  face: Face;
-  ctx: ContextSlots;
-}): string {
-  const desc = softAgentDescription().replace(/\{name\}/g, opts.agentId || 'the user');
-
-  const slot1 = softAgentSlotLabel('1') || 'Agent shell.';
-  const slot2 = softAgentSlotLabel('2') || 'Frame: present agents, recent marks, sed stack at address.';
-  const slot3 = softAgentSlotLabel('3') || 'Solid history: last 3 solids at this address.';
-
-  // System prompt is data, not instruction. Identity + scoop only. Tool
-  // semantics live in the tool schemas; behaviour shaping (persona, gates,
-  // any custom directives) lives in the user's shell which is part of the
-  // scoop. No discipline lectures, no pedagogical scaffolding.
-  const sections: string[] = [];
-  sections.push(desc);
-  sections.push('');
-  sections.push(`agent_id: ${opts.agentId || '(anonymous)'}`);
-  sections.push(`face: ${opts.face}`);
-  sections.push('');
-  sections.push(`# ${slot1}`);
-  sections.push(opts.ctx.shell_summary);
-  sections.push('');
-  sections.push(`# ${slot2}`);
-  sections.push(opts.ctx.frame_summary);
-  sections.push('');
-  sections.push(`# ${slot3}`);
-  sections.push(opts.ctx.solid_history);
-
-  return sections.join('\n');
-}
+// ── Context composition: now lives in recipe-runner.ts as gather slots ──
+//
+// composeContext / buildSoftSystemPrompt have moved into recipe-runner.ts
+// (built-in default soft recipe + GATHERS dispatch). The system prompt is
+// assembled from a substrate-authored recipe block, not hardcoded TS.
 
 // ── Beta spike: Anthropic Messages API mcp_servers connector ──
 //
@@ -577,6 +399,7 @@ export interface SoftLLMOptions {
   presence: PresenceMark[];
   frame: FrameView | null;
   userMessage: string;
+  settingsContext: SettingsContext;
   maxTurns?: number;
   maxTokens?: number;
   onToolCall?: (name: string, input: unknown) => void;
@@ -591,27 +414,12 @@ export interface SoftLLMResult {
 }
 
 /**
- * Soft bundle entry point — composes context (scoop) + builds system prompt
- * (framing) + dispatches to the unified runBundle primitive. This is a thin
- * wrapper now; the loop body lives in run-bundle.ts. Future: replace the
- * scoop+framing composition with reading bundles:1.<face> directly and
- * resolving its declared scoop list.
+ * Soft entry point — resolves the soft recipe (substrate-authored or built-in
+ * default), gathers context per the recipe template, dispatches via runRecipe.
+ * Tool catalogue + executor live here; system-prompt assembly is recipe-driven.
  */
 export async function callClaudeWithTools(opts: SoftLLMOptions): Promise<SoftLLMResult> {
-  const ctx = composeContext({
-    session: opts.session,
-    shell: opts.shell,
-    face: opts.face,
-    marks: opts.marks,
-    presence: opts.presence,
-    frame: opts.frame,
-    userMessage: opts.userMessage,
-  });
-  const systemPrompt = buildSoftSystemPrompt({
-    agentId: opts.session.agent_id,
-    face: opts.face,
-    ctx,
-  });
+  const recipe = resolveRecipe('soft', opts.face, opts.settingsContext);
   const executorCtx: ExecutorContext = {
     session: opts.session,
     shell: opts.shell,
@@ -620,17 +428,35 @@ export async function callClaudeWithTools(opts: SoftLLMOptions): Promise<SoftLLM
     onProposeLiquid: opts.onProposeLiquid,
   };
 
-  const r = await runBundle({
+  // Observer face is read-only by spec (xstream-frame protocol §5.4 +
+  // bundles:1.4 "tools: bsp(read-only)"). Strip propose_liquid so the
+  // soft-LLM cannot stage liquid for commit under this face.
+  const tools = opts.face === 'observer'
+    ? BSP_TOOLS.filter(t => t.name !== 'propose_liquid')
+    : BSP_TOOLS;
+
+  const r = await runRecipe({
+    recipe,
+    inputs: {
+      session: opts.session, shell: opts.shell, face: opts.face,
+      marks: opts.marks, presence: opts.presence,
+      frame: opts.frame, pool: null,
+    },
+    userMessage: opts.userMessage,
     apiKey: opts.apiKey,
-    model: opts.model,
-    systemPrompt,
-    tools: BSP_TOOLS,
+    defaultModel: opts.model,
+    // Anthropic constraint: max_tokens > thinking.budget_tokens. 8192 total
+    // leaves ~3000 for output after thinking (reply text + tool JSON).
+    defaultMaxTokens: opts.maxTokens ?? 8192,
+    // Extended thinking gives soft a scratchpad for multi-step substrate
+    // navigation: reading reaches, extracting fields, picking partner ids.
+    defaultThinkingBudget: 5000,
+    tools,
     toolExecutor: (name, input) => executeTool(name, input, executorCtx),
-    maxTurns: opts.maxTurns ?? 8,
-    maxTokens: opts.maxTokens ?? 1024,
+    maxTurns: opts.maxTurns ?? 12,
     telemetry: { tier: 'soft', face: opts.face },
     onToolCall: opts.onToolCall,
-  }, opts.userMessage);
+  });
 
   return {
     text: r.text === '(bundle exhausted tool-use turns)'
@@ -639,4 +465,27 @@ export async function callClaudeWithTools(opts: SoftLLMOptions): Promise<SoftLLM
     turns: r.turns,
     toolCalls: r.toolCalls,
   };
+}
+
+// ── Connector-path system prompt assembly ──
+//
+// Convenience for callers that need the recipe-built system prompt without
+// running the in-client tool loop (e.g. the Anthropic MCP connector path).
+// Resolves the soft recipe, builds the system prompt, returns it. The caller
+// passes it to callClaudeViaMcpConnector.
+
+export function buildSoftRecipePrompt(opts: {
+  session: BeachSession;
+  shell: AgentShell | null;
+  face: Face;
+  marks: MarkRow[];
+  presence: PresenceMark[];
+  frame: FrameView | null;
+  settingsContext: SettingsContext;
+}): string {
+  const recipe = resolveRecipe('soft', opts.face, opts.settingsContext);
+  return buildRecipeSystemPrompt(recipe, {
+    session: opts.session, shell: opts.shell, face: opts.face,
+    marks: opts.marks, presence: opts.presence, frame: opts.frame, pool: null,
+  });
 }

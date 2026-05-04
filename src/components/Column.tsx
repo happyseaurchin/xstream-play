@@ -32,7 +32,7 @@ import { setHiddenRef, beachToRef, resolveRef, bsp, pscaleRegister, pscaleGrainR
 import { SubstrateTray, type SubstrateAct } from './SubstrateTray'
 import { joinVapourChannel, deriveScope, type VapourChannelHandle, type VapourBroadcast } from '../lib/realtime'
 import { getBlock, injectBlock } from '../kernel/block-store'
-import { callClaudeWithTools, callClaudeViaMcpConnector, composeContext, buildSoftSystemPrompt } from '../kernel/claude-tools'
+import { callClaudeWithTools, callClaudeViaMcpConnector, buildSoftRecipePrompt } from '../kernel/claude-tools'
 import { synthesise, parseRecipe } from '../kernel/medium-llm'
 import type { SolidBlock, LiquidCard, VapourEntry, Face } from '../types/xstream'
 import type { SoftLLMResponse } from '../types'
@@ -426,8 +426,10 @@ export function Column(props: ColumnProps) {
       let summary: string
       if (useConnector) {
         try {
-          const ctx = composeContext({ session, shell, face, marks, presence, frame, userMessage: text })
-          const sysPrompt = buildSoftSystemPrompt({ agentId: identity.handle, face, ctx })
+          const sysPrompt = buildSoftRecipePrompt({
+            session, shell, face, marks, presence, frame,
+            settingsContext: { beach_settings: beachSettings, user_settings: userSettings },
+          })
           const r = await callClaudeViaMcpConnector({
             apiKey: identity.apiKey, model: session.soft_model,
             systemPrompt: sysPrompt, userMessage: text,
@@ -442,6 +444,7 @@ export function Column(props: ColumnProps) {
         const result = await callClaudeWithTools({
           apiKey: identity.apiKey, model: session.soft_model,
           session, shell, face, marks, presence, frame, userMessage: text,
+          settingsContext: { beach_settings: beachSettings, user_settings: userSettings },
           onToolCall: (name, input) => {
             setLogs(prev => [...prev.slice(-50), `🛠 ${name}(${JSON.stringify(input).slice(0, 120)})`])
           },
@@ -664,6 +667,7 @@ export function Column(props: ColumnProps) {
             mode,
             session: kernelRef.current.session,
             marks, presence, frame, pool,
+            settingsContext: { beach_settings: beachSettings, user_settings: userSettings },
           })
           if (!r.bypassed) {
             textToWrite = r.text
