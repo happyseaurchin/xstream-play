@@ -453,3 +453,96 @@ Federated beach (happyseaurchin.com) is on the Upstash Redis free tier (10,000 c
 | Drop poll cadence 1.5s → 3s | halves base load | modest UX cost on liquid feel; vapour unaffected (separate transport) |
 
 **Verdict**: free tier sustains solo and pair testing comfortably. Beyond ~10 DAU, either move to Upstash paid (~$2/mo) or drop poll cadence to 3s. Phase A's cache TTL is the single highest-leverage decision for substrate budget; phases C–E add negligible base load. The poll cadence is the real lever, not the migration to substrate-as-program.
+
+---
+
+## Appendix — Session 2026-05-04 outcome and Phase C runway
+
+### What landed
+
+**Phases A and B are merged on `feature/bsp-mcp-native` and live on xstream.onen.ai after the next Vercel deploy.**
+
+Concrete artifacts:
+
+- `src/kernel/settings-reader.ts` — 90-line reader with `resolveSetting<T>(ctx, path, default)` walking per-user → per-beach → built-in default; `extractBeachSettings(rawBeachBlock)` and `extractUserSettings(rawShellBlock)` helpers. Soft type-guard at each layer.
+- `BeachKernel` exposes `setUserSettings(block)` (called from Column on shell load), maintains `cachedBeachSettings` updated each cycle from beach:5, internal `getSetting<T>(path, default)` walks both layers.
+- `BeachKernelCallbacks.onSettings(SettingsBlock)` callback pushes beach:5 to the column for component-side resolveSetting.
+- Column.tsx subscribes to onSettings → setBeachSettings; receives userSettings as a prop from App; uses both in resolveSetting for vapour staleness and vapour debounce.
+- App.tsx calls `extractUserSettings(shell?.raw)` on each shell load and threads userSettings to every Column.
+- Migrated settings (each substrate-resolvable, with built-in fallback): `vapour.staleness_ms` (12000), `vapour.debounce_ms` (80), `liquid.staleness_ms` (60000), `presence.staleness_ms` (30000), `inbox.watch_every_n_cycles` (5).
+- NOT migrated (intentional): `poll_cadence_ms` — live-changing the kernel interval is fragile under concurrent updates, documented inline.
+- Conventions: `blocks/conventions.json` branch 1.2 documents shell:5; branch 1.3 documents beach:5.
+
+Authoring example for either layer:
+```
+bsp({
+  agent_id: <handle>, block: 'shell', spindle: '5',
+  content: { _: 'my settings', vapour: { staleness_ms: 8000, debounce_ms: 50 } },
+  secret: <passphrase>
+})
+```
+Beach-level uses `agent_id: <beach-url>, block: 'beach', spindle: '5', content: {...}`. Designer face can use this directly via console; a UI-level settings editor is not yet built (could be Phase C+ work but not strictly required).
+
+### What this proves
+
+The substrate-as-program direction works end-to-end for L1 settings:
+- Zero extra substrate calls (settings ride on the existing per-cycle beach read)
+- Per-user override beats per-beach default (precedence chain operational)
+- Type-mismatched substrate values fall through to default rather than break (soft guard works)
+- Designer-edits propagate within ~1.5s for beach-level, on next identity load for user-level
+
+### Phase C runway — ready for next session
+
+The recipe runner (DESIGN-SCOPE §2.2) is the next phase. **Branch off `feature/bsp-mcp-native` to `feature/recipe-runner`** before starting; per the branch strategy this changes LLM prompt assembly and warrants preview-URL testing before merge.
+
+**The two consumers to refactor**:
+
+1. `src/kernel/medium-llm.ts` `synthesise()` — assembles a system prompt from hardcoded sections (agent_id, face, recipe, beach, address, frame info OR pool info OR recent marks, then the user's pendingLiquid). The recipe MODE is already substrate-driven (read from `bundles:2.<face>.2` via `parseRecipe`); the TEMPLATE and GATHER are hardcoded.
+
+2. `src/kernel/claude-tools.ts` `composeContext()` + `buildSoftSystemPrompt()` — assembles the soft-LLM system prompt. Already partially substrate-driven (slot labels read from soft-agent block branch 4; whetstone summary, conventions summary, face role from bundles). The GATHER (which substrate state fills each slot) is hardcoded in `composeContext`; the SHELL of the prompt assembly is in `buildSoftSystemPrompt`.
+
+**The minimum useful Phase C move**:
+
+Define a recipe block convention at `(<beach>, "xstream-recipes", "medium.<face>")` and `(<beach>, "xstream-recipes", "soft.<face>")`. Per-user override at `(<handle>, "shell", "recipes.medium.<face>")` etc. The recipe block has:
+```
+{
+  "_": "Description visible to the LLM (becomes part of system prompt)",
+  "1": ["substrate_path_1", "substrate_path_2", ...],   // gather-list
+  "2": "Template with {slot1}, {slot2}... interpolations",
+  "3": "model-name",                                     // optional, falls back to session default
+  "4": "mode: synthesise | propose | bypass"             // optional, defaults to synthesise
+}
+```
+
+Gather-list entries can be substrate paths (parsed and resolved via bsp()) OR named symbolic gathers (`marks:recent`, `presence`, `frame:entities`, `liquid:all_at_address`) interpreted by a small dispatch table in the recipe runner.
+
+**Files to create / modify**:
+
+- NEW: `src/kernel/recipe-runner.ts` — exports `runRecipe(opts)` that resolves the recipe block (precedence-walked like settings), gathers the context, fills the template, calls the LLM via runBundle, returns text.
+- MODIFY: `src/kernel/medium-llm.ts` — `synthesise()` becomes a thin wrapper that loads the medium recipe and calls `runRecipe`.
+- MODIFY: `src/kernel/claude-tools.ts` — `callClaudeWithTools()` becomes a thin wrapper that loads the soft recipe and calls `runRecipe`.
+- MODIFY: `blocks/conventions.json` — document the xstream-recipes convention.
+- NEW: built-in default recipes that match current behaviour exactly (so first-load is identical when no substrate recipe exists).
+
+**Acceptance criteria for Phase C done**:
+1. Existing soft and medium calls produce identical output to current code when no substrate recipe is authored.
+2. Writing a beach-level recipe to `(<beach>, "xstream-recipes", "medium.character")` changes the next medium synthesis to use it.
+3. Per-user override (`(<handle>, "shell", "recipes.medium.character")`) wins over beach-level.
+4. Two-browser test: both at the same address, one writes a beach recipe, both see the recipe applied within ~1.5s on next commit.
+
+**Estimated effort**: 2–3 focused hours. The hard part is the gather-list dispatch table (deciding the symbolic gather names and what each one returns); the rest is mechanical refactor. Verification needs an Anthropic API key in scope.
+
+**Phase D blocked by Phase C** because collective synthesis (the simultaneity insight) is fundamentally a recipe-level change: the gather-list says "all liquid slots at this address" instead of "self-only," the clear policy is per-recipe, the commit gate is per-recipe. Don't attempt D before C is solid.
+
+### Pre-flight checks status (carry into next session)
+
+- [x] Check 1: not formally instrumented, but code review against the kernel cycle gives a confident estimate (~80 cmds/min/column at 1.5s cadence, confirmed by the substrate-budget table).
+- [ ] Check 2: Vercel KV headroom — STILL UNVERIFIED. The xstream-play Vercel project doesn't have a KV (it's a static SPA). The KV is on the happyseaurchin.com Vercel project under team `happyseaurchins-projects`. Whoever picks up Phase C should look there before the first 10-DAU day.
+- [ ] Check 3: Supabase realtime headroom — STILL UNVERIFIED. Same advice: dashboard read, ~5 minutes.
+- [x] Checks 4–6: pinned in this document.
+
+### Other state worth knowing
+
+- The handover docs `HANDOVER-paywall.md`, `HANDOVER-streaming.md`, the modified files in `src/kernel/{block-store,claude-direct,claude-tools,run-bundle}.ts`, and the modifications in `package.json` and `src/lib/supabase.ts` are pre-existing working-tree state that pre-dates this session — NOT touched. The blocks/whetstone.json and `scripts/` directory are also pre-existing untracked state. Phase C should NOT include these in commits unless deliberately reviewed.
+- `feature/recipe-runner` was created and immediately deleted in this session (no commits). The next session should re-create it fresh from `feature/bsp-mcp-native`.
+- xstream.onen.ai is bound to `feature/bsp-mcp-native` (CLAUDE.md gotcha #6); branch deployments for sub-branches will appear at their own Vercel preview URLs.
