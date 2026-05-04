@@ -14,7 +14,11 @@
  *     3: "model-name",                (optional override)
  *     4: 8192,                        (optional max_tokens)
  *     5: 5000,                        (optional thinking_budget)
- *     6: ["bsp", "propose_liquid"] }  (optional tool subset by name)
+ *     6: ["bsp", "propose_liquid"],   (optional tool subset by name)
+ *     7: { _: "collective synthesis policy",
+ *          1: "self|all|consent|referenced",  (clear_policy)
+ *          2: "single|quorum_<n>|consensus|designer_only",  (commit_gate)
+ *          3: 0  (min_gromov_product) } }
  *
  * Resolution rides the settings precedence chain — user (shell:5.recipes.…) →
  * beach (beach:5.recipes.…) → built-in default. Same cache, no extra calls.
@@ -25,16 +29,44 @@
  */
 
 import type { Face, AgentShell, PresenceMark, PscaleNode } from '../lib/bsp-client';
-import type { BeachSession, MarkRow, FrameView, PoolView } from './beach-session';
+import type { BeachSession, MarkRow, FrameView, PoolView, LiquidPeer } from './beach-session';
 import { runBundle, type BundleResult } from './run-bundle';
 import { getBlock } from './block-store';
 import { bsp as walkLocal, collectUnderscore } from './bsp';
-import { resolveSetting, type SettingsContext } from './settings-reader';
+import { type SettingsContext } from './settings-reader';
 
 // ── Types ──
 
 export type RecipeMode = 'synthesise' | 'bypass' | 'blocked' | 'propose';
 export type RecipeTier = 'soft' | 'medium' | 'hard';
+
+/** Where slot-clearing lands after a successful commit.
+ *   self       — only the committer's slot (preserves peer autonomy; safe default)
+ *   all        — every liquid slot at the address (collective absorbed; brainstorm)
+ *   consent    — slots whose owners also committed (Quaker discipline; needs gate)
+ *   referenced — slots the medium-LLM marked as consumed (audit-trail discipline) */
+export type ClearPolicy = 'self' | 'all' | 'consent' | 'referenced';
+
+/** Gate that decides when a commit fires the synthesis.
+ *   single        — first commit wins (current behaviour; brainstorm / co-write)
+ *   quorum_<n>    — wait for N committers (governance vote)
+ *   consensus     — wait for all present to commit (small-group ratification)
+ *   designer_only — only Designer-face members may commit (rule-edit guardrail)
+ *
+ * NOTE: Phase D ships `single` only. quorum/consensus/designer_only need
+ * substrate-side committed-flag state (write `5: committed_ts` to your slot
+ * without firing synthesis; committer's kernel polls and counts) — follow-up. */
+export type CommitGate = 'single' | 'consensus' | 'designer_only' | { quorum: number };
+
+export interface CollectivePolicy {
+  clearPolicy: ClearPolicy;
+  commitGate: CommitGate;
+  /** Filter peer-liquid slots by longest-common-prefix overlap with the
+   * synthesis address. 0 includes everyone; higher values keep the medium
+   * LLM's context tractable when many agents share a deeply-nested rendezvous.
+   * Per DESIGN-SCOPE §4.3.1 (Gromov-product coupling). */
+  minGromovProduct: number;
+}
 
 export interface Recipe {
   description: string;
@@ -44,6 +76,7 @@ export interface Recipe {
   maxTokens?: number;
   thinkingBudget?: number;
   toolSubset?: string[];
+  collective?: CollectivePolicy;
 }
 
 export interface RecipeRuntimeInputs {
@@ -54,8 +87,16 @@ export interface RecipeRuntimeInputs {
   presence: PresenceMark[];
   frame: FrameView | null;
   pool: PoolView | null;
+  /** All liquid slots at the current address (beach:7.<address>). The medium
+   * recipe's collective gather reads across this; the soft recipe ignores it
+   * by default (medium synthesises convergence, soft is one-on-one). */
+  peerLiquid?: LiquidPeer[];
   pendingLiquid?: string;
   recipeDirective?: string;
+  /** Populated by runRecipe before gather — gives gather functions access to
+   * the recipe's collective policy (Gromov filter, etc.) without an extra
+   * parameter on every gather call. */
+  policy?: CollectivePolicy;
 }
 
 // ── Block parser ──
@@ -74,7 +115,41 @@ export function parseRecipeBlock(raw: unknown): Recipe | null {
   const maxTokens = typeof r['4'] === 'number' ? r['4'] : undefined;
   const thinkingBudget = typeof r['5'] === 'number' ? r['5'] : undefined;
   const toolSubset = Array.isArray(r['6']) ? (r['6'].filter(x => typeof x === 'string') as string[]) : undefined;
-  return { description, template, mode, model, maxTokens, thinkingBudget, toolSubset };
+  const collective = parseCollectivePolicy(r['7']);
+  return { description, template, mode, model, maxTokens, thinkingBudget, toolSubset, collective };
+}
+
+function parseCollectivePolicy(raw: unknown): CollectivePolicy | undefined {
+  if (raw === null || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  const clearRaw = typeof r['1'] === 'string' ? r['1'].trim().toLowerCase() : 'self';
+  const clearPolicy: ClearPolicy =
+    clearRaw === 'all' || clearRaw === 'consent' || clearRaw === 'referenced' ? clearRaw : 'self';
+  const gateRaw = typeof r['2'] === 'string' ? r['2'].trim().toLowerCase() : 'single';
+  let commitGate: CommitGate = 'single';
+  if (gateRaw === 'consensus' || gateRaw === 'designer_only') commitGate = gateRaw;
+  else {
+    const m = gateRaw.match(/^quorum_(\d+)$/);
+    if (m) commitGate = { quorum: parseInt(m[1], 10) };
+  }
+  const minGromovProduct = typeof r['3'] === 'number' && r['3'] >= 0 ? Math.floor(r['3']) : 0;
+  return { clearPolicy, commitGate, minGromovProduct };
+}
+
+/** Default policy when a recipe doesn't specify one. Self-only clear, single-
+ * committer gate, no Gromov filter — current behaviour, safe for unfamiliar
+ * collective scenarios. */
+export const DEFAULT_COLLECTIVE_POLICY: CollectivePolicy = {
+  clearPolicy: 'self',
+  commitGate: 'single',
+  minGromovProduct: 0,
+};
+
+/** Read the effective collective policy for a recipe, falling back to the
+ * default. Callers (the commit path) consult this without caring whether the
+ * recipe authored an explicit policy. */
+export function getCollectivePolicy(recipe: Recipe): CollectivePolicy {
+  return recipe.collective ?? DEFAULT_COLLECTIVE_POLICY;
 }
 
 // ── Resolution: user → beach → built-in default ──
@@ -128,10 +203,46 @@ const GATHERS: Record<string, GatherFn> = {
   frame: (i) => frameSummary(i.frame, i.presence, i.session),
   solid_history: (i) => solidHistory(i.marks, i.session),
   medium_context: (i) => mediumContext(i),
+  peer_liquid: (i) => peerLiquidLines(i),
   slot1_label: () => softAgentSlotLabel('1') || 'Agent shell.',
   slot2_label: () => softAgentSlotLabel('2') || 'Frame: present agents, recent marks, sed stack at address.',
   slot3_label: () => softAgentSlotLabel('3') || 'Solid history: last 3 solids at this address.',
 };
+
+/** Longest common dot-segment prefix between two pscale paths. Empty paths
+ * count as 0; equal paths count as their full segment count. Used by the
+ * Gromov-product filter on collective gather. */
+export function gromovProduct(a: string | null | undefined, b: string | null | undefined): number {
+  if (!a || !b) return 0;
+  const aa = a.split('.');
+  const bb = b.split('.');
+  let n = 0;
+  while (n < aa.length && n < bb.length && aa[n] === bb[n]) n++;
+  return n;
+}
+
+/** Format the peer-liquid layer as multi-line context for the medium-LLM.
+ * One line per slot: `<face?> <agent_id> @ <address>: <text>`. The committer's
+ * own slot is included as `(you)` so the LLM sees how their own contribution
+ * fits the convergence. Filtered by the recipe's Gromov-product threshold —
+ * peers whose stored address shares too few prefix segments with the synthesis
+ * address are excluded (keeps context tractable at scale). */
+function peerLiquidLines(i: RecipeRuntimeInputs): string {
+  const peers = i.peerLiquid ?? [];
+  if (peers.length === 0) return '';
+  const min = i.policy?.minGromovProduct ?? 0;
+  const here = i.session.current_address || '';
+  const filtered = min > 0
+    ? peers.filter(p => gromovProduct(p.address, here) >= min)
+    : peers;
+  if (filtered.length === 0) return '';
+  return filtered.map(p => {
+    const who = p.is_self ? `${p.agent_id || 'you'} (you)` : (p.agent_id || '?');
+    const addr = p.address || '(root)';
+    const face = p.face ? `[${p.face}] ` : '';
+    return `  ${face}${who} @ ${addr}: ${p.text}`;
+  }).join('\n');
+}
 
 // ── Gather implementations (live in this module so the runner is self-contained) ──
 
@@ -300,6 +411,14 @@ const SOFT_DEFAULT_TEMPLATE =
   '# {slot3_label}\n' +
   '{solid_history}';
 
+// Phase D: medium synthesises ACROSS the rendezvous, not just self.
+//   {medium_context}  → frame entities OR pool contributions OR recent marks
+//                       (already-collective in those modes).
+//   {peer_liquid}     → all liquid slots at beach:7.<address>, including the
+//                       committer's own — the on-beach collective gather.
+// Empty when nobody (incl. self) has live liquid; the committer's pending
+// liquid still appears under "# user committing:" below for backwards
+// equivalence with the pre-Phase-D solo case.
 const MEDIUM_DEFAULT_TEMPLATE =
   '{medium_description}\n' +
   '\n' +
@@ -309,6 +428,9 @@ const MEDIUM_DEFAULT_TEMPLATE =
   'beach: {beach}\n' +
   'address: {address}\n' +
   '{medium_context}\n' +
+  '\n' +
+  '# liquid here right now (all peers at this address):\n' +
+  '{peer_liquid}\n' +
   '\n' +
   '# user committing:\n' +
   '{pending_liquid}';
@@ -410,7 +532,10 @@ export interface RunRecipeOpts {
 }
 
 export async function runRecipe(opts: RunRecipeOpts): Promise<BundleResult> {
-  const { recipe, inputs } = opts;
+  const { recipe } = opts;
+  // Inject the recipe's collective policy into inputs so gather functions
+  // (peer_liquid, future ones) can honour it without an extra parameter.
+  const inputs: RecipeRuntimeInputs = { ...opts.inputs, policy: getCollectivePolicy(recipe) };
 
   if (recipe.mode === 'bypass' || recipe.mode === 'blocked') {
     return {
