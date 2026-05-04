@@ -33,7 +33,7 @@ import type { BeachSession, MarkRow, FrameView, PoolView, LiquidPeer } from './b
 import { runBundle, type BundleResult } from './run-bundle';
 import { getBlock } from './block-store';
 import { bsp as walkLocal, collectUnderscore } from './bsp';
-import { type SettingsContext } from './settings-reader';
+import { walkSpindle, recipeSpindle, type SettingsContext } from './settings-reader';
 
 // ── Types ──
 
@@ -153,30 +153,29 @@ export function getCollectivePolicy(recipe: Recipe): CollectivePolicy {
 }
 
 // ── Resolution: user → beach → built-in default ──
+//
+// Recipes live as digit-keyed sub-blocks under settings:5 (the recipes
+// sub-block of the settings root). settings-reader's `recipeSpindle()`
+// returns the dot-spindle within the settings block — we walk it via
+// `walkSpindle()` against each layer in precedence order. The block at
+// the spindle is digit-keyed (per the Recipe shape doc-comment above);
+// `parseRecipeBlock()` validates and lifts it into the Recipe interface.
+//
+// Pscale-native: a Designer can write a single recipe at its targeted
+// spindle (e.g. bsp(beach, 'beach', spindle='5.5.2.1', content={...recipe...})
+// to author beach-default medium.character) without re-writing the whole
+// settings tree. The reader sees the new value at the next cycle.
 
 export function resolveRecipe(tier: RecipeTier, face: Face, ctx: SettingsContext): Recipe {
-  const path = `recipes.${tier}.${face}`;
+  const spindle = recipeSpindle(tier, face);
   const fallback = BUILT_IN_RECIPES[tier][face];
-  // resolveSetting<T> rejects type mismatches; we want object-shape, so we
-  // walk the layers manually here and validate via parseRecipeBlock.
   for (const layer of [ctx.user_settings, ctx.beach_settings]) {
-    const v = getNestedPath(layer, path);
+    const v = walkSpindle(layer, spindle);
     if (v === undefined || v === null || typeof v !== 'object') continue;
     const parsed = parseRecipeBlock(v);
     if (parsed) return parsed;
   }
   return fallback;
-}
-
-function getNestedPath(obj: unknown, path: string): unknown {
-  if (obj === null || typeof obj !== 'object') return undefined;
-  const parts = path.split('.');
-  let cur: unknown = obj;
-  for (const p of parts) {
-    if (cur === null || typeof cur !== 'object') return undefined;
-    cur = (cur as Record<string, unknown>)[p];
-  }
-  return cur;
 }
 
 // ── Gather dispatch ──

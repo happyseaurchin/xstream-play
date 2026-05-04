@@ -317,13 +317,17 @@ Order of attack, with a clear "done" definition for each phase.
 
 **Estimate**: 2 days. THIS is the highest-leverage phase per "simultaneity rather than linearity."
 
-### Phase E: verb dispatcher
+### Phase E: verb dispatcher — DROPPED
 
-**Build**: §2.3 verb dispatcher; verbs migrate from Column.tsx switch to a verbs block.
+**Decision (2026-05-04)**: not building. The verb table is conventions-by-another-name; when an LLM is plugged in, conventions are already in the system prompt (Phase C bakes `{conventions}` by default). The LLM reads the convention, recognises user intent, calls `bsp()` directly. Adding a verb table for this case would invert Phase C's gain: more bsp() calls (read xstream-verbs, then read primitive), not fewer.
 
-**Done when**: adding a new verb is a block edit (via Designer face), not a TS edit.
+When LLM is OFF (button-tray triggers, anonymous typing without an API key), the existing 5-verb TypeScript switch in `Column.tsx handleSubmit` is the fast-path. Small surface; rare growth; code-side is correct.
 
-**Estimate**: 1-2 days.
+So `Column.tsx handleSubmit` formally has two paths:
+- **LLM on** → recipe runner → soft-LLM dispatches via `{conventions}` it already has.
+- **LLM off** → TS verb switch (`passport:`, `register sed:`, `engage`, `pool:`, `keys`).
+
+Designer-face controls verb evolution via the conventions block (`beach:8`), not a separate xstream-verbs block. The convention IS the dispatcher.
 
 ### Phase F: cycle walker (defer)
 
@@ -341,17 +345,15 @@ Build only when columns genuinely need different cycles. Today they don't.
 
 ## Outcomes
 
-After phases A–D, xstream-play has:
+After phases A–D (all merged 2026-05-04), xstream-play has:
 
-- **Designer-editable settings** at three precedence layers (per-rendezvous / per-user / built-in)
-- **Designer-editable LLM behaviour** per face (soft and medium)
+- **Designer-editable settings** at three precedence layers (per-rendezvous / per-user / built-in), authored as digit-keyed pscale blocks at `beach:5` / `shell:5` — every setting addressable by spindle (e.g. `5.1.1` = vapour staleness)
+- **Designer-editable LLM behaviour** per face (soft and medium), recipes as digit-keyed sub-blocks at `5.5.<tier>.<face>`
 - **Collective synthesis** across multiple agents' liquid at the same rendezvous — the V/L/S loop becomes a group-coordination primitive, not just personal commit
-- **Commit gates** that turn the same V/L/S surface into governance, voting, brainstorming, or co-writing depending on the recipe
+- **Commit gates** that turn the same V/L/S surface into governance, voting, brainstorming, or co-writing depending on the recipe (recipe field parsed; `single` enforced; `quorum_<n>` / `consensus` / `designer_only` are follow-up)
 - **Federated discipline preserved** — beach owners author beach-level conventions, users author per-user overrides, no silent global commons
 
-After phase E, adding a new substrate verb is a Designer-face act, not a code change.
-
-After phase G (independent of E), xstream-play hosts authored procedural blocks (RPGs, simulations, governance processes) without per-scenario code. The state-block walker is the runtime; the geometry is the program.
+After phase G (Phase E dropped), xstream-play hosts authored procedural blocks (RPGs, simulations, governance processes) without per-scenario code. The state-block walker is the runtime; the geometry is the program.
 
 The Designer face is not a kind of LLM. It's the same soft + medium operating on substrate-policy blocks instead of substrate-content blocks, with the face-gate determining write scope. The block IS the language; bsp() is the only tool needed; the kernel walks the substrate.
 
@@ -364,6 +366,42 @@ The Designer face is not a kind of LLM. It's the same soft + medium operating on
 - Per-component bespoke configuration (e.g., button icon set in a block). Components are surface; surface is reflexive of substrate; component internals stay code.
 - Bespoke "Designer LLM toolset." The standard six bsp-mcp primitives are sufficient — Designer-face just receives different context and write scope.
 - Hard-LLM as a tier. Replaced by recipe-driven star-walk propagation; lives in the same recipe runner with mode = `propagate`.
+
+---
+
+## Appendix — Pscale discipline audit (2026-05-04)
+
+Asked: are we maximising pscale block usage through bsp-mcp, or layering admin on top? Audited the kernel after Phases A–D.
+
+### What's pscale-native ✓
+
+- Recipe blocks: digit-keyed (`_, 1: template, 2: mode, 3: model, 4: max_tokens, 5: thinking, 6: tools, 7: collective`), nested digit sub-blocks for collective policy.
+- Whetstone, conventions, bundles, shell, beach, frame: digit-keyed.
+- Settings (after this commit): digit-keyed at `beach:5`/`shell:5`, addressable by spindle (e.g. `5.1.1` = vapour staleness, `5.5.2.1` = medium.character recipe).
+- Per-cycle reads: ONE `bsp()` call per cycle returns the full beach ring (marks + liquid + presence + frame). The geometry does the work — one spindle read, a cone of meaning.
+- Soft-LLM on-demand calls: 1–5 per turn typically. The whetstone + conventions in the system prompt teach where to look so the LLM picks the right spindle in one call.
+
+### Drift that was fixed
+
+**Settings used named-key JSON.** Phases A/B authored `beach:5.vapour.staleness_ms` etc. as named children. The 2026-05-04 settings-as-digit-positions refactor migrated these to `5.1.1`, `5.1.2`, etc. Spindle-targeted writes now work for individual settings.
+
+### Pre-bake vs agentic-walk — a recipe-level choice
+
+Today the default soft recipe pre-bakes whetstone (~500 tok) + conventions (~2K tok) + shell + frame + solid_history into every system prompt. This is the **predictable-cost** default — works on Anthropic Sonnet at ~3-5K tok per turn, no extra round-trips.
+
+The pscale-purer alternative is **agentic-walk**: the system prompt tells the LLM the spindles it can read if it needs context (`bsp(<beach>, 'beach', spindle='8')` for conventions, etc.) rather than baking the content. Lower per-turn tokens; the LLM picks targeted spindles; more bsp() calls per turn (each ~50ms federated round-trip).
+
+**This is a recipe-level choice, not a kernel choice.** A token-conscious recipe (or a recipe targeting a slow local LM) sets `gather: []` (or omits the heavy slots from its template) and writes a template that *teaches the LLM to walk*. The gather dispatch table already supports this — Designer can author such a recipe today.
+
+Defaults are pre-bake because the floor for human-paced V/L/S is "predictable, no surprise latencies." Recipes opt out for token budgets, slow models, or LLMs that prefer agentic discovery.
+
+### Settings — a v2 shape (now)
+
+The settings-as-digit-positions refactor lands on its own branch / PR before Phase G. It's mechanical (the reader API stays via `SETTINGS.<NAME>` constants) but on-substrate it changes: any existing `beach:5` / `shell:5` written under the named-key shape becomes unreadable. The pre-merge environment is empty so this is acceptable.
+
+### Pointer — LLM-agnostic spec
+
+`docs/llm-agnostic-spec.md` captures the deferred provider abstraction (Anthropic / OpenAI / Ollama / Google). Not on the active phase list; pulled in once Phase G or local-LM testing becomes pressing. The recipe runner is already provider-agnostic above `claude-direct.ts` — the work is one transport-layer slab, ~half a day.
 
 ---
 

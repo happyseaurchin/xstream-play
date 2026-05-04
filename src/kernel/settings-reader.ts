@@ -1,28 +1,38 @@
 /**
- * Settings reader — resolves a setting path against the precedence chain.
+ * Settings reader — pscale-native: digit-spindle resolution.
  *
- * Phase A: per-beach (beach:5) and built-in defaults.
- * Phase B: adds per-user (shell:5) — user override beats beach default.
- * Phase C+ will add per-rendezvous (beach:5.address.<addr>) and per-frame.
+ * The settings BLOCK lives at `beach:5` (per-beach default) and `shell:5`
+ * (per-user override). Internally it is a digit-keyed pscale block — every
+ * meaningful position is a digit child, every string is an underscore. No
+ * named JS keys; no ad-hoc JSON. The geometry IS the schema.
  *
- * Setting paths are dot-paths into the settings block (e.g. "vapour.staleness_ms").
- * The settings block is a plain nested JSON object; resolveSetting walks the path.
+ * Block shape inside `beach:5` / `shell:5`:
  *
- * Designer-face writes happen via bsp() to beach:5 (or shell:5) with the full
- * updated object — pscale spindles only address digit/underscore positions, so
- * named children like "vapour" cannot be addressed individually via spindle.
- * Whole-object replacement is the editing model.
+ *   { _: "xstream client settings",
+ *     1: { _: "vapour",   1: <staleness_ms>,  2: <debounce_ms> },
+ *     2: { _: "liquid",   1: <staleness_ms> },
+ *     3: { _: "presence", 1: <staleness_ms> },
+ *     4: { _: "inbox",    1: <watch_every_n_cycles> },
+ *     5: { _: "recipes",
+ *          1: { _: "soft",   1: <character>, 2: <author>, 3: <designer>, 4: <observer> },
+ *          2: { _: "medium", 1: <character>, 2: <author>, 3: <designer>, 4: <observer> },
+ *          3: { _: "hard",   1: <character>, 2: <author>, 3: <designer>, 4: <observer> } } }
  *
- * The settings blocks are part of the beach block (position 5) and shell block
- * (position 5), so the kernel's existing per-cycle beach read returns the beach
- * settings for free, and the existing identity-load shell read returns the user
- * settings for free — zero extra substrate calls. New values apply on next
- * cycle (~1.5s lag for beach; on next identity-load for user).
+ * Each numeric digit is a sub-block (`_` describes it; child digits address
+ * its parts) OR a primitive value (number / string). The walker handles both.
  *
- * Precedence (Phase B): per-user → per-beach → built-in default. Per-user wins
- * because the user's intent (their shell) is more specific than the beach's
- * collective default.
+ * Resolution: per-user (shell:5) → per-beach (beach:5) → built-in default.
+ * Per-user wins because the user's intent is more specific than the beach's
+ * collective default. Both layers are read by the existing kernel cycle
+ * (beach:5 each tick, shell:5 on identity load) — zero extra substrate calls.
+ *
+ * Designer-edits: write the whole block via bsp() with the digit-keyed shape.
+ * Spindle-targeted writes work too — bsp(beach, 'beach', spindle='5.1.1',
+ * content=8000) edits just vapour staleness without touching the rest.
  */
+
+import type { Face } from '../lib/bsp-client';
+import type { RecipeTier } from './recipe-runner';
 
 export type SettingsBlock = Record<string, unknown> | null;
 
@@ -33,44 +43,62 @@ export interface SettingsContext {
    * beach defaults; Designer-face members can author the shell settings to
    * tune their own experience independently of any beach. */
   user_settings: SettingsBlock;
-  // Phase C+ additions:
-  // address: string;
-  // frame: string | null;
 }
 
-/** Get a nested value from an object via dot-path. Returns undefined if any
- * segment is missing or non-object. */
-function getPath(obj: unknown, path: string): unknown {
-  if (obj === null || typeof obj !== 'object') return undefined;
-  const parts = path.split('.');
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let cur: any = obj;
+/** Spindle constants for known settings. Each constant is the dot-spindle
+ * within `beach:5` / `shell:5` that addresses the value. Adding a new setting
+ * is adding a constant + extending the conventions block — both substrate-
+ * facing, no API drift. */
+export const SETTINGS = {
+  VAPOUR_STALENESS:   '1.1',
+  VAPOUR_DEBOUNCE:    '1.2',
+  LIQUID_STALENESS:   '2.1',
+  PRESENCE_STALENESS: '3.1',
+  INBOX_WATCH_EVERY:  '4.1',
+} as const;
+
+/** Recipe digit map under settings:5 (recipes sub-block).
+ *   5.1 = soft, 5.2 = medium, 5.3 = hard.
+ *   5.<tier>.1 = character, 5.<tier>.2 = author,
+ *   5.<tier>.3 = designer,  5.<tier>.4 = observer. */
+const TIER_DIGIT: Record<RecipeTier, string> = { soft: '1', medium: '2', hard: '3' };
+const FACE_DIGIT: Record<Face, string> = { character: '1', author: '2', designer: '3', observer: '4' };
+
+/** The full spindle to a recipe within the settings block. */
+export function recipeSpindle(tier: RecipeTier, face: Face): string {
+  return `5.${TIER_DIGIT[tier]}.${FACE_DIGIT[face]}`;
+}
+
+/** Walk a digit-keyed pscale block by spindle. Returns the value at the
+ * spindle (which may be a primitive or a sub-block) or undefined if any
+ * segment is missing or unwalkable. Empty spindle returns the block itself. */
+export function walkSpindle(block: unknown, spindle: string): unknown {
+  if (block === null || typeof block !== 'object') return undefined;
+  if (!spindle) return block;
+  const parts = spindle.split('.');
+  let cur: unknown = block;
   for (const p of parts) {
     if (cur === null || typeof cur !== 'object') return undefined;
-    cur = cur[p];
+    cur = (cur as Record<string, unknown>)[p];
   }
   return cur;
 }
 
-/** Resolve a setting against the precedence chain. Returns the first non-null
- * value found at any layer, falling back to defaultValue.
+/** Resolve a setting at a digit-spindle against the precedence chain.
+ * Returns the first non-null primitive value at any layer whose typeof
+ * matches the default; falls back to defaultValue otherwise.
  *
- * Phase B precedence: per-user (shell:5) → per-beach (beach:5) → default.
- * Phase C+ will extend: per-rendezvous → per-frame → per-user → per-beach → default.
- *
- * Type guard: if the resolved value isn't typeof === typeof defaultValue, the
- * default is used at that layer (the next layer is consulted). This prevents
- * Designer-authored type drift from breaking the client — a malformed setting
- * is silently skipped, falling through to the next layer or the default.
- */
+ * Type guard: if the resolved value isn't typeof === typeof defaultValue,
+ * the default is used at that layer (next layer consulted). This prevents
+ * Designer-authored type drift from breaking the client — a malformed
+ * setting is silently skipped, falling through to the next layer or default. */
 export function resolveSetting<T>(
   ctx: SettingsContext,
-  path: string,
-  defaultValue: T
+  spindle: string,
+  defaultValue: T,
 ): T {
-  // Per-user wins over per-beach. User intent is more specific than collective.
   for (const layer of [ctx.user_settings, ctx.beach_settings]) {
-    const v = getPath(layer, path);
+    const v = walkSpindle(layer, spindle);
     if (v === undefined || v === null) continue;
     if (typeof v !== typeof defaultValue) continue;
     return v as T;
@@ -78,20 +106,16 @@ export function resolveSetting<T>(
   return defaultValue;
 }
 
-/** Extract the settings sub-block from a raw beach block. Returns null if
- * absent or malformed. The kernel calls this on each cycle to update the
- * cached settings. */
+/** Extract the settings sub-block from a raw beach block (`beach:5`). */
 export function extractBeachSettings(rawBeachBlock: unknown): SettingsBlock {
   return extractSettingsAtPosition5(rawBeachBlock);
 }
 
-/** Extract the settings sub-block from a raw shell block. Returns null if
- * absent or malformed. App.tsx calls this once per identity load. */
+/** Extract the settings sub-block from a raw shell block (`shell:5`). */
 export function extractUserSettings(rawShellBlock: unknown): SettingsBlock {
   return extractSettingsAtPosition5(rawShellBlock);
 }
 
-/** Both beach and shell put settings at position 5 by convention; same shape. */
 function extractSettingsAtPosition5(block: unknown): SettingsBlock {
   if (block === null || typeof block !== 'object') return null;
   const slot = (block as Record<string, unknown>)['5'];

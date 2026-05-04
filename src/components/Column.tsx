@@ -27,7 +27,7 @@ import { ViewerDrawer } from './ViewerDrawer'
 import { InboxDrawer } from './InboxDrawer'
 import { BeachKernel, type InboxItem } from '../kernel/beach-kernel'
 import { createBeachSession, type BeachSession, type MarkRow, type FrameView, type PoolView, type LiquidPeer } from '../kernel/beach-session'
-import { resolveSetting, type SettingsBlock } from '../kernel/settings-reader'
+import { resolveSetting, SETTINGS, type SettingsBlock } from '../kernel/settings-reader'
 import { setHiddenRef, beachToRef, resolveRef, bsp, pscaleRegister, pscaleGrainReach, pscaleKeyPublish, pscaleVerifyRider, pscaleCreateCollective, type AgentShell, type PresenceMark, type PscaleNode } from '../lib/bsp-client'
 import { SubstrateTray, type SubstrateAct } from './SubstrateTray'
 import { joinVapourChannel, deriveScope, type VapourChannelHandle, type VapourBroadcast } from '../lib/realtime'
@@ -359,7 +359,7 @@ export function Column(props: ColumnProps) {
     if (!vapourChannelRef.current) return
     const debounceMs = resolveSetting(
       { beach_settings: beachSettings, user_settings: userSettings },
-      'vapour.debounce_ms',
+      SETTINGS.VAPOUR_DEBOUNCE,
       80,
     )
     if (vapourBroadcastDebounceRef.current) {
@@ -886,12 +886,12 @@ export function Column(props: ColumnProps) {
 
   // Resolved via the substrate-as-program settings reader. Precedence:
   // per-user (shell:5) → per-beach (beach:5) → built-in default (12000ms).
-  // Designer can override per-user by writing shell:5; per-beach by writing
-  // beach:5. Whole-object replacement (pscale spindles can't address named
-  // children individually).
+  // Designer can override per-user by writing shell:5.1.1; per-beach by
+  // writing beach:5.1.1. Spindle-targeted writes work for any digit-keyed
+  // setting — no whole-object replacement required.
   const VAPOUR_STALENESS_MS = resolveSetting(
     { beach_settings: beachSettings, user_settings: userSettings },
-    'vapour.staleness_ms',
+    SETTINGS.VAPOUR_STALENESS,
     12_000
   )
   const now = Date.now()

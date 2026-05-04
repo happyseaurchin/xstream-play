@@ -29,7 +29,7 @@ import {
 } from '../lib/bsp-client';
 import { poolFromAddress } from './beach-session';
 import type { BeachSession, MarkRow, FrameView, FrameEntity, PoolView, PoolContribution, LiquidPeer, Face } from './beach-session';
-import { extractBeachSettings, resolveSetting, type SettingsBlock } from './settings-reader';
+import { extractBeachSettings, resolveSetting, SETTINGS, type SettingsBlock } from './settings-reader';
 
 const FACE_VALUES: ReadonlyArray<Face> = ['character', 'author', 'designer', 'observer'];
 function asFace(v: unknown): Face | null {
@@ -295,10 +295,10 @@ export class BeachKernel {
     this.cachedUserSettings = settings;
   }
 
-  private getSetting<T>(path: string, defaultValue: T): T {
+  private getSetting<T>(spindle: string, defaultValue: T): T {
     return resolveSetting(
       { beach_settings: this.cachedBeachSettings, user_settings: this.cachedUserSettings },
-      path,
+      spindle,
       defaultValue,
     );
   }
@@ -566,7 +566,7 @@ export class BeachKernel {
       }
 
       // 2. Presence read — staleness resolved from settings (beach:5 / shell:5)
-      const presenceStaleness = this.getSetting('presence.staleness_ms', DEFAULT_PRESENCE_STALENESS_MS);
+      const presenceStaleness = this.getSetting(SETTINGS.PRESENCE_STALENESS, DEFAULT_PRESENCE_STALENESS_MS);
       const { present } = await presenceRead({ beach, address, stalenessMs: presenceStaleness });
       this.cb.onPresence(present);
 
@@ -581,7 +581,7 @@ export class BeachKernel {
       //     raw payload — position 7 is part of the beach block. Address-
       //     prefix filtered (so a viewer at root sees every slot, a viewer
       //     at 5.3 sees slots at 5.3.* etc.) and staled per setting.
-      const liquidStaleness = this.getSetting('liquid.staleness_ms', DEFAULT_LIQUID_STALENESS_MS);
+      const liquidStaleness = this.getSetting(SETTINGS.LIQUID_STALENESS, DEFAULT_LIQUID_STALENESS_MS);
       const liquidPeers = readLiquid(ringRaw, address, aid, Date.now(), liquidStaleness);
       this.cb.onLiquid(liquidPeers);
 
@@ -618,7 +618,7 @@ export class BeachKernel {
       //    to be tagged "for me" against, and the anon-XXXXXX pseudo isn't
       //    communicated to other agents who'd need it to direct messages.
       this.cycleN++;
-      const watchEveryN = this.getSetting('inbox.watch_every_n_cycles', DEFAULT_INBOX_WATCH_EVERY_N_CYCLES);
+      const watchEveryN = this.getSetting(SETTINGS.INBOX_WATCH_EVERY, DEFAULT_INBOX_WATCH_EVERY_N_CYCLES);
       if (!this.session.is_anonymous && this.session.agent_id && this.cycleN % watchEveryN === 0 && this.watchedBeaches.length > 0) {
         await this.scanInbox();
       }
