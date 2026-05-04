@@ -428,3 +428,18 @@ Before phase A starts:
 - [x] Check 6 (versioning) — pinned above
 
 Result: substrate budget known, transport budget known, collective-synthesis semantics fixed at the design level, cache + versioning policies pinned. Phases A through E proceed with no remaining open architectural questions.
+
+### Substrate budget — quantified
+
+Federated beach (happyseaurchin.com) is on the Upstash Redis free tier (10,000 commands/day, 256 MB, 100 concurrent connections). At today's 1.5s poll cadence, each active column consumes ~80 commands/minute (heartbeat write + beach read per cycle, plus inbox scans every 5th cycle).
+
+| Scenario | Daily command count | Tier needed |
+|---|---|---|
+| 1–2 concurrent users, 1 hour/day each | ~5–10K | Free tier — fine |
+| 10 daily active users, 20 min sessions | ~16K | Paid tier (~$2/month for ~100× free headroom) |
+| Phase A with TTL=10s cache | +3 cmds/min/column | ~5% overhead |
+| Phase A without cache | +90 cmds/min/column | ~+100% overhead — **TTL is load-bearing** |
+| Phase D (collective gather at commit) | +0 cmds/min, +1 cmd/commit | negligible |
+| Drop poll cadence 1.5s → 3s | halves base load | modest UX cost on liquid feel; vapour unaffected (separate transport) |
+
+**Verdict**: free tier sustains solo and pair testing comfortably. Beyond ~10 DAU, either move to Upstash paid (~$2/mo) or drop poll cadence to 3s. Phase A's cache TTL is the single highest-leverage decision for substrate budget; phases C–E add negligible base load. The poll cadence is the real lever, not the migration to substrate-as-program.
