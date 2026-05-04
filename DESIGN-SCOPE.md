@@ -246,6 +246,16 @@ Clear policy after commit becomes a per-recipe choice:
 
 Each option is a substrate-readable string in the recipe. Designer-editable.
 
+### 4.3.1 — Coupling weight (Gromov product) for scale
+
+Per the hyperbolic reading of pscale (`pscale-hyperbolic-four-threads.md` Thread 1): when N contributors live in the same rendezvous, **not all of them couple equally** to a given synthesis address. Two contributors at deeply-shared addresses (same scene, same moment) couple strongly; two at unrelated addresses couple weakly even if both are technically in scope.
+
+The Gromov product — length of longest common prefix between two pscale paths — measures coupling strength. A contributor whose stored address shares a 4-digit prefix with the synthesis address has structural coupling; one sharing zero digits has near-zero coupling and shouldn't dominate the synthesis context.
+
+Recipe convention for collective gather-lists: an optional `min_gromov_product` field. Slots whose stored address (`slot.2`) has prefix-overlap with the synthesis address below the threshold are excluded from the gather. Default `0` includes all slots (current behaviour). Setting it to `2` for a deeply-nested rendezvous keeps the medium-LLM context tractable at scale (50 contributors → only the ones within 2-digit-prefix of "here" enter the synthesis).
+
+This is the answer to the "context bloat at scale" concern from the pre-flight checks. It's not a separate primitive; it's a recipe-field the gather-walker honours. Implementation is one line in the recipe runner: `slots.filter(s => longestCommonPrefix(s.address, synthesisAddress) >= recipe.min_gromov_product)`.
+
 ### 4.4 — Commit gate (governance hook)
 
 Today: anyone present can commit, fires immediately. For governance scenarios, this is wrong — a community might want N-of-M agreement before commit fires. The recipe gains a `commit_gate` field:
