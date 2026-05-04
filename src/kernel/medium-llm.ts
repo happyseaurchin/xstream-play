@@ -23,8 +23,9 @@ import type { Face } from '../lib/bsp-client';
 import type { BeachSession, MarkRow, FrameView, PoolView } from './beach-session';
 import type { PresenceMark } from '../lib/bsp-client';
 import { getBlock } from './block-store';
-import { bsp as walkLocal, collectUnderscore } from './bsp';
-import { runBundle } from './run-bundle';
+import { bsp as walkLocal } from './bsp';
+import { resolveRecipe, runRecipe } from './recipe-runner';
+import type { SettingsContext } from './settings-reader';
 
 export type SynthMode = 'personal' | 'quaker' | 'bypass' | 'blocked' | { freeform: string };
 
@@ -64,22 +65,6 @@ export function parseRecipe(raw: string | null | undefined, face: Face): SynthMo
   return { freeform: raw!.trim() };
 }
 
-function mediumDescription(): string {
-  const block = getBlock('medium-agent');
-  if (!block) return '';
-  return collectUnderscore(block) || '';
-}
-
-function mediumSlot(spindle: string): string {
-  const block = getBlock('medium-agent');
-  if (!block) return '';
-  const r = walkLocal(block, spindle);
-  if (r.mode === 'spindle' && r.nodes.length > 0) {
-    return r.nodes[r.nodes.length - 1].text;
-  }
-  return '';
-}
-
 interface SynthesiseOpts {
   apiKey: string;
   model: string;
@@ -92,6 +77,7 @@ interface SynthesiseOpts {
   presence: PresenceMark[];
   frame: FrameView | null;
   pool: PoolView | null;
+  settingsContext: SettingsContext;
 }
 
 export interface SynthesiseResult {
@@ -101,55 +87,33 @@ export interface SynthesiseResult {
 }
 
 export async function synthesise(opts: SynthesiseOpts): Promise<SynthesiseResult> {
+  // The user-level directive (shell:1.<face>.synthesis._) decides bypass vs LLM.
+  // The recipe (substrate-authored, beach or user level) decides what the LLM
+  // sees. parseRecipe mode → directive; runRecipe handles assembly.
   if (opts.mode === 'bypass' || opts.mode === 'blocked') {
     return { text: opts.pendingLiquid, mode: opts.mode, bypassed: true };
   }
-
-  // Identity + scoop + recipe directive (the bundle's framing). No prose
-  // about how to write or what shape to output.
-  const desc = mediumDescription().replace(/\{name\}/g, opts.agentId || 'the user');
-  const recipe = typeof opts.mode === 'string' ? opts.mode : opts.mode.freeform;
-
-  const sections: string[] = [];
-  sections.push(desc);
-  sections.push('');
-  sections.push(`agent_id: ${opts.agentId || '(anonymous)'}`);
-  sections.push(`face: ${opts.face}`);
-  sections.push(`recipe: ${recipe}`);
-  sections.push(`beach: ${opts.session.current_beach}`);
-  sections.push(`address: ${opts.session.current_address || '(root)'}`);
-  if (opts.frame) {
-    sections.push(`frame: ${opts.session.current_frame} entity=${opts.session.entity_position}`);
-    if (opts.frame.scene_underscore) sections.push(`scene: ${opts.frame.scene_underscore}`);
-    for (const e of opts.frame.entities) {
-      if (e.liquid) sections.push(`  entity ${e.position}${e.position === opts.session.entity_position ? '*' : ''} liquid: ${e.liquid}`);
-    }
-  } else if (opts.pool) {
-    sections.push(`pool: 2.${opts.pool.pool_digit} — ${opts.pool.purpose || ''}`);
-    for (const c of opts.pool.contributions) {
-      sections.push(`  ${c.agent_id || '?'}: ${c.text}`);
-    }
-  } else {
-    const recent = opts.marks.filter(m => !m.is_presence).slice(-5);
-    for (const m of recent) sections.push(`  ${m.agent_id || '?'}: ${m.text}`);
+  const recipe = resolveRecipe('medium', opts.face, opts.settingsContext);
+  if (recipe.mode === 'bypass' || recipe.mode === 'blocked') {
+    return { text: opts.pendingLiquid, mode: opts.mode, bypassed: true };
   }
-  sections.push('');
-  sections.push(`# user committing:`);
-  sections.push(opts.pendingLiquid);
-
-  const systemPrompt = sections.join('\n');
-  const r = await runBundle({
-    apiKey: opts.apiKey,
-    model: opts.model,
-    systemPrompt,
-    maxTurns: 1,
-    maxTokens: 600,
-    telemetry: {
-      tier: 'medium',
-      face: opts.face,
-      extras: { mode: typeof opts.mode === 'string' ? opts.mode : 'freeform' },
+  const directive = typeof opts.mode === 'string' ? opts.mode : opts.mode.freeform;
+  const r = await runRecipe({
+    recipe,
+    inputs: {
+      session: opts.session, shell: null, face: opts.face,
+      marks: opts.marks, presence: opts.presence,
+      frame: opts.frame, pool: opts.pool,
+      pendingLiquid: opts.pendingLiquid,
+      recipeDirective: directive,
     },
-  }, 'Synthesise.');
+    userMessage: 'Synthesise.',
+    apiKey: opts.apiKey,
+    defaultModel: opts.model,
+    defaultMaxTokens: 600,
+    maxTurns: 1,
+    telemetry: { tier: 'medium', face: opts.face },
+  });
   return {
     text: r.text === '(no response)' ? opts.pendingLiquid : r.text,
     mode: opts.mode,
