@@ -870,8 +870,18 @@ export function Column(props: ColumnProps) {
       // address — co-presence on a block is the universal social primitive.
       // Solid is what has emerged here, not just what this user produced.
       // Self vs peer is a UI tag for SolidZone, not a filter.
-      for (const m of marks) {
-        if (m.is_presence) continue
+      //
+      // Sort newest-first by timestamp so a fresh commit lands at the top of
+      // the visible solid zone (the zone is height-constrained; rendering in
+      // raw digit order hides recent commits below the scroll fold).
+      const recent = marks
+        .filter(m => !m.is_presence)
+        .slice()
+        .sort((a, b) => {
+          if (a.timestamp && b.timestamp) return b.timestamp.localeCompare(a.timestamp)
+          return parseInt(b.digit) - parseInt(a.digit)
+        })
+      for (const m of recent) {
         out.push({
           id: `mark-${m.digit}`,
           title: m.agent_id && m.agent_id !== identity.handle ? m.agent_id : undefined,

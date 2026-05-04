@@ -431,11 +431,40 @@ export class BeachKernel {
       }
     }
 
-    let nextDigit = '1';
+    // Slot selection on a 9-slot ring:
+    //   1. Prefer a digit not yet in ring (genuinely free).
+    //   2. Else prefer a digit whose underscore is empty (cleared liquid).
+    //   3. Else pick the OLDEST non-presence slot by timestamp (overwrites
+    //      the stalest substantive mark — never clobbers a live peer's
+    //      heartbeat, which is the kernel's own write loop, nor the slot
+    //      occupied by the freshest mark).
+    //   4. As an absolute last resort (everything is fresh presence — the
+    //      ring is fully claimed by 9 simultaneously-live peers), overwrite
+    //      digit 9. This is rare and noisy by design.
+    //
+    // Hardcoded "overwrite 9" was the prior behaviour: it silently clobbered
+    // whichever mark happened to be at 9, including legacy beach-owner marks
+    // that nobody can rewrite back. New code skips presence and prefers the
+    // oldest non-presence so collisions land where they hurt least.
+    let nextDigit = '9';
     if (ring) {
+      let bestFree: string | null = null;
+      let bestEmpty: string | null = null;
+      let oldestNonPresence: { digit: string; ts: string } | null = null;
       for (let d = 1; d <= 9; d++) {
-        if (!(String(d) in ring)) { nextDigit = String(d); break; }
-        if (d === 9) nextDigit = '9'; // overflow — overwrite last
+        const dk = String(d);
+        if (!(dk in ring)) { if (bestFree === null) bestFree = dk; continue; }
+        const slot = ring[dk];
+        const u = (typeof slot === 'object' && slot !== null) ? (slot as Record<string, PscaleNode>)._ : slot;
+        if (typeof u !== 'string' || !u.trim()) { if (bestEmpty === null) bestEmpty = dk; continue; }
+        if (typeof slot === 'object' && slot !== null && isPresenceMark(slot as PscaleNode)) continue;
+        const ts = (typeof slot === 'object' && slot !== null) ? (slot as Record<string, PscaleNode>)['3'] : null;
+        const tsStr = typeof ts === 'string' ? ts : '';
+        if (!oldestNonPresence || tsStr < oldestNonPresence.ts) oldestNonPresence = { digit: dk, ts: tsStr };
+      }
+      nextDigit = bestFree ?? bestEmpty ?? oldestNonPresence?.digit ?? '9';
+      if (!bestFree && !bestEmpty) {
+        this.cb.onLog(`💧 mark ring full at beach:${pool ? '2.'+pool : '1'} — overwriting digit ${nextDigit}${oldestNonPresence ? ` (oldest non-presence)` : ' (fallback)'}`);
       }
     }
 
