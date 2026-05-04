@@ -66,6 +66,15 @@ export interface BeachKernelCallbacks {
 // state is needed. Federated beach reads are cheap and the staleness windows
 // (30s presence, 60s liquid) absorb the higher cadence comfortably.
 const DEFAULT_POLL_MS = 1500;
+// Built-in defaults for the substrate-resolvable staleness/cadence settings.
+// The kernel reads these via getSetting(SETTINGS.<key>, <default>); when no
+// per-user (shell:5) or per-beach (beach:5) value exists, these are used.
+// Phase A/B introduced the references but not the constants — the cycle
+// throws ReferenceError on every tick under strict-off tsconfig, killing
+// presence/marks/liquid projection downstream of the heartbeat write.
+const DEFAULT_PRESENCE_STALENESS_MS = 30_000;
+const DEFAULT_LIQUID_STALENESS_MS = 60_000;
+const DEFAULT_INBOX_WATCH_EVERY_N_CYCLES = 5;
 const PRESENCE_DIGIT_CACHE = new Map<string, string>();
 
 async function getPresenceDigit(beach: string, agentId: string): Promise<string> {
