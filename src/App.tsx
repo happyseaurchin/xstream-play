@@ -1,425 +1,597 @@
 /**
- * App.tsx — xstream beach client (multi-column orchestrator).
+ * App.block-agents.tsx — xstream UI powered by sovereign browser kernel.
  *
- * Global state: identity (active handle/secret/apiKey), identities registry,
- * theme, shell (per-handle), inbox acks (per-handle).
- *
- * Per-column state (face/beach/address/frame/pool/vapor/marks/...) lives in
- * the Column component; each column has its own kernel poll loop and
- * realtime channel. The floating ConstructionButton is global and targets
- * whichever column was last focused.
- *
- * Layout: flex-row with `overflow-x: auto`; each column flex:1 1 0 with
- * min-width 320px. Equal-split at any screen width; columns scroll
- * horizontally when their min-widths exceed the viewport (e.g. on phones).
+ * Three zones with draggable separators, themes, floating input button.
+ * Engine: Kernel (polls relay, fires medium-LLM on commit/domino).
+ * Soft-LLM (ASK) remains a direct call — no coordination needed.
+ * Pure browser — no server runs LLM calls. All API costs are the player's.
  */
 
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
+import SetupScreen from './components/SetupScreen'
+import { SolidZone } from './components/xstream/SolidZone'
+import { LiquidZone } from './components/xstream/LiquidZone'
+import { VapourZone } from './components/xstream/VapourZone'
+import { DraggableSeparator } from './components/DraggableSeparator'
 import { ConstructionButton } from './components/xstream/ConstructionButton'
-import { Column, type ColumnInputs } from './components/Column'
-import { AboutPage } from './components/AboutPage'
-import { readShell, bootstrapShell, type AgentShell } from './lib/bsp-client'
-import { getAdmissionState, isAdmitted } from './kernel/admission'
-import { extractUserSettings, type SettingsBlock } from './kernel/settings-reader'
-import type { Theme, Face } from './types/xstream'
+import { Kernel } from './kernel/kernel'
+import { createBlock, generateGameCode, generateCharId } from './kernel/block-factory'
+import { callClaude } from './kernel/claude-direct'
+import { buildSoftPrompt } from './kernel/soft-prompt'
+import type { SolidBlock, LiquidCard } from './types/xstream'
+import type { Face } from './types/xstream'
+import type { SoftLLMResponse } from './types'
+import { listBlocks, getBlock, hydrateFromSaved } from './kernel/block-store'
+import { bsp, type SpindleResult } from './kernel/bsp'
+import { loadKernelBlock, loadAllBlocks, exportGameState, importGameState, setCurrentGame, saveBlock } from './kernel/persistence'
+import type { SavedGame } from './kernel/persistence'
+import { SaveModal } from './components/SaveModal'
 import './App.css'
 
-const ACTIVE_HANDLE_KEY = 'xstream:active-handle'
-const HANDLES_LIST_KEY = 'xstream:handles'
-const ANON_ID_KEY = 'xstream:anon-id'
+type AppPhase = 'setup' | 'loading' | 'ready'
+type Theme = 'dark' | 'light' | 'cyber' | 'soft'
 
-/** Stable anonymous pseudo-handle for this browser. Generated once and
- * persisted in localStorage so the user is the same "anon" across reloads
- * (lets them leave a mark and come back to find replies tagged at them).
- * Form: `anon-<6-char-base36>`. Used as the substrate agent_id when the
- * user hasn't typed a real handle. UI continues to display "anon" — the
- * suffix only matters at the substrate layer for distinguishing two
- * anonymous tabs and giving each its own presence digit / liquid slot /
- * vapour identity. */
-function getOrCreateAnonId(): string {
-  try {
-    const existing = localStorage.getItem(ANON_ID_KEY)
-    if (existing && existing.startsWith('anon-')) return existing
-    const id = `anon-${Math.random().toString(36).slice(2, 8)}`
-    localStorage.setItem(ANON_ID_KEY, id)
-    return id
-  } catch {
-    return `anon-${Math.random().toString(36).slice(2, 8)}`
-  }
-}
-// Legacy single-handle keys, kept for one-time migration into the per-handle scheme.
-const LEGACY_HANDLE_KEY = 'xstream:handle'
-const LEGACY_SECRET_KEY = 'xstream:secret'
-const LEGACY_API_KEY = 'xstream:api-key'
-const LEGACY_API_KEY_DASH = 'xstream-api-key'
-const BEACH_KEY = 'xstream:current-beach'
-const DEFAULT_BEACH = 'https://happyseaurchin.com'
-
-// Per-handle storage keys.
-const secretKey = (h: string) => `xstream:secret:${h}`
-const apiKeyKey = (h: string) => `xstream:api-key:${h}`
-const faceStateKey = (h: string) => `xstream:face-state:${h || '_anon'}`
-
-function loadHandles(): string[] {
-  try {
-    const raw = localStorage.getItem(HANDLES_LIST_KEY)
-    if (raw) {
-      const arr = JSON.parse(raw)
-      if (Array.isArray(arr)) return arr.filter(x => typeof x === 'string')
-    }
-  } catch { /* corrupt */ }
-  return []
-}
-function saveHandles(list: string[]) {
-  try { localStorage.setItem(HANDLES_LIST_KEY, JSON.stringify(list)) } catch { /* quota */ }
-}
-
-const MIGRATION_DONE_KEY = 'xstream:legacy-migrated'
-
-function migrateLegacyIdentity() {
-  // Run at most once. Without this guard, signing out (which clears
-  // ACTIVE_HANDLE_KEY) would let the next page load re-resurrect the legacy
-  // handle from LEGACY_HANDLE_KEY — making logout look broken.
-  if (localStorage.getItem(MIGRATION_DONE_KEY)) return
-  if (localStorage.getItem(ACTIVE_HANDLE_KEY)) {
-    // Already migrated in some earlier session before this guard existed.
-    // Mark it done and exit so we never run again.
-    localStorage.setItem(MIGRATION_DONE_KEY, '1')
-    return
-  }
-  const handle = localStorage.getItem(LEGACY_HANDLE_KEY)
-  if (handle) {
-    const secret = sessionStorage.getItem(LEGACY_SECRET_KEY)
-    const apiKey = sessionStorage.getItem(LEGACY_API_KEY) ?? localStorage.getItem(LEGACY_API_KEY_DASH)
-    if (secret) sessionStorage.setItem(secretKey(handle), secret)
-    if (apiKey) sessionStorage.setItem(apiKeyKey(handle), apiKey)
-    const list = loadHandles()
-    if (!list.includes(handle)) { list.push(handle); saveHandles(list) }
-    localStorage.setItem(ACTIVE_HANDLE_KEY, handle)
-  }
-  // Drop legacy keys so they can never resurrect the handle on a future load.
-  localStorage.removeItem(LEGACY_HANDLE_KEY)
-  localStorage.removeItem(LEGACY_API_KEY_DASH)
-  sessionStorage.removeItem(LEGACY_SECRET_KEY)
-  sessionStorage.removeItem(LEGACY_API_KEY)
-  localStorage.setItem(MIGRATION_DONE_KEY, '1')
-}
-
-function loadIdentity() {
-  migrateLegacyIdentity()
-  const handle = localStorage.getItem(ACTIVE_HANDLE_KEY) ?? ''
-  return {
-    handle,
-    secret: handle ? (sessionStorage.getItem(secretKey(handle)) ?? '') : '',
-    apiKey: handle ? (sessionStorage.getItem(apiKeyKey(handle)) ?? '') : '',
-  }
-}
-
-let columnIdSeq = 0
-const newColumnId = () => `col-${Date.now()}-${columnIdSeq++}`
-
-// Per-column localStorage key (Column owns the actual content; App owns just
-// the descriptor list).
-const COLUMNS_KEY = 'xstream:columns'
-const FOCUSED_COLUMN_KEY = 'xstream:focused-column'
-
-interface ColumnDescriptor {
-  id: string
-  // Seed only — Column persists its own current beach/face/address keyed by id.
-  initialBeach: string
-  initialFace: Face
-  initialAddress: string
-}
-
-function loadColumns(): { columns: ColumnDescriptor[]; focusedId: string } {
-  try {
-    const raw = localStorage.getItem(COLUMNS_KEY)
-    if (raw) {
-      const parsed = JSON.parse(raw)
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        const columns = parsed.filter(c => c && typeof c.id === 'string')
-        const focusedId = localStorage.getItem(FOCUSED_COLUMN_KEY) ?? columns[0].id
-        return { columns, focusedId: columns.find(c => c.id === focusedId)?.id ?? columns[0].id }
-      }
-    }
-  } catch { /* corrupt — fresh start */ }
-  // First run — single column with sensible seed.
-  const initialBeach = localStorage.getItem(BEACH_KEY) ?? DEFAULT_BEACH
-  const initialFace = (localStorage.getItem('xstream-face') as Face) || 'character'
-  const id = newColumnId()
-  return { columns: [{ id, initialBeach, initialFace, initialAddress: '' }], focusedId: id }
-}
-
-function saveColumns(columns: ColumnDescriptor[]) {
-  try { localStorage.setItem(COLUMNS_KEY, JSON.stringify(columns)) } catch { /* quota */ }
-}
-
-// When a column is closed, drop its persisted state so old keys don't leak.
-function purgeColumnStorage(columnId: string) {
-  for (const k of [
-    `xstream:column-face:${columnId}`,
-    `xstream:column-beach:${columnId}`,
-    `xstream:column-address:${columnId}`,
-  ]) localStorage.removeItem(k)
-  // Face-state keys are scoped by both handle and column; clear all.
-  for (let i = localStorage.length - 1; i >= 0; i--) {
-    const k = localStorage.key(i)
-    if (k && k.startsWith('xstream:face-state:') && k.endsWith(':' + columnId)) {
-      localStorage.removeItem(k)
-    }
-  }
-}
+const MIN_ZONE = 80
 
 export default function App() {
-  // Lightweight pathname-based routing — no router dependency. /about renders
-  // the explainer page; everything else renders the columns.
-  const [pathname, setPathname] = useState(typeof window !== 'undefined' ? window.location.pathname : '/')
-  useEffect(() => {
-    const onPop = () => setPathname(window.location.pathname)
-    window.addEventListener('popstate', onPop)
-    return () => window.removeEventListener('popstate', onPop)
-  }, [])
-  const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem('xstream-theme') as Theme) || 'light')
+  // Session
+  const [phase, setPhase] = useState<AppPhase>('setup')
+  const [apiKey, setApiKey] = useState('')
+  const [characterName, setCharacterName] = useState('')
+  const [gameCode, setGameCode] = useState('')
 
-  if (pathname === '/about') {
+  // Kernel
+  const kernelRef = useRef<Kernel | null>(null)
+
+  // Theme + Face (declared early — solidBlocks depends on face)
+  const [theme, setTheme] = useState<Theme>(() =>
+    (localStorage.getItem('xstream-theme') as Theme) || 'dark'
+  )
+  const [face, setFace] = useState<Face>(() =>
+    (localStorage.getItem('xstream-face') as Face) || 'character'
+  )
+
+  // UI data — solid blocks scoped per face
+  const [characterSolids, setCharacterSolids] = useState<SolidBlock[]>([])
+  const [authorSolids, setAuthorSolids] = useState<SolidBlock[]>([])
+  const [designerSolids, setDesignerSolids] = useState<SolidBlock[]>([])
+  const solidBlocks = face === 'author' ? authorSolids : face === 'designer' ? designerSolids : characterSolids
+  const [liquidCards, setLiquidCards] = useState<LiquidCard[]>([])
+  const [softResponse, setSoftResponse] = useState<SoftLLMResponse | null>(null)
+  const [synthesising, setSynthesising] = useState(false)
+  const [softLoading, setSoftLoading] = useState(false)
+  const [statusMessage, setStatusMessage] = useState('')
+  const [vaporText, setVaporText] = useState('')
+  const [kernelStatus, setKernelStatus] = useState('idle')
+  const [kernelLogs, setKernelLogs] = useState<string[]>([])
+  const [accumulatedCount, setAccumulatedCount] = useState(0)
+  const [dominoMode, setDominoMode] = useState<'auto' | 'informed' | 'silent'>('auto')
+  const [showSaveModal, setShowSaveModal] = useState(false)
+
+  // Zone heights (proportional)
+  const [solidHeight, setSolidHeight] = useState(() => window.innerHeight * 0.35)
+  const [liquidHeight, setLiquidHeight] = useState(() => window.innerHeight * 0.30)
+
+  useEffect(() => {
+    localStorage.setItem('xstream-theme', theme)
+  }, [theme])
+
+  useEffect(() => {
+    localStorage.setItem('xstream-face', face)
+    // Set sensible edit defaults when switching face
+    if (face === 'author') {
+      setEditTarget('spatial-thornkeep')
+      setEditAddress(kernelRef.current?.block.spatial_address ?? '111')
+    } else if (face === 'designer') {
+      setEditTarget('rules-thornkeep')
+      setEditAddress('0')
+    }
+  }, [face])
+
+  // Cleanup kernel on unmount
+  useEffect(() => {
+    return () => { kernelRef.current?.stop() }
+  }, [])
+
+  // --- Draggable separator handlers ---
+  const handleTopDrag = useCallback((delta: number) => {
+    setSolidHeight(h => Math.max(MIN_ZONE, h + delta))
+    setLiquidHeight(h => Math.max(MIN_ZONE, h - delta))
+  }, [])
+
+  const handleBottomDrag = useCallback((delta: number) => {
+    setLiquidHeight(h => Math.max(MIN_ZONE, h + delta))
+  }, [])
+
+  // --- Kernel callbacks ---
+  const makeKernelCallbacks = useCallback(() => ({
+    onSolid: (solid: string) => {
+      if (!solid) return
+      const entry = { id: Date.now().toString(), content: solid, timestamp: Date.now() }
+      // Route to the face that produced this solid
+      const f = kernelRef.current?.face ?? 'character'
+      if (f === 'author') setAuthorSolids(prev => [...prev, entry])
+      else if (f === 'designer') setDesignerSolids(prev => [...prev, entry])
+      else setCharacterSolids(prev => [...prev, entry])
+      // Clear liquid cards — covers both commit and domino-triggered solids
+      setLiquidCards([])
+      setSynthesising(false)
+    },
+    onStatusChange: (status: string) => {
+      setKernelStatus(status)
+      setSynthesising(status === 'resolving' || status === 'domino_responding')
+    },
+    onAccumulate: (_source: string, count: number) => {
+      setAccumulatedCount(prev => prev + count)
+    },
+    onDomino: (source: string, context: string) => {
+      setKernelLogs(prev => [...prev.slice(-50), `💥 Domino from ${source}: ${context.slice(0, 80)}`])
+    },
+    onPeerLiquid: (peers: { id: string; label: string; liquid: string }[]) => {
+      setLiquidCards(prev => {
+        const selfCards = prev.filter(c => c.userId === 'self')
+        const peerCards = peers.map(p => ({
+          id: `peer-${p.id}`,
+          userId: p.id,
+          userName: p.label,
+          content: p.liquid,
+          timestamp: Date.now(),
+        }))
+        return [...selfCards, ...peerCards]
+      })
+    },
+    onError: (error: string) => {
+      console.error('[kernel]', error)
+      setKernelLogs(prev => [...prev.slice(-50), `❌ ${error}`])
+      setSynthesising(false)
+    },
+    onLog: (msg: string) => {
+      console.log('[kernel]', msg)
+      setKernelLogs(prev => [...prev.slice(-50), msg])
+    },
+  }), [])
+
+  // --- Auto-orientation: fire soft-LLM at game start ---
+  const fireOrientation = useCallback(async (key: string) => {
+    if (!kernelRef.current) return
+    setSoftLoading(true)
+    try {
+      const block = kernelRef.current.block
+      const prompt = buildSoftPrompt(block, 'Where am I? What do I see?', 'character')
+      const response = await callClaude(key, 'claude-haiku-4-5-20251001', prompt, 256)
+      setSoftResponse({
+        id: Date.now().toString(),
+        originalInput: 'Where am I? What do I see?',
+        text: response,
+        softType: 'refine',
+        face: 'character',
+        frameId: null,
+      })
+    } catch (_e) {
+      // Silent fail — orientation is nice-to-have, not critical
+    } finally {
+      setSoftLoading(false)
+    }
+  }, [])
+
+  // --- Create Game ---
+  const handleCreateGame = useCallback((key: string, name: string, state: string, scene: string) => {
+    setApiKey(key)
+    setCharacterName(name)
+    setPhase('loading')
+    setStatusMessage('Creating game...')
+
+    const code = generateGameCode()
+    setGameCode(code)
+
+    const charId = generateCharId()
+    const block = createBlock(charId, name, state || `${name}. A newcomer.`, scene, key)
+
+    // Seed presence: walk spatial block to get location, plant a starting event
+    const spatialBlock = getBlock('spatial-thornkeep')
+    if (spatialBlock) {
+      const result = bsp(spatialBlock, block.spatial_address)
+      if (result.mode === 'spindle') {
+        const nodes = (result as SpindleResult).nodes
+        // Use the building name (second-to-last) for the presence statement
+        const building = nodes.length >= 2 ? nodes[nodes.length - 2].text.split('—')[0].trim() : 'the room'
+        const room = nodes.length >= 1 ? nodes[nodes.length - 1].text.split('—')[0].trim() : ''
+        const where = room ? `the ${room.toLowerCase()} of ${building}` : building
+        const presence = `You are in ${where}.`
+        block.event_log.push({ S: block.spatial_address, T: 0, I: block.character.id, text: presence, type: 'state_change' })
+        block.accumulated.push({ source: 'world', events: [presence] })
+      }
+    }
+
+    const kernel = new Kernel(block, code, makeKernelCallbacks())
+    kernelRef.current = kernel
+    kernel.start()
+    setDominoMode(block.trigger.domino_mode)
+
+    setStatusMessage('')
+    setPhase('ready')
+    fireOrientation(key)
+  }, [makeKernelCallbacks, fireOrientation])
+
+  // --- Join Game ---
+  const handleJoinGame = useCallback(async (key: string, name: string, state: string, code: string) => {
+    setApiKey(key)
+    setCharacterName(name)
+    setGameCode(code)
+    setPhase('loading')
+    setStatusMessage('Joining game...')
+
+    try {
+      const charId = generateCharId()
+      const desc = state || 'A figure.'
+      const block = createBlock(charId, name, desc, '', key)
+
+      // Joiner starts outside the pub (110), not inside (111)
+      block.spatial_address = '110'
+
+      // Seed approach event at the building level
+      const spatialBlock = getBlock('spatial-thornkeep')
+      if (spatialBlock) {
+        const result = bsp(spatialBlock, '110')
+        if (result.mode === 'spindle') {
+          const nodes = (result as SpindleResult).nodes
+          const building = nodes.length >= 1 ? nodes[nodes.length - 1].text.split('—')[0].trim() : 'a building'
+          const approach = `${desc} approaches ${building}.`
+          block.event_log.push({ S: '110', T: 0, I: block.character.id, text: approach, type: 'arrival' })
+          block.accumulated.push({ source: 'world', events: [approach] })
+        }
+      }
+
+      const kernel = new Kernel(block, code, makeKernelCallbacks())
+      kernelRef.current = kernel
+      kernel.start()
+      setDominoMode(block.trigger.domino_mode)
+
+      setStatusMessage('')
+      setPhase('ready')
+      fireOrientation(key)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to join'
+      setStatusMessage(`Error: ${msg}`)
+      setPhase('setup')
+    }
+  }, [makeKernelCallbacks])
+
+  // --- Resume Game ---
+  const handleResumeGame = useCallback((key: string, save: SavedGame) => {
+    setApiKey(key)
+    setPhase('loading')
+    setStatusMessage('Resuming game...')
+
+    const block = loadKernelBlock(save.gameId, save.charId)
+    if (!block) {
+      setStatusMessage('Error: save not found')
+      setPhase('setup')
+      return
+    }
+
+    // Hydrate block store with individually-saved blocks
+    const savedBlocks = loadAllBlocks(save.gameId)
+    if (Object.keys(savedBlocks).length > 0) hydrateFromSaved(savedBlocks)
+
+    // Update API key in block (may have changed)
+    block.medium.api_key = key
+    setCharacterName(block.character.name)
+    setGameCode(save.gameId)
+
+    const kernel = new Kernel(block, save.gameId, makeKernelCallbacks())
+    kernelRef.current = kernel
+    kernel.start()
+    setDominoMode(block.trigger.domino_mode)
+
+    setStatusMessage('')
+    setPhase('ready')
+  }, [makeKernelCallbacks])
+
+  // --- Import Game ---
+  const handleImportGame = useCallback((key: string, json: string) => {
+    setPhase('loading')
+    setStatusMessage('Importing save...')
+
+    try {
+      const { gameId, block, blocks } = importGameState(json)
+      setCurrentGame(gameId)
+      hydrateFromSaved(blocks)
+      // Write each block individually to localStorage
+      for (const [name, b] of Object.entries(blocks)) {
+        saveBlock(name, b)
+      }
+      block.medium.api_key = key
+      setApiKey(key)
+      setCharacterName(block.character.name)
+      setGameCode(gameId)
+
+      const kernel = new Kernel(block, gameId, makeKernelCallbacks())
+      kernelRef.current = kernel
+      kernel.start()
+
+      setStatusMessage('')
+      setPhase('ready')
+    } catch (err) {
+      setStatusMessage(`Error: ${err instanceof Error ? err.message : 'Import failed'}`)
+      setPhase('setup')
+    }
+  }, [makeKernelCallbacks])
+
+  // --- Edit target/address (author/designer shelf) ---
+  const [editTarget, setEditTarget] = useState('spatial-thornkeep')
+  const [editAddress, setEditAddress] = useState('111')
+
+  // --- ASK (Soft — direct call, no kernel needed) ---
+  const handleQuery = useCallback(async (text: string) => {
+    if (!text.trim() || !kernelRef.current) return
+    setSoftLoading(true)
+    setSoftResponse(null)
+
+    try {
+      const block = kernelRef.current.block
+      // Sync edit context before building prompt
+      if (face !== 'character') {
+        block.edit_target = editTarget
+        block.edit_address = editAddress
+      }
+      const peers = kernelRef.current.lastPeerBlocks
+      const prompt = buildSoftPrompt(block, text, face, peers)
+      const response = await callClaude(apiKey, 'claude-haiku-4-5-20251001', prompt, 256)
+
+      setSoftResponse({
+        id: Date.now().toString(),
+        originalInput: text,
+        text: response,
+        softType: 'refine',
+        face,
+        frameId: null,
+      })
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Soft call failed'
+      setSoftResponse({
+        id: Date.now().toString(),
+        originalInput: text,
+        text: `Error: ${msg}`,
+        softType: 'info',
+        face,
+        frameId: null,
+      })
+    } finally {
+      setSoftLoading(false)
+    }
+  }, [apiKey, face, editTarget, editAddress])
+
+  // --- SUBMIT to Liquid ---
+  const handleSubmit = useCallback((text: string) => {
+    if (!text.trim() || !kernelRef.current) return
+    const card: LiquidCard = {
+      id: Date.now().toString(),
+      userId: 'self',
+      userName: characterName,
+      content: text,
+      timestamp: Date.now(),
+    }
+    setLiquidCards(prev => [...prev, card])
+    // Sync edit context to kernel block
+    if (face !== 'character') {
+      kernelRef.current.block.edit_target = editTarget
+      kernelRef.current.block.edit_address = editAddress
+    }
+    kernelRef.current.submitLiquid(text)
+  }, [characterName, face])
+
+  // --- COMMIT (fires kernel, which fires medium on next cycle) ---
+  const handleCommit = useCallback((_cardId: string) => {
+    if (!kernelRef.current) return
+    setSynthesising(true)
+    kernelRef.current.commit(face)
+    // Clear liquid cards — kernel will handle the rest
+    setLiquidCards([])
+  }, [face])
+
+  // --- Copy liquid card text back to vapor input ---
+  const handleCopyToVapor = useCallback((text: string) => {
+    setVaporText(text)
+  }, [])
+
+  // --- Domino mode toggle (character face) ---
+  const handleDominoModeToggle = useCallback(() => {
+    const modes: Array<'auto' | 'informed' | 'silent'> = ['auto', 'informed', 'silent']
+    const next = modes[(modes.indexOf(dominoMode) + 1) % modes.length]
+    setDominoMode(next)
+    if (kernelRef.current) {
+      kernelRef.current.block.trigger.domino_mode = next
+    }
+  }, [dominoMode])
+
+  // --- Commit mode toggle (all faces) ---
+  const [commitMode, setCommitMode] = useState<'auto' | 'manual' | 'informed'>('manual')
+  const handleCommitModeToggle = useCallback(() => {
+    const modes: Array<'auto' | 'manual' | 'informed'> = ['manual', 'informed', 'auto']
+    const next = modes[(modes.indexOf(commitMode) + 1) % modes.length]
+    setCommitMode(next)
+    if (kernelRef.current?.block.face_commit_mode) {
+      kernelRef.current.block.face_commit_mode[face] = next
+    }
+  }, [commitMode, face])
+
+  // --- Reset ---
+  const handleReset = useCallback(() => {
+    kernelRef.current?.stop()
+    kernelRef.current = null
+    setPhase('setup')
+    setCharacterSolids([])
+    setAuthorSolids([])
+    setDesignerSolids([])
+    setLiquidCards([])
+    setSoftResponse(null)
+    setVaporText('')
+    setStatusMessage('')
+    setKernelLogs([])
+    setAccumulatedCount(0)
+    setKernelStatus('idle')
+  }, [])
+
+  // --- Render ---
+  if (phase === 'setup') {
+    return <SetupScreen onCreateGame={handleCreateGame} onJoinGame={handleJoinGame} onResumeGame={handleResumeGame} onImportGame={handleImportGame} />
+  }
+
+  if (phase === 'loading') {
     return (
-      <div className="app relative" data-theme={theme}>
-        <AboutPage />
+      <div className="app" data-theme={theme}>
+        <div className="flex items-center justify-center h-screen">
+          <p className="text-sm text-muted-foreground animate-pulse">{statusMessage || 'Loading...'}</p>
+        </div>
       </div>
     )
   }
 
-  return <ColumnsApp theme={theme} setTheme={setTheme} />
-}
-
-function ColumnsApp({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) => void }) {
-  const [identity, setIdentity] = useState(() => loadIdentity())
-  const [shell, setShell] = useState<AgentShell | null>(null)
-  const [identities, setIdentities] = useState<string[]>(() => loadHandles())
-  // Stable anon id for this browser. Used as substrate agent_id when no
-  // handle is typed; UI still displays "anon".
-  const [anonId] = useState<string>(() => getOrCreateAnonId())
-  // Per-user settings sub-block (shell:5). Derived from the loaded shell.
-  // Phase B: per-user wins over per-beach in the precedence chain.
-  const userSettings: SettingsBlock = extractUserSettings(shell?.raw ?? null)
-
-  // Inbox acks — global to the user, shared across columns. A mark dismissed
-  // in one column shouldn't haunt the user in another.
-  const [inboxAcks, setInboxAcks] = useState<Set<string>>(() => {
-    try {
-      const raw = localStorage.getItem('xstream:inbox-acks')
-      return new Set(raw ? JSON.parse(raw) as string[] : [])
-    } catch { return new Set() }
-  })
-  const ackInbox = useCallback((key: string) => {
-    setInboxAcks(prev => {
-      const next = new Set(prev); next.add(key)
-      try { localStorage.setItem('xstream:inbox-acks', JSON.stringify([...next])) } catch { /* quota */ }
-      return next
-    })
-  }, [])
-
-  // Columns persist across reload. Each column carries its own state in
-  // localStorage (face / beach / address / face-memory); App holds just the
-  // ordered descriptor list and the focused id.
-  const [{ columns, focusedId }, setColumnsState] = useState<{ columns: ColumnDescriptor[]; focusedId: string }>(() => loadColumns())
-  const setFocusedId = useCallback((id: string) => {
-    setColumnsState(prev => {
-      try { localStorage.setItem(FOCUSED_COLUMN_KEY, id) } catch { /* quota */ }
-      return { ...prev, focusedId: id }
-    })
-  }, [])
-  const [focusedInputs, setFocusedInputs] = useState<ColumnInputs | null>(null)
-
-  // Each column reports its inputs up here when it is focused. We store only
-  // the focused column's inputs; defocused columns submit null on unmount.
-  const handleColumnInputsChange = useCallback((id: string, inputs: ColumnInputs | null) => {
-    setFocusedInputs(prev => {
-      // Only accept updates for the currently-focused column.
-      if (id !== focusedId) return prev
-      return inputs
-    })
-  }, [focusedId])
-
-  // When focus shifts to a different column, the old focused column's last
-  // inputs are still in state — they'll be overwritten by the new focused
-  // column's next render.
-
-  // ── Theme persistence ──
-  useEffect(() => { localStorage.setItem('xstream-theme', theme) }, [theme])
-
-  // Shell read on identity change — global, per-handle. Bootstrap uses the
-  // first column's beach (or DEFAULT_BEACH) as starting_beach.
-  useEffect(() => {
-    if (!identity.handle) { setShell(null); return }
-    let cancelled = false
-    ;(async () => {
-      let s = await readShell(identity.handle)
-      const startingBeach = columns[0]?.initialBeach ?? DEFAULT_BEACH
-      if (!s && identity.secret) {
-        await bootstrapShell({ agent_id: identity.handle, starting_beach: startingBeach })
-        s = await readShell(identity.handle)
-      }
-      if (!cancelled && s) setShell(s)
-    })()
-    return () => { cancelled = true }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [identity.handle, identity.secret])
-
-  // Admission state — null when no handle (anon, n/a), true when passport:8
-  // exists and verifies, false otherwise. Drives the 🪨 indicator on the
-  // floating button's post-admission tray buttons. Re-checks when the
-  // active handle changes; AdmissionDialog can ping admissionRefreshKey to
-  // force a re-read after a successful admission.
-  const [admitted, setAdmitted] = useState<boolean | null>(null)
-  const [admissionRefreshKey, setAdmissionRefreshKey] = useState(0)
-  useEffect(() => {
-    if (!identity.handle) { setAdmitted(null); return }
-    let cancelled = false
-    ;(async () => {
-      const claim = await getAdmissionState(identity.handle)
-      if (!cancelled) setAdmitted(isAdmitted(claim))
-    })()
-    return () => { cancelled = true }
-  }, [identity.handle, admissionRefreshKey])
-  const refreshAdmission = useCallback(() => setAdmissionRefreshKey(k => k + 1), [])
-
-  // Persist identity changes — per-handle keys.
-  useEffect(() => {
-    if (identity.handle) {
-      localStorage.setItem(ACTIVE_HANDLE_KEY, identity.handle)
-      if (identity.secret) sessionStorage.setItem(secretKey(identity.handle), identity.secret)
-      else sessionStorage.removeItem(secretKey(identity.handle))
-      if (identity.apiKey) sessionStorage.setItem(apiKeyKey(identity.handle), identity.apiKey)
-      else sessionStorage.removeItem(apiKeyKey(identity.handle))
-      setIdentities(prev => {
-        if (prev.includes(identity.handle)) return prev
-        const next = [...prev, identity.handle]
-        saveHandles(next)
-        return next
-      })
-    } else {
-      localStorage.removeItem(ACTIVE_HANDLE_KEY)
-    }
-  }, [identity.handle, identity.secret, identity.apiKey])
-
-  // Switcher actions.
-  const switchToHandle = useCallback((h: string) => {
-    if (!h || h === identity.handle) return
-    const secret = sessionStorage.getItem(secretKey(h)) ?? ''
-    const apiKey = sessionStorage.getItem(apiKeyKey(h)) ?? ''
-    setIdentity({ handle: h, secret, apiKey })
-  }, [identity.handle])
-  const forgetHandle = useCallback((h: string) => {
-    if (!h) return
-    sessionStorage.removeItem(secretKey(h))
-    sessionStorage.removeItem(apiKeyKey(h))
-    localStorage.removeItem(faceStateKey(h))
-    setIdentities(prev => {
-      const next = prev.filter(x => x !== h)
-      saveHandles(next)
-      return next
-    })
-    if (h === identity.handle) {
-      setIdentity({ handle: '', secret: '', apiKey: '' })
-    }
-  }, [identity.handle])
-
-  // Column management. Spawn = new column inherits the focused column's
-  // (beach, face, address) as a seed; user diverges from there.
-  const spawnColumn = useCallback(() => {
-    setColumnsState(prev => {
-      const focused = prev.columns.find(c => c.id === prev.focusedId) ?? prev.columns[0]
-      const newCol: ColumnDescriptor = {
-        id: newColumnId(),
-        initialBeach: focused?.initialBeach ?? DEFAULT_BEACH,
-        initialFace: focused?.initialFace ?? 'character',
-        initialAddress: focused?.initialAddress ?? '',
-      }
-      const nextColumns = [...prev.columns, newCol]
-      saveColumns(nextColumns)
-      try { localStorage.setItem(FOCUSED_COLUMN_KEY, newCol.id) } catch { /* quota */ }
-      return { columns: nextColumns, focusedId: newCol.id }
-    })
-  }, [])
-
-  const closeColumn = useCallback((id: string) => {
-    setColumnsState(prev => {
-      if (prev.columns.length <= 1) return prev
-      const idx = prev.columns.findIndex(c => c.id === id)
-      if (idx === -1) return prev
-      const nextColumns = prev.columns.filter(c => c.id !== id)
-      saveColumns(nextColumns)
-      purgeColumnStorage(id)
-      let nextFocused = prev.focusedId
-      if (prev.focusedId === id) {
-        nextFocused = nextColumns[Math.max(0, idx - 1)].id
-        try { localStorage.setItem(FOCUSED_COLUMN_KEY, nextFocused) } catch { /* quota */ }
-      }
-      return { columns: nextColumns, focusedId: nextFocused }
-    })
-  }, [])
-
   return (
-    <div className="app relative" data-theme={theme}>
-      {/* Multi-column row. flex-row + overflow-x:auto means narrow screens
-          scroll horizontally; wide screens tile equally via flex:1 on each. */}
-      <div className="flex flex-row h-full w-full overflow-x-auto overflow-y-hidden">
-        {columns.map(col => (
-          <div
-            key={col.id}
-            className="column-cell flex-1 basis-0 min-w-[320px] border-r border-border/30 last:border-r-0 h-full"
+    <div className="app" data-theme={theme} data-face={face}>
+      {/* Header */}
+      <div className="flex items-center gap-3 px-4 h-[44px] border-b border-border/50 text-sm shrink-0">
+        <span className="text-face-accent font-medium">{characterName}</span>
+        <select
+          value={face}
+          onChange={e => setFace(e.target.value as Face)}
+          className="text-xs bg-transparent border border-border/50 rounded px-1 py-0.5 text-face-accent cursor-pointer"
+          title="Switch face"
+        >
+          <option value="character">character</option>
+          <option value="author">author</option>
+          <option value="designer">designer</option>
+        </select>
+        <span className="text-muted-foreground text-xs font-mono"
+              style={{ cursor: 'pointer' }}
+              title="Click to copy game code"
+              onClick={() => navigator.clipboard.writeText(gameCode)}>
+          {gameCode}
+        </span>
+        <span className="text-xs" style={{ opacity: 0.5 }}>
+          {kernelStatus === 'idle' ? '🟢' : kernelStatus === 'resolving' ? '🟡' : kernelStatus === 'domino_responding' ? '💥' : '⚪'}
+        </span>
+        {face === 'character' ? (
+          <button
+            onClick={handleDominoModeToggle}
+            className="text-xs"
+            style={{ opacity: 0.7, cursor: 'pointer', background: 'none', border: 'none', color: 'inherit', padding: '2px 4px' }}
+            title={`Domino mode: ${dominoMode}. Click to cycle.`}
           >
-            <Column
-              id={col.id}
-              identity={identity}
-              anonId={anonId}
-              userSettings={userSettings}
-              shell={shell}
-              onShellSaved={setShell}
-              inboxAcks={inboxAcks}
-              onAckInbox={ackInbox}
-              isFocused={col.id === focusedId}
-              onFocus={() => setFocusedId(col.id)}
-              onClose={columns.length > 1 ? () => closeColumn(col.id) : undefined}
-              onInputsChange={handleColumnInputsChange}
-              onAdmissionChange={refreshAdmission}
-              initialBeach={col.initialBeach}
-              initialFace={col.initialFace}
-              initialAddress={col.initialAddress}
-            />
-          </div>
-        ))}
+            {dominoMode === 'auto' ? '🔄auto' : dominoMode === 'informed' ? '👁️watch' : '🔇silent'}
+          </button>
+        ) : (
+          <button
+            onClick={handleCommitModeToggle}
+            className="text-xs"
+            style={{ opacity: 0.7, cursor: 'pointer', background: 'none', border: 'none', color: 'inherit', padding: '2px 4px' }}
+            title={`Commit mode: ${commitMode}. Click to cycle.`}
+          >
+            {commitMode === 'manual' ? '✋manual' : commitMode === 'informed' ? '👁️informed' : '⚡auto'}
+          </button>
+        )}
+        {accumulatedCount > 0 && (
+          <span className="text-xs text-face-accent" title="Accumulated peer events">
+            📥 {accumulatedCount}
+          </span>
+        )}
+        <div className="flex-1" />
+        <button onClick={() => {
+          const text = solidBlocks.map(b => b.content).join('\n\n---\n\n')
+          const blob = new Blob([`${characterName} — ${gameCode}\n${new Date().toLocaleString()}\n\n${text}`], { type: 'text/plain' })
+          const a = document.createElement('a')
+          a.href = URL.createObjectURL(blob)
+          a.download = `${characterName.toLowerCase()}-${gameCode}.txt`
+          a.click()
+        }} className="text-muted-foreground hover:text-foreground text-xs" title="Download story">📜</button>
+        <button onClick={() => setShowSaveModal(true)} className="text-muted-foreground hover:text-foreground text-xs" title="Save game">💾</button>
+        <button onClick={handleReset} className="text-muted-foreground hover:text-foreground text-xs" title="Leave game">🚪</button>
       </div>
 
-      {/* Floating button — global. Targets the focused column's input via
-          focusedInputs, which the focused Column reports up via callback. */}
+      {statusMessage && (
+        <div className="px-4 py-2 text-xs text-face-accent bg-accent/10">{statusMessage}</div>
+      )}
+
+      {/* Shelf: block navigator for author/designer */}
+      {face !== 'character' && kernelRef.current && (
+        <div className="flex items-center gap-2 px-4 py-1.5 border-b border-border/30 text-xs bg-accent/5">
+          <span className="text-muted-foreground">target:</span>
+          <select
+            value={editTarget}
+            onChange={e => {
+              setEditTarget(e.target.value)
+              if (kernelRef.current) kernelRef.current.block.edit_target = e.target.value
+            }}
+            className="bg-transparent border border-border/50 rounded px-1 py-0.5 text-face-accent cursor-pointer"
+          >
+            {listBlocks().map(name => (
+              <option key={name} value={name}>{name}</option>
+            ))}
+          </select>
+          <span className="text-muted-foreground">@</span>
+          <input
+            type="text"
+            value={editAddress}
+            onChange={e => {
+              setEditAddress(e.target.value)
+              if (kernelRef.current) kernelRef.current.block.edit_address = e.target.value
+            }}
+            className="bg-transparent border border-border/50 rounded px-1 py-0.5 w-16 text-face-accent font-mono"
+            title="BSP address"
+          />
+        </div>
+      )}
+
+      {/* Three zones with draggable separators */}
+      <SolidZone blocks={solidBlocks} height={solidHeight} />
+      <DraggableSeparator position="top" onDrag={handleTopDrag} />
+      <LiquidZone
+        cards={liquidCards}
+        height={liquidHeight}
+        currentUserId="self"
+        isLoading={synthesising}
+        onCommit={handleCommit}
+        onCopyToVapor={handleCopyToVapor}
+      />
+      <DraggableSeparator position="bottom" onDrag={handleBottomDrag} />
+      <VapourZone
+        entries={[]}
+        softResponse={softResponse}
+        onDismissSoftResponse={() => setSoftResponse(null)}
+      />
+
+      {/* Floating construction button — input lives here */}
       <ConstructionButton
         onThemeChange={setTheme}
+        onLogout={handleReset}
         currentTheme={theme}
-        admitted={admitted}
-        face={focusedInputs?.face ?? 'character'}
-        value={focusedInputs?.value ?? ''}
-        onChange={focusedInputs?.onChange ?? (() => {})}
-        onSubmit={focusedInputs?.onSubmit ?? (() => {})}
-        onQuery={focusedInputs?.onQuery ?? (() => {})}
-        isQuerying={focusedInputs?.isQuerying ?? false}
-        placeholder={focusedInputs?.placeholder ?? 'open a column to start typing'}
-        pendingLiquid={focusedInputs?.pendingLiquid ?? false}
-        onCommit={focusedInputs?.onCommit ?? (() => {})}
-        isCommitting={focusedInputs?.isCommitting ?? false}
-        identity={{
-          handle: identity.handle,
-          secret: identity.secret,
-          apiKey: identity.apiKey,
-          onIdentityChange: setIdentity,
-          identities,
-          onSwitchHandle: switchToHandle,
-          onForgetHandle: forgetHandle,
-        }}
-        onSpawnColumn={spawnColumn}
-        columnCount={columns.length}
+        onQuery={handleQuery}
+        onSubmit={handleSubmit}
+        value={vaporText}
+        onChange={setVaporText}
+        isQuerying={softLoading}
+        placeholder="What do you do?"
       />
+
+      {/* Save modal */}
+      {showSaveModal && kernelRef.current && (
+        <SaveModal
+          gameCode={gameCode}
+          block={kernelRef.current.block}
+          onClose={() => setShowSaveModal(false)}
+          onFileSave={() => {
+            const allBlocks: Record<string, unknown> = {}
+            for (const n of listBlocks()) { const b = getBlock(n); if (b) allBlocks[n] = b }
+            const json = exportGameState(gameCode, kernelRef.current!.block, allBlocks)
+            const blob = new Blob([json], { type: 'application/json' })
+            const a = document.createElement('a')
+            a.href = URL.createObjectURL(blob)
+            a.download = `xstream-${characterName.toLowerCase()}-${gameCode}.json`
+            a.click()
+          }}
+        />
+      )}
     </div>
   )
 }

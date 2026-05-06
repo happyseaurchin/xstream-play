@@ -1,20 +1,16 @@
 /**
- * bsp.ts — pure-form BSP walker for in-memory pscale JSON blocks.
+ * bsp.ts — pure-form BSP for pscale JSON blocks.
  *
- * Implements the geometry per whetstone branches 1-2 (signature + selection-
- * shape derivation). Used by bsp-client.ts to walk blocks fetched from the
- * substrate; the substrate-side walker is the canonical bsp implementation in
- * pscale-commons/bsp-mcp-server (src/bsp.ts, ported from bsp2-star.py).
+ * Ported from https://github.com/pscale-commons/pscale/blob/main/bsp.js
  *
  * No tree wrapper, no tuning field, no metadata. The block IS the tree.
  * Floor derived from the underscore chain. Digit 0 maps to key '_'.
  *
- * Address conventions (per whetstone:1.3 — "spindle is a pscale string"):
+ * Address conventions:
  *   0.x     Delineation (floor 1). Leading 0 is notation, not a key.
- *   100     Floor 3. Digit 1 at top level, trailing zeros = floor-width padding.
+ *   100     Accumulation (floor 3). Digit 1 at top level, zeros = no branch taken.
  *   001.1   Floor 3. Two zeros walk underscore chain to floor, then digits below.
  *   Digit 0 always maps to key '_' — walking the underscore spine.
- *   Trailing star walks to terminus, enters the hidden directory there.
  */
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

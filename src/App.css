@@ -6,7 +6,8 @@
   display: flex;
   flex-direction: column;
   height: 100vh;
-  width: 100%;
+  max-width: 800px;
+  margin: 0 auto;
   background: var(--color-bg);
   position: relative;
   isolation: isolate;
