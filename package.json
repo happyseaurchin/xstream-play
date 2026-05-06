@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "paywall:harness": "node --env-file=.env.local --import tsx ./scripts/paywall-harness.ts",
+    "publish:conventions": "node --env-file=.env.local --import tsx ./scripts/publish-conventions.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.101.1",

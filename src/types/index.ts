@@ -1,7 +1,7 @@
 // Core types for xstream
 
 // Phase 0.9.0: Renamed 'player' to 'character'
-export type Face = 'character' | 'author' | 'designer'
+export type Face = 'character' | 'author' | 'designer' | 'observer'
 export type TextState = 'draft' | 'submitted' | 'committed'
 export type LLMMode = 'soft' | 'medium'
 export type SolidView = 'log' | 'dir'

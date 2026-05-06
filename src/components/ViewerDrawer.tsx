@@ -1,0 +1,766 @@
+/**
+ * ViewerDrawer — slide-down overlay showing what the active face attends to.
+ *
+ * Closed by default. Opens via the 👁 button in the header. Slides down over
+ * the V/L/S surface; the user can drag the bottom edge to size it.
+ *
+ * Content per face:
+ *   character / observer  → marks at this address (the landscape)
+ *   author                → user's authored blocks: passport + shell manifest
+ *                           pointers + blocks owned at this beach
+ *   designer              → SHELL EDITOR — the reflexive move. Lets the user
+ *                           edit shell:1.<digit>.{1,2,3,4} (default address /
+ *                           knowledge gates / commit gates / persona) for each
+ *                           CADO face. Writes via bsp() with the user's secret.
+ *                           This is what makes the system self-shaping: the
+ *                           user can change the gates that constrain how the
+ *                           soft-LLM walks and writes for them.
+ *
+ * The viewer is secondary. Its job is to let the user "look up" briefly,
+ * then dismiss it and return to V/L/S.
+ */
+
+import { useState, useRef, useEffect } from 'react'
+import type { Face } from '../types/xstream'
+import type { MarkRow } from '../kernel/beach-session'
+import { bsp, readShell, type AgentShell, type PresenceMark, type ShellFace, type PscaleNode } from '../lib/bsp-client'
+
+export interface ViewerDrawerProps {
+  open: boolean
+  onClose: () => void
+  face: Face
+  beach: string
+  address: string
+  marks: MarkRow[]
+  presence: PresenceMark[]
+  // Identity + shell — needed by author and designer faces. Pass-through;
+  // character/observer don't read these.
+  agentId: string
+  secret: string
+  shell: AgentShell | null
+  onShellSaved?: (next: AgentShell) => void
+  // Author face uses this to enter a pool by clicking it in the list.
+  // Setting the address to "2.<digit>" flips the surface into pool mode.
+  onNavigateAddress?: (addr: string) => void
+  /** v0.3 home view: switch the column's beach (and reset address) to a
+   * different channel. Used by clickable rows in "Your places". */
+  onSwitchBeach?: (beach: string) => void
+}
+
+interface EditTarget {
+  agentId: string
+  block: string
+  spindle: string
+  label: string
+  // Whether the current user owns this target — drives read-only vs
+  // editable. v0.3: based on handle match for shell, beach-handle match
+  // for beach-owned blocks. The substrate enforces via lock; this flag
+  // is a UI hint to avoid unnecessary write attempts.
+  writable: boolean
+}
+
+export function ViewerDrawer(props: ViewerDrawerProps) {
+  const [height, setHeight] = useState(() => {
+    const saved = localStorage.getItem('xstream:viewer-height')
+    return saved ? parseInt(saved, 10) : Math.round(window.innerHeight * 0.32)
+  })
+  const dragging = useRef(false)
+  const [editTarget, setEditTarget] = useState<EditTarget | null>(null)
+  useEffect(() => { if (!props.open) setEditTarget(null) }, [props.open])
+
+  useEffect(() => {
+    function onMove(e: MouseEvent) {
+      if (!dragging.current) return
+      const next = Math.max(80, Math.min(window.innerHeight - 100, e.clientY - 44 /* header */))
+      setHeight(next)
+    }
+    function onUp() {
+      if (dragging.current) {
+        dragging.current = false
+        localStorage.setItem('xstream:viewer-height', String(height))
+      }
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
+  }, [height])
+
+  if (!props.open) return null
+
+  return (
+    <div
+      className="absolute left-0 right-0 top-0 bg-background/95 backdrop-blur-sm border-b border-border/60 shadow-md z-30 text-foreground flex flex-col"
+      style={{ height }}
+    >
+      {/* Drawer header */}
+      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border/40 text-xs shrink-0">
+        <span className="text-muted-foreground">👁</span>
+        <span className="font-medium">viewer</span>
+        <span className="text-muted-foreground">·</span>
+        <span className="text-muted-foreground capitalize">{props.face} face</span>
+        <span className="text-muted-foreground">·</span>
+        <span className="text-muted-foreground font-mono truncate">{props.beach}{props.address ? ':' + props.address : ''}</span>
+        <button onClick={props.onClose} className="ml-auto text-muted-foreground hover:text-foreground" title="close viewer">✕</button>
+      </div>
+
+      {/* Body */}
+      <div className="flex-1 min-h-0 overflow-y-auto p-3">
+        {(props.face === 'character' || props.face === 'observer') && (
+          editTarget ? (
+            <BlockEditor
+              target={editTarget}
+              secret={props.secret}
+              onClose={() => setEditTarget(null)}
+            />
+          ) : (
+            <>
+              <HomePlaces
+                shell={props.shell}
+                currentBeach={props.beach}
+                onSwitchBeach={(b) => { props.onSwitchBeach?.(b); props.onClose(); }}
+              />
+              <HomeConfigure
+                handle={props.agentId}
+                secret={props.secret}
+                currentBeach={props.beach}
+                onOpenEditor={(target) => setEditTarget(target)}
+              />
+              <FaceCharacterObserver face={props.face} marks={props.marks} presence={props.presence} address={props.address} />
+            </>
+          )
+        )}
+        {props.face === 'author' && (
+          <FaceAuthor agentId={props.agentId} secret={props.secret} shell={props.shell} beach={props.beach} onNavigateAddress={props.onNavigateAddress} onClose={props.onClose} />
+        )}
+        {props.face === 'designer' && (
+          <FaceDesigner agentId={props.agentId} secret={props.secret} shell={props.shell} onShellSaved={props.onShellSaved} />
+        )}
+      </div>
+
+      {/* Resize handle */}
+      <div
+        onMouseDown={() => { dragging.current = true }}
+        className="h-1.5 cursor-ns-resize bg-border/30 hover:bg-border/60"
+        title="drag to resize"
+      />
+    </div>
+  )
+}
+
+/** v0.3 home view — "Your places" section.
+ *
+ * Lists the channels this user has touched: watched beaches (shell:2) and
+ * grains formed (shell:6). Each row is clickable; click reframes the
+ * column to that channel. Renders nothing when the user has no shell
+ * loaded (anon) or no places yet. Stigmergic — pulled on viewer open;
+ * no background refresh. Per docs/DESIGN-CHANNELS.md § "Home view — the
+ * 👁 button". */
+function HomePlaces({ shell, currentBeach, onSwitchBeach }: {
+  shell: AgentShell | null
+  currentBeach: string
+  onSwitchBeach: (beach: string) => void
+}) {
+  if (!shell) return null
+  const watched = shell.watched_beaches.filter(b => b && b !== currentBeach)
+  const grains = shell.grains
+  if (watched.length === 0 && grains.length === 0) return null
+  return (
+    <div className="mb-4 pb-3 border-b border-border/40">
+      <div className="text-[11px] text-muted-foreground uppercase tracking-wider mb-1.5">Your places</div>
+      {grains.length > 0 && (
+        <div className="mb-2">
+          <div className="text-[10px] text-muted-foreground/70 mb-1">Grains</div>
+          <ul className="space-y-1">
+            {grains.map(g => (
+              <li key={g.pair_id}>
+                <button
+                  onClick={() => onSwitchBeach(`grain:${g.pair_id}`)}
+                  className="w-full text-left px-2 py-1 text-xs font-mono rounded border border-border/40 bg-card/30 hover:bg-accent/30 hover:border-border/60 transition-colors"
+                  title={`switch column to grain with ${g.partner}`}
+                >
+                  🤝 {g.partner} <span className="ml-2 text-muted-foreground/60">grain:{g.pair_id.slice(0, 8)}…</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {watched.length > 0 && (
+        <div>
+          <div className="text-[10px] text-muted-foreground/70 mb-1">Watched beaches</div>
+          <ul className="space-y-1">
+            {watched.map((url, i) => (
+              <li key={i}>
+                <button
+                  onClick={() => onSwitchBeach(url)}
+                  className="w-full text-left px-2 py-1 text-xs font-mono rounded border border-border/40 bg-card/30 hover:bg-accent/30 hover:border-border/60 transition-colors"
+                  title={`switch column to ${url}`}
+                >
+                  🌊 {url}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** "Configure" section — state-block navigation. Lists addressable state
+ * blocks (anything whose contents the system reads to alter behaviour:
+ * shell, gatekeeper, beach settings, beach metadata). Click → opens the
+ * BlockEditor inline. Designer-face activity dissolves into navigation;
+ * V/L/S would operate at these addresses if the column reframes (deferred
+ * to a later sitting — for now an inline editor surfaces the same intent).
+ * Per docs/DESIGN-CHANNELS.md § "Designer face / shell access". */
+function HomeConfigure({
+  handle,
+  currentBeach,
+  onOpenEditor,
+}: {
+  handle: string
+  secret: string
+  currentBeach: string
+  onOpenEditor: (target: EditTarget) => void
+}) {
+  if (!handle) return null
+  const beachIsOwn = isBeachOwnedBy(currentBeach, handle)
+  const targets: EditTarget[] = [
+    { agentId: handle, block: 'shell', spindle: '', label: 'Your shell — face configs, watched beaches, manifest, settings, grains', writable: true },
+    { agentId: currentBeach, block: 'gatekeeper', spindle: '', label: "This beach's gatekeeper — admission shell", writable: beachIsOwn },
+    { agentId: currentBeach, block: 'beach', spindle: '5', label: "This beach's settings — vapour/liquid/presence/inbox/notification config", writable: beachIsOwn },
+    { agentId: currentBeach, block: 'beach', spindle: '8', label: "This beach's conventions — mark patterns, procedures, settings map", writable: beachIsOwn },
+    { agentId: currentBeach, block: 'beach', spindle: '9', label: "This beach's metadata — tide config", writable: beachIsOwn },
+  ]
+  return (
+    <div className="mb-4 pb-3 border-b border-border/40">
+      <div className="text-[11px] text-muted-foreground uppercase tracking-wider mb-1.5">Configure</div>
+      <div className="text-[10px] text-muted-foreground/70 mb-1">State blocks — anything whose contents shape behaviour</div>
+      <ul className="space-y-1">
+        {targets.map((t, i) => {
+          const ref = t.spindle ? `${t.agentId}:${t.block}:${t.spindle}` : `${t.agentId}:${t.block}`
+          const icon = t.block === 'shell' ? '🐚' : t.block === 'gatekeeper' ? '🚪' : '⚙'
+          return (
+            <li key={i}>
+              <button
+                onClick={() => onOpenEditor(t)}
+                className="w-full text-left px-2 py-1 text-xs rounded border border-border/40 bg-card/30 hover:bg-accent/30 hover:border-border/60 transition-colors"
+                title={t.writable ? `edit ${ref}` : `read ${ref} (read-only — not your block)`}
+              >
+                <span className="font-mono">{icon} {t.label}</span>
+                {!t.writable && <span className="ml-2 text-[10px] text-muted-foreground/70">read-only</span>}
+              </button>
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}
+
+/** Heuristic: does this beach belong to the user? URL beaches are owned
+ * by their host; bare names by their bare-name agent. We can't know
+ * without an authority probe — this is a hint for the UI label only. The
+ * substrate's lock enforces actual write authority. */
+function isBeachOwnedBy(beach: string, handle: string): boolean {
+  if (!beach || !handle) return false
+  if (beach.startsWith('https://') || beach.startsWith('http://')) {
+    try {
+      const host = new URL(beach).hostname
+      return host.includes(handle.toLowerCase())
+    } catch { return false }
+  }
+  return beach === handle
+}
+
+/** BlockEditor — inline JSON editor for any (agent_id, block, spindle).
+ * Reads on mount, edits in textarea, saves via bsp() with the user's
+ * secret. Authority is enforced by the substrate's lock; this UI just
+ * surfaces the result. v0.3: the smallest useful surface for editing
+ * state blocks without a full column-reframe (which is the longer arc). */
+function BlockEditor({ target, secret, onClose }: {
+  target: EditTarget
+  secret: string
+  onClose: () => void
+}) {
+  const [content, setContent] = useState('')
+  const [originalContent, setOriginalContent] = useState('')
+  const [status, setStatus] = useState<'loading' | 'ready' | 'saving' | 'saved' | 'error'>('loading')
+  const [message, setMessage] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    setStatus('loading')
+    setMessage('')
+    ;(async () => {
+      try {
+        const r = await bsp({ agent_id: target.agentId, block: target.block, spindle: target.spindle || undefined })
+        if (cancelled) return
+        if (r.ok && 'raw' in r) {
+          const json = JSON.stringify(r.raw, null, 2)
+          setContent(json)
+          setOriginalContent(json)
+          setStatus('ready')
+        } else {
+          // Block doesn't exist yet — start with empty object scaffold.
+          const scaffold = JSON.stringify({}, null, 2)
+          setContent(scaffold)
+          setOriginalContent(scaffold)
+          setStatus('ready')
+          setMessage(`block not found — ${target.writable ? 'authoring fresh' : 'no content to read'}`)
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setStatus('error')
+          setMessage(e instanceof Error ? e.message : String(e))
+        }
+      }
+    })()
+    return () => { cancelled = true }
+  }, [target.agentId, target.block, target.spindle, target.writable])
+
+  const save = async () => {
+    if (!target.writable) return
+    let parsed: unknown
+    try { parsed = JSON.parse(content) }
+    catch (e) {
+      setStatus('error')
+      setMessage(`invalid JSON — ${e instanceof Error ? e.message : 'parse failed'}`)
+      return
+    }
+    setStatus('saving')
+    setMessage('')
+    try {
+      const r = await bsp({
+        agent_id: target.agentId,
+        block: target.block,
+        spindle: target.spindle || undefined,
+        content: parsed as PscaleNode,
+        secret: secret || undefined,
+      })
+      if (r.ok) {
+        setStatus('saved')
+        setOriginalContent(content)
+        setMessage('saved to substrate')
+      } else {
+        setStatus('error')
+        setMessage(`error` in r ? (r as { error?: string }).error || 'write failed' : 'write failed')
+      }
+    } catch (e) {
+      setStatus('error')
+      setMessage(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const dirty = content !== originalContent
+  const ref = target.spindle ? `${target.agentId}:${target.block}:${target.spindle}` : `${target.agentId}:${target.block}`
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <button onClick={onClose} className="text-xs text-muted-foreground hover:text-foreground" title="back">← back</button>
+        <span className="text-xs font-mono text-muted-foreground truncate">{ref}</span>
+        {!target.writable && <span className="text-[10px] text-muted-foreground/70 uppercase tracking-wider">read-only</span>}
+      </div>
+      <div className="text-[11px] text-foreground/80">{target.label}</div>
+      {status === 'loading' ? (
+        <div className="text-xs text-muted-foreground italic">loading…</div>
+      ) : (
+        <>
+          <textarea
+            value={content}
+            onChange={e => setContent(e.target.value)}
+            readOnly={!target.writable}
+            spellCheck={false}
+            className="w-full h-[300px] px-2 py-1 text-[11px] font-mono rounded border border-border/40 bg-card/40 text-foreground/90 outline-none resize-none focus:border-primary/40"
+          />
+          <div className="flex items-center justify-between">
+            <span className={`text-[10px] ${status === 'error' ? 'text-destructive' : status === 'saved' ? 'text-emerald-500' : 'text-muted-foreground/70'}`}>
+              {message || (dirty && target.writable ? 'unsaved changes' : status === 'ready' ? 'no changes' : '')}
+            </span>
+            {target.writable && (
+              <button
+                onClick={save}
+                disabled={!dirty || status === 'saving'}
+                className="text-[11px] px-2 py-1 rounded bg-primary text-primary-foreground disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                {status === 'saving' ? 'saving…' : 'save to substrate'}
+              </button>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+function FaceCharacterObserver({ face, marks, presence, address }: { face: Face; marks: MarkRow[]; presence: PresenceMark[]; address: string }) {
+  const presenceIds = new Set(presence.map(p => p.agent_id))
+  const nonPresence = marks.filter(m => !m.is_presence || !presenceIds.has(m.agent_id ?? ''))
+  nonPresence.sort((a, b) => {
+    if (a.timestamp && b.timestamp) return b.timestamp.localeCompare(a.timestamp)
+    return parseInt(a.digit) - parseInt(b.digit)
+  })
+  return (
+    <div className="space-y-3">
+      {presence.length > 0 && (
+        <div>
+          <div className="text-[11px] text-muted-foreground uppercase tracking-wider mb-1">Present at this address</div>
+          <div className="flex flex-wrap gap-2">
+            {presence.map(p => (
+              <span key={p.agent_id} className="px-2 py-0.5 rounded-full bg-accent text-foreground text-xs font-mono" title={`@${p.address || '/'}`}>🟢 {p.agent_id}</span>
+            ))}
+          </div>
+        </div>
+      )}
+      <div>
+        <div className="text-[11px] text-muted-foreground uppercase tracking-wider mb-1">Marks {address ? `at ${address}` : 'at root'}</div>
+        {nonPresence.length === 0 ? (
+          <div className="text-sm text-muted-foreground italic">{face === 'observer' ? 'Nothing here yet — the address is quiet.' : 'No marks here yet.'}</div>
+        ) : (
+          <ul className="space-y-2">
+            {nonPresence.map(m => (
+              <li key={m.digit} className="border border-border/40 rounded px-3 py-2 bg-card/50">
+                <div className="text-sm whitespace-pre-wrap">{m.text}</div>
+                <div className="flex gap-3 text-[11px] text-muted-foreground mt-1 font-mono">
+                  {m.agent_id && <span>{m.agent_id}</span>}
+                  {m.address && <span>@{m.address || '/'}</span>}
+                  {m.timestamp && <span>{new Date(m.timestamp).toLocaleString()}</span>}
+                  <span className="ml-auto opacity-50">1.{m.digit}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Designer face — shell editor ──────────────────────────────────────────
+//
+// The reflexive move. Writes go to the user's own shell block via bsp() with
+// their session secret as proof of authority. After save, we re-read the
+// shell and call onShellSaved so the active face's gates flow into the next
+// soft-LLM call without a page reload.
+
+const FACE_LABELS: Record<'1' | '2' | '3' | '4', string> = {
+  '1': 'Character — engage as yourself',
+  '2': 'Author — edit your own blocks',
+  '3': 'Designer — edit your own faces',
+  '4': 'Observer — read-only',
+}
+
+function FaceDesigner({ agentId, secret, shell, onShellSaved }: { agentId: string; secret: string; shell: AgentShell | null; onShellSaved?: (s: AgentShell) => void }) {
+  if (!agentId) {
+    return <div className="text-sm text-muted-foreground italic">Identify in the floating button (handle + passphrase) to edit your shell.</div>
+  }
+  if (!shell) {
+    return <div className="text-sm text-muted-foreground italic">Loading shell at <code>{agentId}:shell</code>…</div>
+  }
+  return (
+    <div className="space-y-3">
+      <div className="text-xs text-muted-foreground">
+        Editing <code className="font-mono">{agentId}:shell</code>. Each face's <em>knowledge_gates</em> filters what the soft-LLM reads under that face; <em>commit_gates</em> filters what it can write. Comma-separated entries: <code>{agentId}</code>, <code>{agentId}:passport</code>, <code>https://…</code>, <code>sed:foo</code>.
+      </div>
+      {(['1', '2', '3', '4'] as const).map(digit => {
+        const face = shell.faces.find(f => f.digit === digit)
+        return (
+          <FaceCard
+            key={digit}
+            digit={digit}
+            face={face}
+            agentId={agentId}
+            secret={secret}
+            onShellSaved={onShellSaved}
+          />
+        )
+      })}
+    </div>
+  )
+}
+
+function FaceCard({ digit, face, agentId, secret, onShellSaved }: { digit: '1' | '2' | '3' | '4'; face: ShellFace | undefined; agentId: string; secret: string; onShellSaved?: (s: AgentShell) => void }) {
+  const [label, setLabel] = useState(face?.label ?? FACE_LABELS[digit])
+  const [defaultAddr, setDefaultAddr] = useState(face?.default_address ?? '')
+  const [knowledge, setKnowledge] = useState(face?.knowledge_gates ?? '')
+  const [commit, setCommit] = useState(face?.commit_gates ?? '')
+  const [persona, setPersona] = useState(face?.persona ?? '')
+  const [saving, setSaving] = useState(false)
+  const [savedAt, setSavedAt] = useState<number | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  // Re-sync when shell prop changes (e.g. after save in another card).
+  useEffect(() => {
+    setLabel(face?.label ?? FACE_LABELS[digit])
+    setDefaultAddr(face?.default_address ?? '')
+    setKnowledge(face?.knowledge_gates ?? '')
+    setCommit(face?.commit_gates ?? '')
+    setPersona(face?.persona ?? '')
+  }, [face, digit])
+
+  const dirty =
+    (face?.label ?? FACE_LABELS[digit]) !== label ||
+    (face?.default_address ?? '') !== defaultAddr ||
+    (face?.knowledge_gates ?? '') !== knowledge ||
+    (face?.commit_gates ?? '') !== commit ||
+    (face?.persona ?? '') !== persona
+
+  async function save() {
+    if (!secret) {
+      setError('Passphrase required to write your shell.')
+      return
+    }
+    setSaving(true)
+    setError(null)
+    const content: PscaleNode = {
+      _: label,
+      '1': defaultAddr,
+      '2': knowledge,
+      '3': commit,
+      '4': persona,
+    }
+    // Pass new_lock=secret so the first save of an unlocked shell sets
+    // the write-lock (R1/R2). Subsequent saves rotate to the same hash —
+    // idempotent. This makes the Designer face genuinely sovereign:
+    // after the first edit, no one without the passphrase can rewrite
+    // the user's gates, even though anyone can READ them.
+    const result = await bsp({
+      agent_id: agentId,
+      block: 'shell',
+      spindle: '1.' + digit,
+      content,
+      secret,
+      new_lock: secret,
+    })
+    setSaving(false)
+    if (!result.ok) {
+      setError(('error' in result ? result.error : null) ?? 'write failed')
+      return
+    }
+    setSavedAt(Date.now())
+    // Re-read shell and bubble up so face gates take effect immediately.
+    const next = await readShell(agentId)
+    if (next && onShellSaved) onShellSaved(next)
+  }
+
+  const labelShort = (FACE_LABELS[digit].split('—')[0] || '').trim()
+
+  return (
+    <div className="border border-border/40 rounded p-3 bg-card/40 space-y-2">
+      <div className="flex items-baseline gap-2">
+        <span className="text-[10px] text-muted-foreground font-mono">shell:1.{digit}</span>
+        <span className="text-sm font-medium">{labelShort}</span>
+        <div className="ml-auto flex items-center gap-2">
+          {error && <span className="text-[11px] text-destructive">{error}</span>}
+          {savedAt && !dirty && !error && <span className="text-[11px] text-emerald-500">saved</span>}
+          <button
+            onClick={save}
+            disabled={!dirty || saving || !secret}
+            className="text-[11px] px-2 py-0.5 rounded bg-primary text-primary-foreground disabled:opacity-30 disabled:cursor-not-allowed hover:opacity-90"
+            title={!secret ? 'add a passphrase in Identity to save' : dirty ? 'save this face' : 'no changes to save'}
+          >
+            {saving ? '…' : 'save'}
+          </button>
+        </div>
+      </div>
+      <FieldRow label="label" hint="shell:1.<digit>._ — short name + intent" value={label} onChange={setLabel} />
+      <FieldRow label="default address" hint="pscale coord this face starts at" value={defaultAddr} onChange={setDefaultAddr} />
+      <FieldRow label="knowledge gates" hint="comma-separated read scope refs" value={knowledge} onChange={setKnowledge} />
+      <FieldRow label="commit gates" hint="comma-separated write scope refs" value={commit} onChange={setCommit} />
+      <FieldRow label="persona" hint="soft-LLM persona for this face" value={persona} onChange={setPersona} multiline />
+    </div>
+  )
+}
+
+function FieldRow({ label, hint, value, onChange, multiline }: { label: string; hint: string; value: string; onChange: (v: string) => void; multiline?: boolean }) {
+  return (
+    <label className="block">
+      <div className="flex items-baseline gap-2 mb-0.5">
+        <span className="text-[11px] font-medium text-foreground">{label}</span>
+        <span className="text-[10px] text-muted-foreground">{hint}</span>
+      </div>
+      {multiline ? (
+        <textarea
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          rows={2}
+          className="w-full px-2 py-1 text-xs font-mono rounded border border-border/40 bg-background text-foreground outline-none focus:border-primary/60 resize-y"
+        />
+      ) : (
+        <input
+          type="text"
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          className="w-full px-2 py-1 text-xs font-mono rounded border border-border/40 bg-background text-foreground outline-none focus:border-primary/60"
+        />
+      )}
+    </label>
+  )
+}
+
+// ── Author face — owned blocks ────────────────────────────────────────────
+//
+// Lists the agent's own named blocks: passport, shell manifest entries, plus
+// a "what's at this beach as me?" probe. Click an entry to expand into a
+// raw JSON view (read-only for now — write affordances come with a richer
+// block editor in a follow-up). The substrate-tray actions on the input
+// panel cover the canonical writes (passport, register, engage, keys).
+
+interface PoolEntry { digit: string; underscore: string; synthesis: string | null }
+
+function FaceAuthor({ agentId, secret, shell, beach, onNavigateAddress, onClose }: { agentId: string; secret: string; shell: AgentShell | null; beach: string; onNavigateAddress?: (addr: string) => void; onClose: () => void }) {
+  const [passport, setPassport] = useState<PscaleNode | null>(null)
+  const [loadingPassport, setLoadingPassport] = useState(false)
+  const [pools, setPools] = useState<PoolEntry[]>([])
+
+  // void to satisfy lint — secret may be referenced in writes added later
+  void secret
+
+  useEffect(() => {
+    if (!agentId) { setPassport(null); return }
+    let cancelled = false
+    setLoadingPassport(true)
+    ;(async () => {
+      const r = await bsp({ agent_id: agentId, block: 'passport' })
+      if (cancelled) return
+      setLoadingPassport(false)
+      setPassport(r.ok && 'raw' in r ? r.raw : null)
+    })()
+    return () => { cancelled = true }
+  }, [agentId])
+
+  // Pool discovery — walk beach:2 to list pools at this beach. Each pool
+  // is a sub-block at beach:2.<N> with its own underscore (purpose) and
+  // optionally _synthesis. Pure read; no writes here.
+  useEffect(() => {
+    if (!beach) { setPools([]); return }
+    let cancelled = false
+    ;(async () => {
+      const r = await bsp({ agent_id: beach, block: 'beach', spindle: '2' })
+      if (cancelled) return
+      if (!r.ok || !('raw' in r) || !r.raw || typeof r.raw !== 'object') { setPools([]); return }
+      const root = r.raw as Record<string, PscaleNode>
+      const poolsNode = root['2']
+      if (typeof poolsNode !== 'object' || poolsNode === null) { setPools([]); return }
+      const out: PoolEntry[] = []
+      const po = poolsNode as Record<string, PscaleNode>
+      for (let d = 1; d <= 9; d++) {
+        const k = String(d)
+        const v = po[k]
+        if (typeof v !== 'object' || v === null) continue
+        const vo = v as Record<string, PscaleNode>
+        const u = typeof vo._ === 'string' ? (vo._ as string) : ''
+        const synthNode = vo._synthesis
+        let synthesis: string | null = null
+        if (typeof synthNode === 'object' && synthNode !== null) {
+          const sn = synthNode as Record<string, PscaleNode>
+          if (typeof sn._ === 'string') synthesis = sn._ as string
+        }
+        if (!u && !synthesis) continue
+        out.push({ digit: k, underscore: u, synthesis })
+      }
+      setPools(out)
+    })()
+    return () => { cancelled = true }
+  }, [beach])
+
+  if (!agentId) {
+    return <div className="text-sm text-muted-foreground italic">Identify in the floating button to view what you've authored.</div>
+  }
+
+  return (
+    <div className="space-y-3">
+      <BlockCard
+        label={`passport`}
+        sublabel={`bsp(agent_id="${agentId}", block="passport")`}
+        body={loadingPassport ? '(loading)' : passport ? formatPscale(passport, 0) : '(none — use 🪪 in the input panel to publish one)'}
+        emptyHint="No passport yet"
+      />
+      {pools.length > 0 && (
+        <div>
+          <div className="text-[11px] text-muted-foreground uppercase tracking-wider mb-1">Pools at this beach (beach:2)</div>
+          <ul className="space-y-1.5">
+            {pools.map(p => {
+              const addr = `2.${p.digit}`
+              return (
+                <li key={p.digit}>
+                  <button
+                    onClick={() => { if (onNavigateAddress) { onNavigateAddress(addr); onClose() } }}
+                    className="w-full text-left px-2 py-1.5 border border-border/30 rounded bg-card/30 hover:bg-accent/20 transition-colors cursor-pointer"
+                    title={onNavigateAddress ? `Enter pool — sets address to ${addr}` : undefined}
+                  >
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-[10px] text-muted-foreground font-mono">{addr}</span>
+                      <span className="text-sm">{p.underscore || '(no purpose)'}</span>
+                    </div>
+                    {p.synthesis && (
+                      <div className="text-[11px] text-muted-foreground mt-0.5 italic line-clamp-2">{p.synthesis}</div>
+                    )}
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )}
+      {shell && shell.block_manifest.length > 0 && (
+        <div>
+          <div className="text-[11px] text-muted-foreground uppercase tracking-wider mb-1">Block manifest (shell:3)</div>
+          <ul className="space-y-1 text-xs font-mono">
+            {shell.block_manifest.map((ref, i) => (
+              <li key={i} className="px-2 py-1 border border-border/30 rounded bg-card/30">{ref}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {shell && shell.watched_beaches.length > 0 && (
+        <div>
+          <div className="text-[11px] text-muted-foreground uppercase tracking-wider mb-1">Watched beaches (shell:2)</div>
+          <ul className="space-y-1 text-xs font-mono">
+            {shell.watched_beaches.map((url, i) => {
+              const here = url === beach
+              return <li key={i} className={`px-2 py-1 border border-border/30 rounded ${here ? 'bg-accent/30' : 'bg-card/30'}`}>{url}{here && <span className="ml-2 text-[10px] text-muted-foreground">(current)</span>}</li>
+            })}
+          </ul>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function BlockCard({ label, sublabel, body, emptyHint }: { label: string; sublabel?: string; body: string; emptyHint?: string }) {
+  return (
+    <div className="border border-border/40 rounded bg-card/40">
+      <div className="px-3 py-1.5 border-b border-border/30 flex items-baseline gap-2">
+        <span className="text-sm font-medium">{label}</span>
+        {sublabel && <span className="text-[10px] text-muted-foreground font-mono">{sublabel}</span>}
+      </div>
+      <pre className="px-3 py-2 text-[11px] font-mono whitespace-pre-wrap text-foreground/80 leading-relaxed">
+        {body || emptyHint || ''}
+      </pre>
+    </div>
+  )
+}
+
+/** Compact pretty-print of a pscale block, capped to keep the viewer light. */
+function formatPscale(node: PscaleNode, depth: number, maxDepth = 3, maxStrLen = 200): string {
+  if (typeof node === 'string') {
+    return node.length > maxStrLen ? node.slice(0, maxStrLen) + '…' : node
+  }
+  if (depth >= maxDepth) return '{…}'
+  if (typeof node !== 'object' || node === null) return ''
+  const obj = node as Record<string, PscaleNode>
+  const lines: string[] = []
+  const indent = '  '.repeat(depth)
+  if (typeof obj._ === 'string') lines.push(`${indent}_: ${obj._.length > maxStrLen ? obj._.slice(0, maxStrLen) + '…' : obj._}`)
+  else if (typeof obj._ === 'object') lines.push(`${indent}_: ${formatPscale(obj._, depth + 1, maxDepth, maxStrLen)}`)
+  for (const k of '123456789') {
+    if (!(k in obj)) continue
+    const v = obj[k]
+    if (typeof v === 'string') lines.push(`${indent}${k}: ${v.length > maxStrLen ? v.slice(0, maxStrLen) + '…' : v}`)
+    else if (typeof v === 'object' && v !== null) lines.push(`${indent}${k}: ${formatPscale(v, depth + 1, maxDepth, maxStrLen)}`)
+  }
+  return lines.join('\n')
+}

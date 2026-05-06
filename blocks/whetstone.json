@@ -1,0 +1,50 @@
+{
+  "_": "Whetstone — operational reference for the BSP MCP. The sharpener that ships with the function. Five branches give precise mechanical detail: signature, selection-shape derivation, modifier composition, storage adapter, translation from pscale MCP. The BSP MCP can serve the whole whetstone to a caller, or pull a specific slice for a specific operational need — a parameter error returns the relevant signature leaf; an unknown mode returns the relevant translation entry; a misshaped write returns the relevant derivation rule. The whole whetstone is the complete operational manual; any BSP query into it returns exactly the slice the calling context needs.",
+  "1": {
+    "_": "Signature — bsp(agent_id, block, spindle, pscale_attention, content?, face?, tier?, secret?, gray?). Three required positionals, one optional positional, four optional modifiers. Read when content is omitted; write when content is provided. All parameters validated server-side before geometry traversal.",
+    "1": "agent_id — calling identity. Required. Used by face validation to check sed: collective membership, by lock systems to verify secret ownership, by grain substrate to identify which side is being addressed. String, matches passport agent_id.",
+    "2": "block — block name (B). Required. Routes to storage adapter. Substrate prefix encoded here: ordinary names route to ordinary handling; sed: prefix routes to sedimentary; grain: prefix routes to grain. The name is the substrate router.",
+    "3": "spindle — address (S). Required. A pscale string like 111 or 1.2.3 or 111 with trailing star. Empty string or null means root. Trailing star means walk to terminus then enter hidden directory before continuing. Length sets the terminal pscale.",
+    "4": "pscale_attention — depth selector (P). Optional, defaulting to terminus of spindle. An integer pscale level. Together with spindle length, derives selection shape per branch 2.",
+    "5": "content — optional payload for writes. Shape MUST match the shape derived from (S, P) per branch 2. Strings for points, objects for rings and subtrees, lists for discs. Omit for reads.",
+    "6": "face, tier, secret, gray — modifiers per branch 3. All optional. Default behaviour preserves backward compatibility: no face validation, no tier constraint, no encryption."
+  },
+  "2": {
+    "_": "Selection-shape derivation. Spindle length sets a terminal pscale P_end. Pscale-attention P_att is the second coordinate. Shape of selection (read) or required payload (write) is fully determined by the relationship between P_end and P_att. No mode parameter is necessary; modes are sugar over this table.",
+    "1": "P_att equals P_end → point. Read returns the string at the terminus. Write replaces with a string. Single-value operation.",
+    "2": "P_att equals P_end minus one → ring. Read returns siblings of the terminus as an object mapping digit to string-or-object. Write replaces siblings with an object of the same shape.",
+    "3": "P_att deeper than P_end minus one → subtree (dir). Read returns the full subtree from terminus down to P_att. Write replaces with a nested object.",
+    "4": "spindle empty AND P_att set → disc. Read returns all nodes at P_att across the block as a list of address-content pairs. Write accepts the same list shape.",
+    "5": "spindle empty AND P_att empty → whole block. Read returns the entire block JSON. Write replaces the entire block.",
+    "6": "spindle ends with star → star composition. Walk to terminus, enter hidden directory, recurse on (S, P) inside. Inner shape follows the same table.",
+    "7": "Constraint — awareness beyond the spindle endpoint is bounded by actual block content. You cannot perceive depth that does not exist. Writing at P_att deeper than current depth either creates intermediate nodes (lenient, default) or refuses (strict, opt-in)."
+  },
+  "3": {
+    "_": "Modifier composition rules. Four independent axes — face, tier, secret, gray. Each composes with (B, S, P) without altering the geometry. The MCP validates each modifier before geometry traversal. Failure of any modifier check rejects the call with not-permitted-at-this-aperture — no information leaked about block contents.",
+    "1": "face — CADO. Validation: walk the relevant sed: collective and verify agent_id is registered. Observer requires no membership. Failure returns reject. Default: no face validation if face omitted.",
+    "2": "tier — SMH. Validation: per the face-tier matrix configured per grit instance. Default matrix: Character can run Soft and Medium; Author can run Soft, Medium, Hard; Designer can run Soft, Medium, Hard; Observer can run Soft, Medium, Hard read-only. Disallowed combinations rejected.",
+    "3": "secret — write-lock proof. On sed: and grain: and locked-ordinary blocks, verifies against stored hash before allowing write. Mismatch rejected. Required for write to any locked location.",
+    "4": "gray — opt-in self-encryption. Only on unlocked ordinary blocks. Encrypts content with secret as the key; only the writer can decrypt with the same secret. Independent of locking. Boolean; default false.",
+    "5": "Composition order: face first (permission), tier second (aperture), secret and gray third (data access). All checked before geometry traversal. All must pass for the call to execute.",
+    "6": "Substrate dispatch — encoded in block name, server-side. Ordinary block routes to standard locking. Sed: prefix routes to registration-passphrase as secret; positions immutable post-registration. Grain: prefix routes to side-passphrase as secret; pair_id derived from sorted agent_ids."
+  },
+  "4": {
+    "_": "Storage adapter interface. The membrane between the geometry and the substrate. Any backend implementing this interface serves the BSP MCP. Default adapter: Postgres + JSONB on the existing beach. Alternative adapters (MongoDB, Firebase RTDB, in-memory, filesystem) implement the same surface. Geometry traversal is adapter-independent.",
+    "1": "load_block(name) yielding JSON or None — return the block's full JSON or None if absent. Substrate-agnostic at the interface; substrate-specific routing happens in the calling layer above.",
+    "2": "save_block(name, json, version_token?) yielding new token or conflict — write the block, optionally with optimistic-concurrency token. Atomicity at single-block boundary. Multi-block transactions not guaranteed.",
+    "3": "delete_block(name) yielding ack; list_blocks(prefix?) yielding name list — basic block-level operations for cleanup and discovery. List supports optional prefix filter.",
+    "4": "get_lock_state(name) yielding lock metadata or None; set_lock_state(name, hash, salt) yielding ack; verify_secret(name, secret) yielding bool — locking primitives. Substrate-agnostic at the interface.",
+    "5": "allocate_position(collective, declaration, hash) yielding position address; get_position_hashes(collective) yielding position-to-hash map; allocate_grain_pair(agent_a, agent_b) yielding pair_id — substrate-specific allocation hooks. Sed: and grain: substrates need atomic position assignment; ordinary blocks don't.",
+    "6": "Adapter swap procedure: read all blocks via source.list_blocks plus load_block; write all to target via save_block; preserve lock state via get and set lock_state. Position hashes carry over. No geometry rewrite needed."
+  },
+  "5": {
+    "_": "Translation from pscale MCP to BSP MCP. The current pscale MCP exposes ~25 functions; most are sugar over BSP geometry. This branch maps the geometric subset. Non-geometric primitives (create_collective, register, grain_reach, lock_block, evolution, key_publish, verify_rider) carry over unchanged in name and semantics.",
+    "1": "walk with mode spindle and address A maps to bsp with spindle equals A, pscale_attention equals terminus of A.",
+    "2": "walk with mode ring and address A maps to bsp with spindle equals parent of A, pscale_attention equals terminus of A.",
+    "3": "walk with mode dir and address A maps to bsp with spindle equals A, pscale_attention equals floor of block.",
+    "4": "walk with mode point and address A and explicit pscale p maps to bsp with spindle equals A, pscale_attention equals p.",
+    "5": "walk with mode disc and depth d maps to bsp with spindle empty, pscale_attention equals pscale_for_depth(d).",
+    "6": "walk with mode star and address A maps to bsp with spindle equals A with trailing star, pscale_attention equals terminus of A.",
+    "7": "write with address A and content string maps to bsp with spindle equals parent of A, pscale_attention equals terminus of A, content equals string. Point-write at the terminus, current pscale_write semantics preserved."
+  }
+}

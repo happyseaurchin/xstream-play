@@ -1,4 +1,4 @@
-import { X } from "lucide-react";
+import { X, VolumeX } from "lucide-react";
 import { VapourEntry } from "@/types/xstream";
 import type { SoftLLMResponse } from "@/types";
 
@@ -7,12 +7,16 @@ interface VapourZoneProps {
   // Soft response display
   softResponse?: SoftLLMResponse | null;
   onDismissSoftResponse?: () => void;
+  // Mute a peer's vapour for this user. Omit to hide the mute affordance
+  // (e.g. anonymous user where mute persistence has no anchor).
+  onMutePeer?: (agent_id: string) => void;
 }
 
 export function VapourZone({
   entries,
   softResponse,
   onDismissSoftResponse,
+  onMutePeer,
 }: VapourZoneProps) {
   // Filter to only others' vapor (self vapor now comes from ConstructionButton)
   const othersVapor = entries.filter(e => !e.isSelf);
@@ -29,15 +33,24 @@ export function VapourZone({
         {othersVapor.map((entry) => (
           <div
             key={entry.id}
-            className="vapour-entry animate-fade-in"
+            className="vapour-entry animate-fade-in group"
           >
             <div className="flex items-start gap-2">
               <span className="text-[10px] text-vapour-text/60 shrink-0 mt-0.5">
                 {entry.userName}:
               </span>
-              <span className="text-sm text-vapour-text">
+              <span className="text-sm text-vapour-text flex-1">
                 {entry.text}
               </span>
+              {onMutePeer && (
+                <button
+                  onClick={() => onMutePeer(entry.userId)}
+                  className="shrink-0 opacity-0 group-hover:opacity-100 h-4 w-4 rounded flex items-center justify-center text-muted-foreground/60 hover:text-foreground transition-opacity"
+                  title={`Mute ${entry.userName}'s vapour`}
+                >
+                  <VolumeX className="h-3 w-3" />
+                </button>
+              )}
             </div>
           </div>
         ))}

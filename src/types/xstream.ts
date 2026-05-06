@@ -1,4 +1,4 @@
-export type Face = "character" | "author" | "designer";
+export type Face = "character" | "author" | "designer" | "observer";
 export type Theme = "dark" | "light" | "cyber" | "soft";
 export type Layout = "single" | "double" | "triple" | "auto";
 
@@ -32,6 +32,7 @@ export interface SolidBlock {
   title?: string;
   content: string;
   timestamp: number;
+  face?: Face | null;  // operational mode the contribution was made from (per face-as-mode convention)
 }
 
 export interface Column {

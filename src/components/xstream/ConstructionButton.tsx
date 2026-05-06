@@ -3,50 +3,159 @@ import {
   Hash,
   Plus,
   User,
-  LogOut,
   Palette,
   X,
   GripVertical,
   Zap,
   ArrowRight,
+  ArrowUp,
+  CircleDot,
   Loader2,
-  Paperclip,
-  Mic,
+  ChevronDown,
+  MapPin,
+  UserPlus,
+  Handshake,
+  IdCard,
+  KeyRound,
 } from "lucide-react";
 import { Theme } from "@/types/xstream";
+
+export type ActionVerb = 'mark' | 'register' | 'engage' | 'passport' | 'keys';
+
+export interface ActionDef {
+  verb: ActionVerb;
+  label: string;
+  hint: string;
+  template: string;
+  needsHandle: boolean;
+  needsSecret: boolean;
+  /** Post-admission feature — produces substrate that holds (sediment).
+   * When the user lacks admission, a 🪨 indicator appears on the button.
+   * Pre-admission users can still click; the engage gate in Column.tsx
+   * routes them through the AdmissionDialog if applicable. */
+  needsAdmission: boolean;
+}
+
+export const ACTIONS: ActionDef[] = [
+  { verb: 'mark',     label: 'Drop a mark',    hint: 'leave a trace at this address',          template: '',                                              needsHandle: false, needsSecret: false, needsAdmission: false },
+  { verb: 'passport', label: 'Edit passport',  hint: 'publish your self-description',          template: 'passport: ',                                    needsHandle: true,  needsSecret: true,  needsAdmission: false },
+  { verb: 'register', label: 'Register',       hint: 'claim a position in a collective',       template: 'register sed:<collective> <declaration>',       needsHandle: true,  needsSecret: true,  needsAdmission: true  },
+  { verb: 'engage',   label: 'Reach out',      hint: 'open a bilateral channel with someone',  template: 'engage <agent_id> <description> | <my side>',  needsHandle: true,  needsSecret: true,  needsAdmission: true  },
+  { verb: 'keys',     label: 'Publish keys',   hint: 'derive ed25519+x25519 from your passphrase and publish public halves to passport:9', template: 'keys', needsHandle: true, needsSecret: true,  needsAdmission: true  },
+];
+
+const ICONS: Record<ActionVerb, typeof MapPin> = {
+  mark: MapPin,
+  passport: IdCard,
+  register: UserPlus,
+  engage: Handshake,
+  keys: KeyRound,
+};
+
+export interface IdentityProps {
+  handle: string;
+  secret: string;
+  apiKey: string;
+  onIdentityChange: (v: { handle: string; secret: string; apiKey: string }) => void;
+  // Multi-handle: list of saved handles + actions to switch / forget. The
+  // active handle is `handle` above. Each saved handle has its own secret +
+  // API key in sessionStorage; switching loads them (may be empty if the
+  // session hasn't unlocked the handle's secret yet — user re-enters it).
+  identities: string[];
+  onSwitchHandle: (h: string) => void;
+  onForgetHandle: (h: string) => void;
+}
 
 interface ConstructionButtonProps {
   // Menu actions
   onThemeChange: (theme: Theme) => void;
-  onLogout: () => void;
   currentTheme: Theme;
+  // Admission state — null when not applicable (anon, no handle), false when
+  // a handle is set but no claim at passport:8, true when admitted. Drives
+  // the 🪨 indicator on post-admission tray buttons (engage / register /
+  // keys). Pre-admission users can still click — the action's gate (in
+  // Column.tsx for engage) opens the AdmissionDialog. The rock signals
+  // "this creates substrate that holds" — beach-faithful: marks wash, rocks
+  // stay.
+  admitted?: boolean | null;
+  // Active CADO face of the focused column. Drives data-face on the button
+  // wrapper so internal `bg-face-accent` and `icon-accent` rules pick up the
+  // right color (yellow=Character, blue=Author, pink=Designer, green=Observer).
+  face?: "character" | "author" | "designer" | "observer";
+  // Multi-column controls live in the settings menu so the surface stays
+  // calm. Spawn opens a new column inheriting the active one's seed; close
+  // is per-column (✕ in each column header).
+  onSpawnColumn?: () => void;
+  columnCount?: number;
   // Input actions
   onQuery: (text: string) => void;
   onSubmit: (text: string) => void;
+  // Commit the focused column's pending liquid (substrate-derived).
+  onCommit?: () => void;
   // Controlled input
   value: string;
   onChange: (value: string) => void;
   // State
   isQuerying?: boolean;
+  // True when the focused column has a non-empty self-liquid slot on the
+  // substrate. Drives the button's morph from submit↑ to commit●.
+  pendingLiquid?: boolean;
+  // True while medium-LLM synthesis + substrate writes for commit are in
+  // flight. Drives the button's spinner state.
+  isCommitting?: boolean;
   placeholder?: string;
   // Column awareness (for future multi-column)
   columnId?: string;
+  // Identity (replaces logout — beach mode has no game session)
+  identity: IdentityProps;
+  // Action verb hint (e.g. last action template injected) — purely visual.
+  activeVerb?: ActionVerb | null;
 }
 
 const STORAGE_KEY = "xstream-construction-btn-pos";
+const WIDTH_STORAGE_KEY = "xstream-construction-btn-width";
+const DEFAULT_PANEL_WIDTH = 352; // 22rem
+const MIN_PANEL_WIDTH = 280;
+const MAX_PANEL_WIDTH_FRAC = 0.9; // of viewport
 
 export function ConstructionButton({
   onThemeChange,
-  onLogout,
   currentTheme,
+  admitted = null,
+  face = "character",
+  onSpawnColumn,
+  columnCount = 1,
   onQuery,
   onSubmit,
+  onCommit,
   value,
   onChange,
   isQuerying = false,
+  pendingLiquid = false,
+  isCommitting = false,
   placeholder = "Type your thought...",
   columnId,
+  identity,
+  activeVerb = null,
 }: ConstructionButtonProps) {
+  const [showIdentity, setShowIdentity] = useState(false);
+  const [editHandle, setEditHandle] = useState(identity.handle);
+  const [editSecret, setEditSecret] = useState(identity.secret);
+  const [editApiKey, setEditApiKey] = useState(identity.apiKey);
+  useEffect(() => {
+    setEditHandle(identity.handle);
+    setEditSecret(identity.secret);
+    setEditApiKey(identity.apiKey);
+  }, [identity.handle, identity.secret, identity.apiKey]);
+  const saveIdentity = () => {
+    identity.onIdentityChange({ handle: editHandle.trim(), secret: editSecret.trim(), apiKey: editApiKey.trim() });
+    setShowIdentity(false);
+  };
+  const forgetIdentity = () => {
+    identity.onIdentityChange({ handle: "", secret: "", apiKey: "" });
+    setEditHandle(""); setEditSecret(""); setEditApiKey("");
+    setShowIdentity(false);
+  };
   const [isOpen, setIsOpen] = useState(false);       // Settings menu open
   const [isExpanded, setIsExpanded] = useState(false); // Input panel open
   const [position, setPosition] = useState(() => {
@@ -65,6 +174,16 @@ export function ConstructionButton({
     };
   });
   const [isDragging, setIsDragging] = useState(false);
+  const [panelWidth, setPanelWidth] = useState<number>(() => {
+    const saved = localStorage.getItem(WIDTH_STORAGE_KEY);
+    if (saved) {
+      const n = parseInt(saved, 10);
+      if (Number.isFinite(n) && n >= MIN_PANEL_WIDTH) return n;
+    }
+    return DEFAULT_PANEL_WIDTH;
+  });
+  const [isResizing, setIsResizing] = useState(false);
+  const resizeStart = useRef({ x: 0, w: 0 });
   const dragStart = useRef({ x: 0, y: 0 });
   const buttonRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -72,6 +191,34 @@ export function ConstructionButton({
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(position));
   }, [position]);
+
+  useEffect(() => {
+    localStorage.setItem(WIDTH_STORAGE_KEY, String(panelWidth));
+  }, [panelWidth]);
+
+  useEffect(() => {
+    if (!isResizing) return;
+    const handleMouseMove = (e: MouseEvent) => {
+      const dx = resizeStart.current.x - e.clientX; // drag left → grow
+      const max = Math.floor(window.innerWidth * MAX_PANEL_WIDTH_FRAC);
+      const next = Math.max(MIN_PANEL_WIDTH, Math.min(max, resizeStart.current.w + dx));
+      setPanelWidth(next);
+    };
+    const handleMouseUp = () => setIsResizing(false);
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isResizing]);
+
+  const startResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    resizeStart.current = { x: e.clientX, w: panelWidth };
+    setIsResizing(true);
+  }, [panelWidth]);
 
   // Focus textarea when expanded
   useEffect(() => {
@@ -81,8 +228,11 @@ export function ConstructionButton({
   }, [isExpanded, isOpen]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).closest("button") ||
-        (e.target as HTMLElement).closest("textarea")) return;
+    const t = e.target as HTMLElement;
+    // Don't start a drag when the user is interacting with form/text controls
+    // or any element inside the settings popover.
+    if (t.closest("button") || t.closest("textarea") || t.closest("input") ||
+        t.closest("label") || t.closest("[data-no-drag]")) return;
     e.preventDefault();
     setIsDragging(true);
     dragStart.current = { x: e.clientX - position.x, y: e.clientY - position.y };
@@ -121,6 +271,24 @@ export function ConstructionButton({
     }
   };
 
+  const handleCommit = () => {
+    if (onCommit && pendingLiquid && !isCommitting) {
+      onCommit();
+    }
+  };
+
+  // Single-button state machine — the action arrow at the bottom of the
+  // input panel reflects whichever step is currently meaningful:
+  //   isCommitting → spinner (committing in progress, read-only)
+  //   value.trim() → submit↑  (write what's typed to liquid)
+  //   pendingLiquid → commit● (promote substrate-pending liquid to solid)
+  //   else → faded ↑          (nothing to do)
+  const actionMode: 'committing' | 'submit' | 'commit' | 'idle' =
+    isCommitting ? 'committing'
+    : value.trim() ? 'submit'
+    : pendingLiquid ? 'commit'
+    : 'idle';
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") {
       if (e.metaKey || e.ctrlKey) {
@@ -128,9 +296,15 @@ export function ConstructionButton({
         e.preventDefault();
         handleQuery();
       } else if (e.shiftKey) {
-        // Shift+Enter → Submit to Liquid
+        // Shift+Enter → "do whatever's next" — submit if prompt has text,
+        // else commit pending liquid if any. Mirrors the action-button
+        // dispatcher so the keyboard and the button stay in lockstep.
         e.preventDefault();
-        handleSubmit();
+        if (value.trim()) {
+          handleSubmit();
+        } else if (pendingLiquid && !isCommitting) {
+          handleCommit();
+        }
       }
       // Plain Enter → newline (default textarea behavior)
     } else if (e.key === "Escape") {
@@ -195,17 +369,40 @@ export function ConstructionButton({
       style={{ left: position.x, top: position.y }}
       onMouseDown={handleMouseDown}
       data-column-id={columnId}
+      data-face={face}
     >
       {/* Settings Menu */}
       {isOpen && (
-        <div className="absolute bottom-14 right-0 w-56 glass rounded-lg overflow-hidden shadow-lg animate-slide-up">
+        <div data-no-drag className="absolute bottom-14 right-0 w-64 glass rounded-lg overflow-hidden shadow-lg animate-slide-up text-foreground">
           <div className="px-4 py-3 border-b border-border/50">
-            <span className="text-sm font-medium">Settings</span>
+            <span className="text-sm font-medium text-foreground">Settings</span>
           </div>
 
           <div className="py-1">
+            <a
+              href="/about"
+              className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-foreground hover:bg-accent/50 transition-colors"
+              title="An /about page explaining what xstream is, how it differs, and where to start"
+            >
+              <span className="h-4 w-4 flex items-center justify-center text-muted-foreground text-xs leading-none">?</span>
+              <span className="flex-1 text-left">What's xstream?</span>
+              <span className="text-[10px] text-muted-foreground font-mono">/about</span>
+            </a>
+
+            {onSpawnColumn && (
+              <button
+                onClick={() => { onSpawnColumn(); }}
+                className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-foreground hover:bg-accent/50 transition-colors"
+                title="Open a new column inheriting the focused column's beach + face"
+              >
+                <span className="h-4 w-4 flex items-center justify-center text-muted-foreground text-base leading-none">+</span>
+                <span className="flex-1 text-left">New column</span>
+                <span className="text-[10px] text-muted-foreground font-mono">{columnCount} open</span>
+              </button>
+            )}
+
             <div className="px-2 py-1">
-              <div className="flex items-center gap-3 px-2 py-1.5 text-sm">
+              <div className="flex items-center gap-3 px-2 py-1.5 text-sm text-foreground">
                 <Palette className="h-4 w-4 text-muted-foreground" />
                 <span>Theme</span>
               </div>
@@ -217,7 +414,7 @@ export function ConstructionButton({
                     className={`flex-1 px-2 py-1.5 text-xs rounded transition-colors ${
                       currentTheme === theme.value
                         ? "bg-primary text-primary-foreground"
-                        : "bg-muted/50 hover:bg-accent/50"
+                        : "bg-muted/50 text-foreground hover:bg-accent/50"
                     }`}
                   >
                     {theme.label}
@@ -227,32 +424,102 @@ export function ConstructionButton({
             </div>
 
             <button
-              onClick={() => setIsOpen(false)}
-              className="w-full flex items-center gap-3 px-4 py-2.5 text-sm hover:bg-accent/50 transition-colors"
+              onClick={() => setShowIdentity(s => !s)}
+              className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-foreground hover:bg-accent/50 transition-colors"
             >
               <User className="h-4 w-4 text-muted-foreground" />
-              Profile
+              <span className="flex-1 text-left">Identity</span>
+              <span className="text-[10px] text-muted-foreground font-mono">
+                {identity.handle ? identity.handle : "anon"}
+                {identity.apiKey ? " · llm" : ""}
+              </span>
+              <ChevronDown className={`h-3 w-3 text-muted-foreground transition-transform ${showIdentity ? "rotate-180" : ""}`} />
             </button>
 
-            <div className="border-t border-border/50 mt-1 pt-1">
-              <button
-                onClick={() => {
-                  console.log('[ConstructionButton] Logout clicked');
-                  onLogout();
-                  setIsOpen(false);
-                  setIsExpanded(false);
-                }}
-                className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-destructive hover:bg-destructive/10 transition-colors"
-              >
-                <LogOut className="h-4 w-4" />
-                Logout
-              </button>
-            </div>
+            {showIdentity && (
+              <div className="px-4 pb-3 space-y-2 border-t border-border/40 pt-2">
+                {identity.identities.length > 0 && (
+                  <div className="space-y-1">
+                    <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Saved handles</div>
+                    <ul className="space-y-1">
+                      {identity.identities.map(h => {
+                        const active = h === identity.handle
+                        const hasSecret = typeof window !== 'undefined' && !!sessionStorage.getItem(`xstream:secret:${h}`)
+                        return (
+                          <li key={h} className="flex items-center gap-1">
+                            <button
+                              onClick={() => identity.onSwitchHandle(h)}
+                              disabled={active}
+                              className={`flex-1 text-left text-[11px] font-mono px-2 py-1 rounded border ${
+                                active
+                                  ? 'border-primary/60 bg-primary/10 text-foreground cursor-default'
+                                  : 'border-border/40 text-muted-foreground hover:text-foreground hover:bg-accent/30'
+                              }`}
+                              title={active ? 'active handle' : `switch to ${h}${hasSecret ? '' : ' (passphrase needs re-entry)'}`}
+                            >
+                              {h}
+                              {active && <span className="ml-2 text-[9px] uppercase">active</span>}
+                              {!active && !hasSecret && <span className="ml-2 text-[9px] text-muted-foreground/70">🔒 enter pass</span>}
+                            </button>
+                            <button
+                              onClick={() => { if (confirm(`Forget handle "${h}"? This wipes its session secrets and per-face memory in this browser.`)) identity.onForgetHandle(h) }}
+                              className="text-muted-foreground/60 hover:text-destructive p-1"
+                              title="forget this handle"
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  </div>
+                )}
+                <div className="text-[10px] uppercase tracking-wider text-muted-foreground pt-1">{identity.handle ? 'Edit current' : 'Add identity'}</div>
+                <IdentityField
+                  label="handle"
+                  hint="public agent_id"
+                  value={editHandle}
+                  onChange={setEditHandle}
+                  placeholder="e.g. happyseaurchin"
+                />
+                <IdentityField
+                  label="passphrase"
+                  hint="write-lock (sessionStorage)"
+                  value={editSecret}
+                  onChange={setEditSecret}
+                  placeholder="…"
+                  type="password"
+                />
+                <IdentityField
+                  label="API key"
+                  hint="Tier 2 — soft & medium"
+                  value={editApiKey}
+                  onChange={setEditApiKey}
+                  placeholder="sk-ant-…"
+                  type="password"
+                />
+                <div className="flex gap-2 justify-between pt-1">
+                  <button
+                    onClick={forgetIdentity}
+                    className="text-[11px] text-muted-foreground hover:text-destructive"
+                    title="clear active identity (passphrase + key cleared from session)"
+                  >
+                    sign out
+                  </button>
+                  <button
+                    onClick={saveIdentity}
+                    className="text-[11px] px-2 py-1 rounded bg-primary text-primary-foreground"
+                  >
+                    save
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="px-4 py-2 border-t border-border/50 bg-muted/30">
             <span className="text-[10px] text-muted-foreground font-mono">
-              v0.12.1
+              v0.2
             </span>
           </div>
         </div>
@@ -260,85 +527,167 @@ export function ConstructionButton({
 
       {/* Expanded Input Panel */}
       {isExpanded && !isOpen && (
-        <div className="absolute bottom-14 right-0 w-80 glass rounded-lg overflow-hidden shadow-lg animate-slide-up">
+        <div
+          className="absolute bottom-14 right-0 glass rounded-lg overflow-hidden shadow-lg animate-slide-up"
+          style={{ width: panelWidth }}
+        >
+          {/* Left-edge resize handle — drag left to grow the panel. */}
+          <div
+            data-no-drag
+            onMouseDown={startResize}
+            title="drag to resize"
+            className={`absolute left-0 top-0 bottom-0 w-2.5 cursor-ew-resize z-10 ${isResizing ? 'bg-primary/15' : 'hover:bg-primary/10'}`}
+          />
           <div className="p-3">
-            {/* Input row */}
-            <div className="flex items-start gap-2 bg-background/50 rounded-lg p-2">
-              {/* Query button (Cmd+Enter) */}
-              <button
-                onClick={handleQuery}
-                disabled={isQuerying || !value.trim()}
-                className={`shrink-0 h-8 w-8 rounded-md flex items-center justify-center transition-colors mt-0.5 ${
-                  isQuerying
-                    ? 'bg-accent-subtle text-accent animate-pulse cursor-wait'
-                    : 'bg-accent-subtle icon-accent hover:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed'
-                }`}
-                title="Query Soft-LLM (⌘↵)"
-              >
-                {isQuerying ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Zap className="h-4 w-4" />
-                )}
-              </button>
+            {/* Input row + vertical action column */}
+            <div className="flex items-stretch gap-2">
+              {/* Left: query + textarea (stacked) */}
+              <div className="flex-1 flex items-stretch gap-2 bg-background/50 rounded-lg p-2">
+                {/* Query button (Cmd+Enter) */}
+                <button
+                  onClick={handleQuery}
+                  disabled={isQuerying || !value.trim()}
+                  className={`shrink-0 h-8 w-8 rounded-md flex items-center justify-center transition-colors mt-0.5 ${
+                    isQuerying
+                      ? 'bg-accent-subtle text-accent animate-pulse cursor-wait'
+                      : 'bg-accent-subtle icon-accent hover:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed'
+                  }`}
+                  title="Query Soft-LLM (⌘↵)"
+                >
+                  {isQuerying ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Zap className="h-4 w-4" />
+                  )}
+                </button>
 
-              {/* Textarea field */}
-              <div className="relative flex-1">
-                <textarea
-                  ref={textareaRef}
-                  value={value}
-                  onChange={(e) => onChange(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder={placeholder}
-                  rows={2}
-                  className="w-full bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground/50 resize-none pr-6"
-                />
-                {value && (
-                  <button
-                    onClick={handleClear}
-                    className="absolute right-0 top-1 text-muted-foreground/50 hover:text-muted-foreground transition-colors"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                )}
+                {/* Textarea field — fills the panel's vertical space (the
+                    parent row stretches to match the action column on the
+                    right). min-h keeps it readable when the panel is short. */}
+                <div className="relative flex-1 flex">
+                  <textarea
+                    ref={textareaRef}
+                    value={value}
+                    onChange={(e) => onChange(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    placeholder={placeholder}
+                    className="w-full h-full min-h-[10rem] bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground/50 resize-none pr-6"
+                  />
+                  {value && (
+                    <button
+                      onClick={handleClear}
+                      className="absolute right-0 top-1 text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
               </div>
 
-              {/* Submit button (Shift+Enter) */}
-              <button
-                onClick={handleSubmit}
-                disabled={!value.trim()}
-                className="shrink-0 h-8 w-8 rounded-md flex items-center justify-center bg-face-accent text-white disabled:opacity-30 disabled:cursor-not-allowed hover:opacity-90 transition-opacity mt-0.5"
-                title="Submit to Liquid (⇧↵)"
-              >
-                <ArrowRight className="h-4 w-4" />
-              </button>
+              {/* Right: vertical action column. Each icon injects a template
+                  prefix into the textarea; the parent's submit dispatcher
+                  parses the prefix and fires the matching primitive. */}
+              <div className="flex flex-col gap-1 shrink-0" data-no-drag>
+                {ACTIONS.map(a => {
+                  const Icon = ICONS[a.verb];
+                  const handleAvail = !a.needsHandle || !!identity.handle;
+                  const secretAvail = !a.needsSecret || !!identity.secret;
+                  const enabled = handleAvail && secretAvail;
+                  // Show 🪨 when this action would produce sediment AND
+                  // the user lacks an admission claim. Doesn't disable the
+                  // button — the action's gate (Column.tsx for engage)
+                  // routes through the AdmissionDialog. Rocks stay; marks
+                  // wash. The symbol IS the warning.
+                  const showRock = a.needsAdmission && handleAvail && secretAvail && admitted === false;
+                  const reason = !handleAvail ? ' — needs handle (Identity)' : !secretAvail ? ' — needs passphrase (Identity)' : showRock ? ' — 🪨 creates substrate that holds; admission first' : '';
+                  const active = activeVerb === a.verb;
+                  return (
+                    <button
+                      key={a.verb}
+                      onClick={() => {
+                        if (!enabled) {
+                          setIsOpen(true); // open settings so user can add identity
+                          return;
+                        }
+                        // Inject template (prefix). Empty template = "mark"
+                        // mode where input is the mark text directly.
+                        onChange(a.template);
+                        // For non-empty templates, place caret at end so
+                        // typing fills the placeholder section.
+                        setTimeout(() => {
+                          textareaRef.current?.focus();
+                          if (a.template) {
+                            const ta = textareaRef.current;
+                            if (ta) ta.selectionStart = ta.selectionEnd = a.template.length;
+                          }
+                        }, 0);
+                      }}
+                      disabled={false}
+                      className={`relative h-8 w-8 rounded-md flex items-center justify-center transition-all ${
+                        active
+                          ? 'bg-face-accent text-white'
+                          : enabled
+                            ? 'bg-background/50 text-muted-foreground hover:text-foreground hover:bg-accent/30'
+                            : 'bg-background/30 text-muted-foreground/30 hover:text-muted-foreground/60'
+                      }`}
+                      title={`${a.label} — ${a.hint}${reason}`}
+                    >
+                      <Icon className="h-4 w-4" />
+                      {showRock && (
+                        <span
+                          className="absolute -top-1 -right-1 text-[10px] leading-none pointer-events-none"
+                          style={{ filter: 'drop-shadow(0 1px 1px rgba(0,0,0,0.4))' }}
+                          aria-label="needs admission"
+                        >
+                          🪨
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+
+                {/* Action button — single affordance, four states.
+                    Submit (⇧↵) when prompt has text; Commit (●) when there's
+                    a substrate-pending liquid slot for this user; spinner
+                    while committing; faded otherwise. The icon and click
+                    handler swap together so one button does whichever step
+                    is currently meaningful. */}
+                <button
+                  onClick={
+                    actionMode === 'submit' ? handleSubmit
+                    : actionMode === 'commit' ? handleCommit
+                    : () => {}
+                  }
+                  disabled={actionMode === 'idle' || actionMode === 'committing'}
+                  className={`h-8 w-8 rounded-md flex items-center justify-center text-white disabled:cursor-not-allowed transition-opacity mt-1 ${
+                    actionMode === 'commit'
+                      ? 'bg-face-accent hover:opacity-90'
+                      : actionMode === 'submit'
+                        ? 'bg-face-accent hover:opacity-90'
+                        : actionMode === 'committing'
+                          ? 'bg-face-accent opacity-70 cursor-wait'
+                          : 'bg-face-accent opacity-30'
+                  }`}
+                  title={
+                    actionMode === 'submit' ? 'Submit to liquid (⇧↵)'
+                    : actionMode === 'commit' ? 'Commit liquid → solid'
+                    : actionMode === 'committing' ? 'Committing…'
+                    : 'Nothing to do'
+                  }
+                >
+                  {actionMode === 'committing' ? <Loader2 className="h-4 w-4 animate-spin" />
+                    : actionMode === 'commit' ? <CircleDot className="h-4 w-4" />
+                    : actionMode === 'submit' ? <ArrowUp className="h-4 w-4" />
+                    : <ArrowRight className="h-4 w-4" />}
+                </button>
+              </div>
             </div>
 
-            {/* Action buttons row */}
+            {/* Hints row */}
             <div className="flex items-center gap-2 mt-2 px-1">
-              {/* Attachment stub */}
-              <button
-                className="h-7 w-7 rounded flex items-center justify-center text-muted-foreground/50 hover:text-muted-foreground hover:bg-accent/20 transition-colors"
-                title="Attach file (coming soon)"
-                disabled
-              >
-                <Paperclip className="h-4 w-4" />
-              </button>
-
-              {/* Audio stub */}
-              <button
-                className="h-7 w-7 rounded flex items-center justify-center text-muted-foreground/50 hover:text-muted-foreground hover:bg-accent/20 transition-colors"
-                title="Voice input (coming soon)"
-                disabled
-              >
-                <Mic className="h-4 w-4" />
-              </button>
-
               <div className="flex-1" />
-
-              {/* Keyboard hints */}
               <div className="flex gap-2 text-[10px] text-muted-foreground/40">
-                <span>⌘↵ query</span>
+                <span>⌘↵ ask</span>
                 <span>⇧↵ submit</span>
               </div>
             </div>
@@ -360,5 +709,37 @@ export function ConstructionButton({
         </button>
       </div>
     </div>
+  );
+}
+
+function IdentityField({
+  label,
+  hint,
+  value,
+  onChange,
+  placeholder,
+  type = "text",
+}: {
+  label: string;
+  hint?: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  type?: "text" | "password";
+}) {
+  return (
+    <label className="block">
+      <div className="flex items-baseline gap-2 mb-0.5">
+        <span className="text-[11px] font-medium text-foreground">{label}</span>
+        {hint && <span className="text-[10px] text-muted-foreground">{hint}</span>}
+      </div>
+      <input
+        type={type}
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="w-full px-2 py-1 text-xs rounded border border-border/50 bg-background text-foreground outline-none focus:border-primary/60"
+      />
+    </label>
   );
 }
