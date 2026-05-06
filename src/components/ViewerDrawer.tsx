@@ -42,6 +42,21 @@ export interface ViewerDrawerProps {
   // Author face uses this to enter a pool by clicking it in the list.
   // Setting the address to "2.<digit>" flips the surface into pool mode.
   onNavigateAddress?: (addr: string) => void
+  /** v0.3 home view: switch the column's beach (and reset address) to a
+   * different channel. Used by clickable rows in "Your places". */
+  onSwitchBeach?: (beach: string) => void
+}
+
+interface EditTarget {
+  agentId: string
+  block: string
+  spindle: string
+  label: string
+  // Whether the current user owns this target — drives read-only vs
+  // editable. v0.3: based on handle match for shell, beach-handle match
+  // for beach-owned blocks. The substrate enforces via lock; this flag
+  // is a UI hint to avoid unnecessary write attempts.
+  writable: boolean
 }
 
 export function ViewerDrawer(props: ViewerDrawerProps) {
@@ -50,6 +65,8 @@ export function ViewerDrawer(props: ViewerDrawerProps) {
     return saved ? parseInt(saved, 10) : Math.round(window.innerHeight * 0.32)
   })
   const dragging = useRef(false)
+  const [editTarget, setEditTarget] = useState<EditTarget | null>(null)
+  useEffect(() => { if (!props.open) setEditTarget(null) }, [props.open])
 
   useEffect(() => {
     function onMove(e: MouseEvent) {
@@ -89,7 +106,28 @@ export function ViewerDrawer(props: ViewerDrawerProps) {
       {/* Body */}
       <div className="flex-1 min-h-0 overflow-y-auto p-3">
         {(props.face === 'character' || props.face === 'observer') && (
-          <FaceCharacterObserver face={props.face} marks={props.marks} presence={props.presence} address={props.address} />
+          editTarget ? (
+            <BlockEditor
+              target={editTarget}
+              secret={props.secret}
+              onClose={() => setEditTarget(null)}
+            />
+          ) : (
+            <>
+              <HomePlaces
+                shell={props.shell}
+                currentBeach={props.beach}
+                onSwitchBeach={(b) => { props.onSwitchBeach?.(b); props.onClose(); }}
+              />
+              <HomeConfigure
+                handle={props.agentId}
+                secret={props.secret}
+                currentBeach={props.beach}
+                onOpenEditor={(target) => setEditTarget(target)}
+              />
+              <FaceCharacterObserver face={props.face} marks={props.marks} presence={props.presence} address={props.address} />
+            </>
+          )
         )}
         {props.face === 'author' && (
           <FaceAuthor agentId={props.agentId} secret={props.secret} shell={props.shell} beach={props.beach} onNavigateAddress={props.onNavigateAddress} onClose={props.onClose} />
@@ -105,6 +143,254 @@ export function ViewerDrawer(props: ViewerDrawerProps) {
         className="h-1.5 cursor-ns-resize bg-border/30 hover:bg-border/60"
         title="drag to resize"
       />
+    </div>
+  )
+}
+
+/** v0.3 home view — "Your places" section.
+ *
+ * Lists the channels this user has touched: watched beaches (shell:2) and
+ * grains formed (shell:6). Each row is clickable; click reframes the
+ * column to that channel. Renders nothing when the user has no shell
+ * loaded (anon) or no places yet. Stigmergic — pulled on viewer open;
+ * no background refresh. Per docs/DESIGN-CHANNELS.md § "Home view — the
+ * 👁 button". */
+function HomePlaces({ shell, currentBeach, onSwitchBeach }: {
+  shell: AgentShell | null
+  currentBeach: string
+  onSwitchBeach: (beach: string) => void
+}) {
+  if (!shell) return null
+  const watched = shell.watched_beaches.filter(b => b && b !== currentBeach)
+  const grains = shell.grains
+  if (watched.length === 0 && grains.length === 0) return null
+  return (
+    <div className="mb-4 pb-3 border-b border-border/40">
+      <div className="text-[11px] text-muted-foreground uppercase tracking-wider mb-1.5">Your places</div>
+      {grains.length > 0 && (
+        <div className="mb-2">
+          <div className="text-[10px] text-muted-foreground/70 mb-1">Grains</div>
+          <ul className="space-y-1">
+            {grains.map(g => (
+              <li key={g.pair_id}>
+                <button
+                  onClick={() => onSwitchBeach(`grain:${g.pair_id}`)}
+                  className="w-full text-left px-2 py-1 text-xs font-mono rounded border border-border/40 bg-card/30 hover:bg-accent/30 hover:border-border/60 transition-colors"
+                  title={`switch column to grain with ${g.partner}`}
+                >
+                  🤝 {g.partner} <span className="ml-2 text-muted-foreground/60">grain:{g.pair_id.slice(0, 8)}…</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {watched.length > 0 && (
+        <div>
+          <div className="text-[10px] text-muted-foreground/70 mb-1">Watched beaches</div>
+          <ul className="space-y-1">
+            {watched.map((url, i) => (
+              <li key={i}>
+                <button
+                  onClick={() => onSwitchBeach(url)}
+                  className="w-full text-left px-2 py-1 text-xs font-mono rounded border border-border/40 bg-card/30 hover:bg-accent/30 hover:border-border/60 transition-colors"
+                  title={`switch column to ${url}`}
+                >
+                  🌊 {url}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** "Configure" section — state-block navigation. Lists addressable state
+ * blocks (anything whose contents the system reads to alter behaviour:
+ * shell, gatekeeper, beach settings, beach metadata). Click → opens the
+ * BlockEditor inline. Designer-face activity dissolves into navigation;
+ * V/L/S would operate at these addresses if the column reframes (deferred
+ * to a later sitting — for now an inline editor surfaces the same intent).
+ * Per docs/DESIGN-CHANNELS.md § "Designer face / shell access". */
+function HomeConfigure({
+  handle,
+  currentBeach,
+  onOpenEditor,
+}: {
+  handle: string
+  secret: string
+  currentBeach: string
+  onOpenEditor: (target: EditTarget) => void
+}) {
+  if (!handle) return null
+  const beachIsOwn = isBeachOwnedBy(currentBeach, handle)
+  const targets: EditTarget[] = [
+    { agentId: handle, block: 'shell', spindle: '', label: 'Your shell — face configs, watched beaches, manifest, settings, grains', writable: true },
+    { agentId: currentBeach, block: 'gatekeeper', spindle: '', label: "This beach's gatekeeper — admission shell", writable: beachIsOwn },
+    { agentId: currentBeach, block: 'beach', spindle: '5', label: "This beach's settings — vapour/liquid/presence/inbox/notification config", writable: beachIsOwn },
+    { agentId: currentBeach, block: 'beach', spindle: '8', label: "This beach's conventions — mark patterns, procedures, settings map", writable: beachIsOwn },
+    { agentId: currentBeach, block: 'beach', spindle: '9', label: "This beach's metadata — tide config", writable: beachIsOwn },
+  ]
+  return (
+    <div className="mb-4 pb-3 border-b border-border/40">
+      <div className="text-[11px] text-muted-foreground uppercase tracking-wider mb-1.5">Configure</div>
+      <div className="text-[10px] text-muted-foreground/70 mb-1">State blocks — anything whose contents shape behaviour</div>
+      <ul className="space-y-1">
+        {targets.map((t, i) => {
+          const ref = t.spindle ? `${t.agentId}:${t.block}:${t.spindle}` : `${t.agentId}:${t.block}`
+          const icon = t.block === 'shell' ? '🐚' : t.block === 'gatekeeper' ? '🚪' : '⚙'
+          return (
+            <li key={i}>
+              <button
+                onClick={() => onOpenEditor(t)}
+                className="w-full text-left px-2 py-1 text-xs rounded border border-border/40 bg-card/30 hover:bg-accent/30 hover:border-border/60 transition-colors"
+                title={t.writable ? `edit ${ref}` : `read ${ref} (read-only — not your block)`}
+              >
+                <span className="font-mono">{icon} {t.label}</span>
+                {!t.writable && <span className="ml-2 text-[10px] text-muted-foreground/70">read-only</span>}
+              </button>
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}
+
+/** Heuristic: does this beach belong to the user? URL beaches are owned
+ * by their host; bare names by their bare-name agent. We can't know
+ * without an authority probe — this is a hint for the UI label only. The
+ * substrate's lock enforces actual write authority. */
+function isBeachOwnedBy(beach: string, handle: string): boolean {
+  if (!beach || !handle) return false
+  if (beach.startsWith('https://') || beach.startsWith('http://')) {
+    try {
+      const host = new URL(beach).hostname
+      return host.includes(handle.toLowerCase())
+    } catch { return false }
+  }
+  return beach === handle
+}
+
+/** BlockEditor — inline JSON editor for any (agent_id, block, spindle).
+ * Reads on mount, edits in textarea, saves via bsp() with the user's
+ * secret. Authority is enforced by the substrate's lock; this UI just
+ * surfaces the result. v0.3: the smallest useful surface for editing
+ * state blocks without a full column-reframe (which is the longer arc). */
+function BlockEditor({ target, secret, onClose }: {
+  target: EditTarget
+  secret: string
+  onClose: () => void
+}) {
+  const [content, setContent] = useState('')
+  const [originalContent, setOriginalContent] = useState('')
+  const [status, setStatus] = useState<'loading' | 'ready' | 'saving' | 'saved' | 'error'>('loading')
+  const [message, setMessage] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    setStatus('loading')
+    setMessage('')
+    ;(async () => {
+      try {
+        const r = await bsp({ agent_id: target.agentId, block: target.block, spindle: target.spindle || undefined })
+        if (cancelled) return
+        if (r.ok && 'raw' in r) {
+          const json = JSON.stringify(r.raw, null, 2)
+          setContent(json)
+          setOriginalContent(json)
+          setStatus('ready')
+        } else {
+          // Block doesn't exist yet — start with empty object scaffold.
+          const scaffold = JSON.stringify({}, null, 2)
+          setContent(scaffold)
+          setOriginalContent(scaffold)
+          setStatus('ready')
+          setMessage(`block not found — ${target.writable ? 'authoring fresh' : 'no content to read'}`)
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setStatus('error')
+          setMessage(e instanceof Error ? e.message : String(e))
+        }
+      }
+    })()
+    return () => { cancelled = true }
+  }, [target.agentId, target.block, target.spindle, target.writable])
+
+  const save = async () => {
+    if (!target.writable) return
+    let parsed: unknown
+    try { parsed = JSON.parse(content) }
+    catch (e) {
+      setStatus('error')
+      setMessage(`invalid JSON — ${e instanceof Error ? e.message : 'parse failed'}`)
+      return
+    }
+    setStatus('saving')
+    setMessage('')
+    try {
+      const r = await bsp({
+        agent_id: target.agentId,
+        block: target.block,
+        spindle: target.spindle || undefined,
+        content: parsed as PscaleNode,
+        secret: secret || undefined,
+      })
+      if (r.ok) {
+        setStatus('saved')
+        setOriginalContent(content)
+        setMessage('saved to substrate')
+      } else {
+        setStatus('error')
+        setMessage(`error` in r ? (r as { error?: string }).error || 'write failed' : 'write failed')
+      }
+    } catch (e) {
+      setStatus('error')
+      setMessage(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const dirty = content !== originalContent
+  const ref = target.spindle ? `${target.agentId}:${target.block}:${target.spindle}` : `${target.agentId}:${target.block}`
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <button onClick={onClose} className="text-xs text-muted-foreground hover:text-foreground" title="back">← back</button>
+        <span className="text-xs font-mono text-muted-foreground truncate">{ref}</span>
+        {!target.writable && <span className="text-[10px] text-muted-foreground/70 uppercase tracking-wider">read-only</span>}
+      </div>
+      <div className="text-[11px] text-foreground/80">{target.label}</div>
+      {status === 'loading' ? (
+        <div className="text-xs text-muted-foreground italic">loading…</div>
+      ) : (
+        <>
+          <textarea
+            value={content}
+            onChange={e => setContent(e.target.value)}
+            readOnly={!target.writable}
+            spellCheck={false}
+            className="w-full h-[300px] px-2 py-1 text-[11px] font-mono rounded border border-border/40 bg-card/40 text-foreground/90 outline-none resize-none focus:border-primary/40"
+          />
+          <div className="flex items-center justify-between">
+            <span className={`text-[10px] ${status === 'error' ? 'text-destructive' : status === 'saved' ? 'text-emerald-500' : 'text-muted-foreground/70'}`}>
+              {message || (dirty && target.writable ? 'unsaved changes' : status === 'ready' ? 'no changes' : '')}
+            </span>
+            {target.writable && (
+              <button
+                onClick={save}
+                disabled={!dirty || status === 'saving'}
+                className="text-[11px] px-2 py-1 rounded bg-primary text-primary-foreground disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                {status === 'saving' ? 'saving…' : 'save to substrate'}
+              </button>
+            )}
+          </div>
+        </>
+      )}
     </div>
   )
 }

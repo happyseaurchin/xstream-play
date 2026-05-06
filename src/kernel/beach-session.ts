@@ -99,6 +99,20 @@ export function poolFromAddress(addr: string): string | null {
   return m ? m[1] : null;
 }
 
+/** Channel — the social rule-set framing the column. Derived from the
+ * current_beach prefix; not a user-set field. See docs/DESIGN-CHANNELS.md. */
+export type Channel = 'beach' | 'sed' | 'grain';
+
+/** Derive the channel from a beach identifier. URL or bare → beach (open
+ * stigmergy); `sed:` → sed (registered collective); `grain:` → grain
+ * (bilateral). The V/L/S surface is the same; the channel determines what
+ * each layer means socially. */
+export function channelFromBeach(beach: string): Channel {
+  if (beach.startsWith('grain:')) return 'grain';
+  if (beach.startsWith('sed:')) return 'sed';
+  return 'beach';
+}
+
 /** A mark visible at the current address — terse stigmergy trace.
  *
  * Structured-mark schema (per the convention extension):

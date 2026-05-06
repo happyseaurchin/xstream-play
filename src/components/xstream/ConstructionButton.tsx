@@ -29,14 +29,19 @@ export interface ActionDef {
   template: string;
   needsHandle: boolean;
   needsSecret: boolean;
+  /** Post-admission feature — produces substrate that holds (sediment).
+   * When the user lacks admission, a 🪨 indicator appears on the button.
+   * Pre-admission users can still click; the engage gate in Column.tsx
+   * routes them through the AdmissionDialog if applicable. */
+  needsAdmission: boolean;
 }
 
 export const ACTIONS: ActionDef[] = [
-  { verb: 'mark',     label: 'Drop a mark',    hint: 'leave a trace at this address',          template: '',                                              needsHandle: false, needsSecret: false },
-  { verb: 'passport', label: 'Edit passport',  hint: 'publish your self-description',          template: 'passport: ',                                    needsHandle: true,  needsSecret: true  },
-  { verb: 'register', label: 'Register',       hint: 'claim a position in a collective',       template: 'register sed:<collective> <declaration>',       needsHandle: true,  needsSecret: true  },
-  { verb: 'engage',   label: 'Reach out',      hint: 'open a bilateral channel with someone',  template: 'engage <agent_id> <description> | <my side>',  needsHandle: true,  needsSecret: true  },
-  { verb: 'keys',     label: 'Publish keys',   hint: 'derive ed25519+x25519 from your passphrase and publish public halves to passport:9', template: 'keys', needsHandle: true, needsSecret: true },
+  { verb: 'mark',     label: 'Drop a mark',    hint: 'leave a trace at this address',          template: '',                                              needsHandle: false, needsSecret: false, needsAdmission: false },
+  { verb: 'passport', label: 'Edit passport',  hint: 'publish your self-description',          template: 'passport: ',                                    needsHandle: true,  needsSecret: true,  needsAdmission: false },
+  { verb: 'register', label: 'Register',       hint: 'claim a position in a collective',       template: 'register sed:<collective> <declaration>',       needsHandle: true,  needsSecret: true,  needsAdmission: true  },
+  { verb: 'engage',   label: 'Reach out',      hint: 'open a bilateral channel with someone',  template: 'engage <agent_id> <description> | <my side>',  needsHandle: true,  needsSecret: true,  needsAdmission: true  },
+  { verb: 'keys',     label: 'Publish keys',   hint: 'derive ed25519+x25519 from your passphrase and publish public halves to passport:9', template: 'keys', needsHandle: true, needsSecret: true,  needsAdmission: true  },
 ];
 
 const ICONS: Record<ActionVerb, typeof MapPin> = {
@@ -65,6 +70,14 @@ interface ConstructionButtonProps {
   // Menu actions
   onThemeChange: (theme: Theme) => void;
   currentTheme: Theme;
+  // Admission state — null when not applicable (anon, no handle), false when
+  // a handle is set but no claim at passport:8, true when admitted. Drives
+  // the 🪨 indicator on post-admission tray buttons (engage / register /
+  // keys). Pre-admission users can still click — the action's gate (in
+  // Column.tsx for engage) opens the AdmissionDialog. The rock signals
+  // "this creates substrate that holds" — beach-faithful: marks wash, rocks
+  // stay.
+  admitted?: boolean | null;
   // Active CADO face of the focused column. Drives data-face on the button
   // wrapper so internal `bg-face-accent` and `icon-accent` rules pick up the
   // right color (yellow=Character, blue=Author, pink=Designer, green=Observer).
@@ -108,6 +121,7 @@ const MAX_PANEL_WIDTH_FRAC = 0.9; // of viewport
 export function ConstructionButton({
   onThemeChange,
   currentTheme,
+  admitted = null,
   face = "character",
   onSpawnColumn,
   columnCount = 1,
@@ -579,7 +593,13 @@ export function ConstructionButton({
                   const handleAvail = !a.needsHandle || !!identity.handle;
                   const secretAvail = !a.needsSecret || !!identity.secret;
                   const enabled = handleAvail && secretAvail;
-                  const reason = !handleAvail ? ' — needs handle (Identity)' : !secretAvail ? ' — needs passphrase (Identity)' : '';
+                  // Show 🪨 when this action would produce sediment AND
+                  // the user lacks an admission claim. Doesn't disable the
+                  // button — the action's gate (Column.tsx for engage)
+                  // routes through the AdmissionDialog. Rocks stay; marks
+                  // wash. The symbol IS the warning.
+                  const showRock = a.needsAdmission && handleAvail && secretAvail && admitted === false;
+                  const reason = !handleAvail ? ' — needs handle (Identity)' : !secretAvail ? ' — needs passphrase (Identity)' : showRock ? ' — 🪨 creates substrate that holds; admission first' : '';
                   const active = activeVerb === a.verb;
                   return (
                     <button
@@ -603,7 +623,7 @@ export function ConstructionButton({
                         }, 0);
                       }}
                       disabled={false}
-                      className={`h-8 w-8 rounded-md flex items-center justify-center transition-all ${
+                      className={`relative h-8 w-8 rounded-md flex items-center justify-center transition-all ${
                         active
                           ? 'bg-face-accent text-white'
                           : enabled
@@ -613,6 +633,15 @@ export function ConstructionButton({
                       title={`${a.label} — ${a.hint}${reason}`}
                     >
                       <Icon className="h-4 w-4" />
+                      {showRock && (
+                        <span
+                          className="absolute -top-1 -right-1 text-[10px] leading-none pointer-events-none"
+                          style={{ filter: 'drop-shadow(0 1px 1px rgba(0,0,0,0.4))' }}
+                          aria-label="needs admission"
+                        >
+                          🪨
+                        </span>
+                      )}
                     </button>
                   );
                 })}

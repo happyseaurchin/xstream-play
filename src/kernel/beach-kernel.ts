@@ -99,37 +99,136 @@ function isPresenceMark(node: PscaleNode): boolean {
   return typeof obj._ === 'string' && PRESENCE_RE.test(obj._ as string);
 }
 
-function readMarks(rawBlock: PscaleNode | null, addressFilter: string): MarkRow[] {
-  if (typeof rawBlock !== 'object' || rawBlock === null) return [];
-  const block = rawBlock as Record<string, PscaleNode>;
-  const marksNode = block['1'];
-  if (typeof marksNode !== 'object' || marksNode === null) return [];
-  const marks = marksNode as Record<string, PscaleNode>;
-  const out: MarkRow[] = [];
+// Super-nest write-slot finder for the dedicated marks block at
+// (beach, 'marks'). Walks digits 1-9 at every level — tagged metadata
+// lives at underscore-prefixed keys (_a/_addr/_t/_f), so positions 1-9
+// are pure sub-mark positions. Prefer free → empty → descend into oldest
+// slot. Recurse indefinitely. Marks accumulate; the path lengthens; tide
+// is the only cleanup. Returns the spindle (e.g. "1.3.7") to write at.
+function findNextMarkSpindle(
+  ring: Record<string, PscaleNode> | null,
+  prefix: string,
+): string {
+  if (!ring) return prefix ? `${prefix}.1` : '1';
+  let bestFree: string | null = null;
+  let bestEmpty: string | null = null;
+  let oldest: { digit: string; ts: string; child: Record<string, PscaleNode> } | null = null;
   for (let d = 1; d <= 9; d++) {
-    const k = String(d);
-    const m = marks[k];
-    if (m === undefined) continue;
-    if (typeof m === 'string') {
-      if (!m) continue;
-      out.push({ digit: k, agent_id: null, address: null, timestamp: null, text: m, face: null, is_presence: false });
-      continue;
-    }
-    if (typeof m === 'object' && m !== null) {
-      const obj = m as Record<string, PscaleNode>;
-      const aid = typeof obj['1'] === 'string' ? (obj['1'] as string) : null;
-      const addr = typeof obj['2'] === 'string' ? (obj['2'] as string) : null;
-      const ts = typeof obj['3'] === 'string' ? (obj['3'] as string) : null;
-      const face = asFace(obj['4']);
-      const text = typeof obj._ === 'string' ? (obj._ as string) : '(structured mark)';
-      const presence = isPresenceMark(m);
-      // Filter: keep marks whose address starts with the requested prefix
-      // (or marks with no address at all, treated as beach-root).
-      if (addressFilter && addr && !addr.startsWith(addressFilter)) continue;
-      out.push({ digit: k, agent_id: aid, address: addr, timestamp: ts, text, face, is_presence: presence });
+    const dk = String(d);
+    if (!(dk in ring)) { if (bestFree === null) bestFree = dk; continue; }
+    const slot = ring[dk];
+    if (typeof slot === 'object' && slot !== null) {
+      const u = (slot as Record<string, PscaleNode>)._;
+      if (typeof u !== 'string' || !u.trim()) {
+        if (bestEmpty === null) bestEmpty = dk;
+        continue;
+      }
+      const ts = (slot as Record<string, PscaleNode>)._t;
+      const tsStr = typeof ts === 'string' ? ts : '';
+      if (!oldest || tsStr < oldest.ts) oldest = { digit: dk, ts: tsStr, child: slot as Record<string, PscaleNode> };
+    } else if (typeof slot === 'string' && !slot.trim()) {
+      if (bestEmpty === null) bestEmpty = dk;
     }
   }
+  const segment = (s: string) => prefix ? `${prefix}.${s}` : s;
+  if (bestFree) return segment(bestFree);
+  if (bestEmpty) return segment(bestEmpty);
+  if (oldest) return findNextMarkSpindle(oldest.child, segment(oldest.digit));
+  return segment('9');
+}
+
+// Tide config — from beach:9.1.1.{1,2,3} (anonymous / handle / signed wipe
+// seconds). Client-side soft-wipe filter; the actual substrate deletion
+// is the beach owner's concern (out of client scope). When the substrate
+// has no tide config, marks live indefinitely.
+interface TideConfig {
+  anonymous_secs: number | null;
+  handle_secs: number | null;
+  signed_secs: number | null;
+}
+
+function readTideConfig(rawBlock: PscaleNode | null): TideConfig {
+  const empty: TideConfig = { anonymous_secs: null, handle_secs: null, signed_secs: null };
+  if (typeof rawBlock !== 'object' || rawBlock === null) return empty;
+  const meta = (rawBlock as Record<string, PscaleNode>)['9'];
+  if (typeof meta !== 'object' || meta === null) return empty;
+  const tides = (meta as Record<string, PscaleNode>)['1'];
+  if (typeof tides !== 'object' || tides === null) return empty;
+  const wipe = (tides as Record<string, PscaleNode>)['1'];
+  if (typeof wipe !== 'object' || wipe === null) return empty;
+  const wipeObj = wipe as Record<string, PscaleNode>;
+  const readSecs = (key: string): number | null => {
+    const node = wipeObj[key];
+    if (typeof node === 'number') return node;
+    if (typeof node === 'object' && node !== null) {
+      const inner = (node as Record<string, PscaleNode>)['1'];
+      if (typeof inner === 'number') return inner;
+      const u = (node as Record<string, PscaleNode>)._;
+      if (typeof u === 'number') return u;
+    }
+    return null;
+  };
+  return { anonymous_secs: readSecs('1'), handle_secs: readSecs('2'), signed_secs: readSecs('3') };
+}
+
+function markIsTideWiped(row: MarkRow, tide: TideConfig, hasSignature: boolean): boolean {
+  if (!row.timestamp) return false;
+  const ageMs = Date.now() - Date.parse(row.timestamp);
+  if (Number.isNaN(ageMs)) return false;
+  let limitSecs: number | null = null;
+  if (!row.agent_id || row.agent_id === '(anon)' || row.agent_id.startsWith('anon-')) {
+    limitSecs = tide.anonymous_secs;
+  } else if (hasSignature) {
+    limitSecs = tide.signed_secs;
+  } else {
+    limitSecs = tide.handle_secs;
+  }
+  return limitSecs !== null && ageMs > limitSecs * 1000;
+}
+
+// Read marks from the dedicated (beach, 'marks') block. Recursive walk
+// through digits 1-9 at every level. Tagged metadata at underscore-prefixed
+// keys (_a agent, _addr address, _t timestamp, _f face). Soft-wipe by
+// tide config (passed in by caller — read from beach:9). Sorted newest-
+// first by timestamp.
+function readMarks(marksBlock: PscaleNode | null, addressFilter: string, tide: TideConfig): MarkRow[] {
+  if (typeof marksBlock !== 'object' || marksBlock === null) return [];
+  const out: MarkRow[] = [];
+  walkMarkTree(marksBlock as Record<string, PscaleNode>, '', addressFilter, tide, out);
+  out.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
   return out;
+}
+
+function walkMarkTree(
+  node: Record<string, PscaleNode>,
+  digitPath: string,
+  addressFilter: string,
+  tide: TideConfig,
+  out: MarkRow[],
+): void {
+  for (let d = 1; d <= 9; d++) {
+    const k = String(d);
+    const child = node[k];
+    if (child === undefined) continue;
+    const path = digitPath ? `${digitPath}.${k}` : k;
+    if (typeof child === 'object' && child !== null) {
+      const obj = child as Record<string, PscaleNode>;
+      const aid = typeof obj._a === 'string' ? (obj._a as string) : null;
+      const addr = typeof obj._addr === 'string' ? (obj._addr as string) : null;
+      const ts = typeof obj._t === 'string' ? (obj._t as string) : null;
+      const face = asFace(obj._f);
+      const text = typeof obj._ === 'string' ? (obj._ as string) : '';
+      if (text) {
+        const passesAddress = !addressFilter || !addr || addr.startsWith(addressFilter);
+        if (passesAddress) {
+          const row: MarkRow = { digit: path, agent_id: aid, address: addr, timestamp: ts, text, face, is_presence: false };
+          const hasSig = !!aid && aid !== '(anon)' && !aid.startsWith('anon-');
+          if (!markIsTideWiped(row, tide, hasSig)) out.push(row);
+        }
+      }
+      walkMarkTree(obj, path, addressFilter, tide, out);
+    }
+  }
 }
 
 // Read the pool sub-block at beach:2.<poolDigit> from the whole-beach raw.
@@ -317,13 +416,24 @@ export class BeachKernel {
     this.watchedBeaches = beaches.filter(b => !!b && b !== this.session.current_beach);
   }
 
+  // Focus-gated polling cadence (v0.3 polling-disarm). Focused columns pull
+  // liquid/marks/etc. at DEFAULT_POLL_MS (1.5s — live-reader). Unfocused
+  // columns drop to BACKGROUND_POLL_MS (30s — heartbeat-only effectively;
+  // the cycle still runs so presence stays fresh and vapour remains
+  // subscribed, but substrate reads slow to a trickle). Vapour subscription
+  // itself lives outside the kernel and stays alive whenever the column is
+  // open — see Column.tsx joinVapourChannel.
+  private isFocused: boolean = true;
+  private pollMsFocused: number = DEFAULT_POLL_MS;
+
   start(pollMs: number = DEFAULT_POLL_MS): void {
     if (this.running) return;
     this.running = true;
+    this.pollMsFocused = pollMs;
     this.cb.onLog(`🌊 Beach kernel started — beach=${this.session.current_beach} address=${this.session.current_address || '(root)'}`);
     // Run one cycle immediately so the first paint isn't empty.
     this.cycle();
-    this.intervalId = setInterval(() => this.cycle(), pollMs);
+    this.intervalId = setInterval(() => this.cycle(), this.currentInterval());
   }
 
   stop(): void {
@@ -331,6 +441,23 @@ export class BeachKernel {
     this.intervalId = null;
     this.running = false;
     this.cb.onLog(`🛑 Beach kernel stopped`);
+  }
+
+  /** Focus-gate the polling cadence. Focused: DEFAULT_POLL_MS (1.5s).
+   * Unfocused: 30s — keeps presence heartbeating without thrashing the
+   * substrate for unfocused columns. v0.3 polling-disarm — see
+   * docs/DESIGN-CHANNELS.md § "Triggers — everything is attention-driven". */
+  setFocused(focused: boolean): void {
+    if (this.isFocused === focused) return;
+    this.isFocused = focused;
+    if (!this.running) return;
+    if (this.intervalId) clearInterval(this.intervalId);
+    this.intervalId = setInterval(() => this.cycle(), this.currentInterval());
+    this.cb.onLog(`🌊 kernel cadence → ${focused ? 'focused (live)' : 'background (slow)'}`);
+  }
+
+  private currentInterval(): number {
+    return this.isFocused ? this.pollMsFocused : 30000;
   }
 
   /** Update the address; next cycle will re-read marks/presence. Also
@@ -398,56 +525,47 @@ export class BeachKernel {
 
   /** Drop a free-form mark or pool contribution. Tier-1, no LLM.
    *
-   * Branching: when current_pool is set (current_address starts `2.<digit>`),
-   * the write lands at beach:2.<pool>.<next-free> as a pool contribution.
-   * Otherwise it lands at beach:1.<next-free> as a beach mark. Both shapes
-   * are structured marks ({_, 1=agent, 2=address, 3=ts}) — pool contributions
-   * are marks at a different ring, not a different shape. */
+   * Pool contributions land at beach:2.<pool>.<next-free> on the beach
+   * block (9-slot ring; pools are bounded by design). Beach marks live in
+   * a dedicated (beach, 'marks') block — super-nested at digits 1-9 of any
+   * level; tagged metadata at underscore-prefixed keys (_a/_addr/_t/_f) so
+   * positions 1-9 are pure sub-mark addresses. Marks accumulate; tide is
+   * the only cleanup. */
   async dropMark(text: string): Promise<{ ok: boolean; error?: string }> {
     if (!text.trim()) return { ok: false, error: 'empty' };
     const beach = this.session.current_beach;
     const ts = new Date().toISOString();
     const pool = this.session.current_pool;
 
-    // Read the beach block once; the existing pattern uses raw to walk the
-    // ring, so we can reach either marks (root.1) or pool (root.2.<pool>)
-    // off the same payload.
-    const r = await bsp({ agent_id: beach, block: 'beach', spindle: '1' });
-    const root = (r.ok && 'raw' in r && typeof r.raw === 'object' && r.raw !== null)
-      ? r.raw as Record<string, PscaleNode>
-      : null;
-
     let ring: Record<string, PscaleNode> | null = null;
-    if (root) {
-      if (pool) {
+    let root: Record<string, PscaleNode> | null = null;
+    if (pool) {
+      const r = await bsp({ agent_id: beach, block: 'beach', spindle: '2' });
+      root = (r.ok && 'raw' in r && typeof r.raw === 'object' && r.raw !== null)
+        ? r.raw as Record<string, PscaleNode>
+        : null;
+      if (root) {
         const poolsNode = root['2'];
         if (typeof poolsNode === 'object' && poolsNode !== null) {
           const pn = (poolsNode as Record<string, PscaleNode>)[pool];
           if (typeof pn === 'object' && pn !== null) ring = pn as Record<string, PscaleNode>;
         }
-      } else {
-        const m = root['1'];
-        if (typeof m === 'object' && m !== null) ring = m as Record<string, PscaleNode>;
       }
+    } else {
+      const r = await bsp({ agent_id: beach, block: 'marks' });
+      ring = (r.ok && 'raw' in r && typeof r.raw === 'object' && r.raw !== null)
+        ? r.raw as Record<string, PscaleNode>
+        : null;
     }
 
-    // Slot selection on a 9-slot ring:
-    //   1. Prefer a digit not yet in ring (genuinely free).
-    //   2. Else prefer a digit whose underscore is empty (cleared liquid).
-    //   3. Else pick the OLDEST non-presence slot by timestamp (overwrites
-    //      the stalest substantive mark — never clobbers a live peer's
-    //      heartbeat, which is the kernel's own write loop, nor the slot
-    //      occupied by the freshest mark).
-    //   4. As an absolute last resort (everything is fresh presence — the
-    //      ring is fully claimed by 9 simultaneously-live peers), overwrite
-    //      digit 9. This is rare and noisy by design.
-    //
-    // Hardcoded "overwrite 9" was the prior behaviour: it silently clobbered
-    // whichever mark happened to be at 9, including legacy beach-owner marks
-    // that nobody can rewrite back. New code skips presence and prefers the
-    // oldest non-presence so collisions land where they hurt least.
-    let nextDigit = '9';
-    if (ring) {
+    // Pool contributions: 9-slot ring (bounded by design). Beach marks:
+    // super-nest into the dedicated (beach, 'marks') block, accumulating
+    // indefinitely. Tide is the only cleanup.
+    let blockName: string;
+    let spindle: string;
+    let content: Record<string, PscaleNode>;
+    if (pool && ring) {
+      let nextDigit = '9';
       let bestFree: string | null = null;
       let bestEmpty: string | null = null;
       let oldestNonPresence: { digit: string; ts: string } | null = null;
@@ -458,33 +576,44 @@ export class BeachKernel {
         const u = (typeof slot === 'object' && slot !== null) ? (slot as Record<string, PscaleNode>)._ : slot;
         if (typeof u !== 'string' || !u.trim()) { if (bestEmpty === null) bestEmpty = dk; continue; }
         if (typeof slot === 'object' && slot !== null && isPresenceMark(slot as PscaleNode)) continue;
-        const ts = (typeof slot === 'object' && slot !== null) ? (slot as Record<string, PscaleNode>)['3'] : null;
-        const tsStr = typeof ts === 'string' ? ts : '';
+        const ts2 = (typeof slot === 'object' && slot !== null) ? (slot as Record<string, PscaleNode>)['3'] : null;
+        const tsStr = typeof ts2 === 'string' ? ts2 : '';
         if (!oldestNonPresence || tsStr < oldestNonPresence.ts) oldestNonPresence = { digit: dk, ts: tsStr };
       }
       nextDigit = bestFree ?? bestEmpty ?? oldestNonPresence?.digit ?? '9';
       if (!bestFree && !bestEmpty) {
-        this.cb.onLog(`💧 mark ring full at beach:${pool ? '2.'+pool : '1'} — overwriting digit ${nextDigit}${oldestNonPresence ? ` (oldest non-presence)` : ' (fallback)'}`);
+        this.cb.onLog(`💧 pool ring full at beach:2.${pool} — overwriting digit ${nextDigit}`);
       }
-    }
-
-    const spindle = pool ? `2.${pool}.${nextDigit}` : `1.${nextDigit}`;
-    const result = await bsp({
-      agent_id: beach,
-      block: 'beach',
-      spindle,
-      content: {
+      blockName = 'beach';
+      spindle = `2.${pool}.${nextDigit}`;
+      content = {
         _: text,
         '1': this.session.agent_id || '(anon)',
         '2': this.session.current_address,
         '3': ts,
         '4': this.session.face,
-      },
+      };
+    } else {
+      blockName = 'marks';
+      spindle = findNextMarkSpindle(ring, '');
+      content = {
+        _: text,
+        _a: this.session.agent_id || '(anon)',
+        _addr: this.session.current_address,
+        _t: ts,
+        _f: this.session.face,
+      };
+    }
+
+    const result = await bsp({
+      agent_id: beach,
+      block: blockName,
+      spindle,
+      content,
       secret: this.session.secret || undefined,
     });
     if (result.ok) {
-      this.cb.onLog(`${pool ? '🌀' : '📍'} ${pool ? 'pool contribution' : 'mark'} written at ${beach}:${spindle}`);
-      // Trigger an immediate read to refresh the panel
+      this.cb.onLog(`${pool ? '🌀' : '📍'} ${pool ? 'pool contribution' : 'mark'} written at ${beach}:${blockName}:${spindle}`);
       this.cycle();
     } else {
       const err = 'error' in result ? result.error : 'unknown';
@@ -616,11 +745,15 @@ export class BeachKernel {
       const { present } = await presenceRead({ beach, address, stalenessMs: presenceStaleness });
       this.cb.onPresence(present);
 
-      // 3. Marks read (beachcombing + non-presence marks at this address).
-      //    Same raw response feeds the pool view below — no extra call.
+      // 3. Marks read from the dedicated (beach, 'marks') block. Tide
+      //    config from beach:9 drives soft-wipe filtering. Separate from
+      //    the beach block read which carries pools / liquid / settings.
       const ringResult = await bsp({ agent_id: beach, block: 'beach', spindle: '1' });
       const ringRaw = ringResult.ok && 'raw' in ringResult ? ringResult.raw : null;
-      const marks = readMarks(ringRaw, address);
+      const tide = readTideConfig(ringRaw);
+      const marksResult = await bsp({ agent_id: beach, block: 'marks' });
+      const marksRaw = marksResult.ok && 'raw' in marksResult ? marksResult.raw : null;
+      const marks = readMarks(marksRaw, address, tide);
       this.cb.onMarks(marks);
 
       // 3b. Location-keyed shared liquid (beach:7.<address>.<digit>). Same
@@ -685,9 +818,12 @@ export class BeachKernel {
     const needles = [me, '@' + me];
     for (const watchedBeach of this.watchedBeaches) {
       try {
-        const r = await bsp({ agent_id: watchedBeach, block: 'beach', spindle: '1' });
+        const beachRead = await bsp({ agent_id: watchedBeach, block: 'beach', spindle: '1' });
+        const beachRaw = beachRead.ok && 'raw' in beachRead ? beachRead.raw : null;
+        const tideForWatched = readTideConfig(beachRaw);
+        const r = await bsp({ agent_id: watchedBeach, block: 'marks' });
         if (!r.ok || !('raw' in r) || !r.raw) continue;
-        const rows = readMarks(r.raw, '');
+        const rows = readMarks(r.raw, '', tideForWatched);
         for (const row of rows) {
           if (row.is_presence) continue;
           if (row.agent_id === me) continue; // skip our own marks

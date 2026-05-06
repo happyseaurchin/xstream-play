@@ -12,6 +12,8 @@ import mediumAgent from '../../blocks/xstream/medium-agent.json';
 import softAgent from '../../blocks/xstream/soft-agent.json';
 import hardAgent from '../../blocks/xstream/hard-agent.json';
 import bundles from '../../blocks/xstream/bundles.json';
+import whetstone from '../../blocks/whetstone.json';
+import conventionsLocal from '../../blocks/conventions.json';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type PscaleNode = string | { [key: string]: any };
@@ -23,6 +25,15 @@ const seeds: Record<string, PscaleNode> = {
   'soft-agent': softAgent,
   'hard-agent': hardAgent,
   'bundles': bundles,
+  // bsp() operational reference — sunstone+whetstone are the geometry teachers.
+  // Vendored locally as a stable fallback; substrate copies (pscale://whetstone)
+  // override at runtime if walked.
+  'whetstone': whetstone,
+  // Local fallback for happyseaurchin.com:beach:8 conventions. The canonical
+  // copy is on the federated beach and is fetched per-turn; this seed is what
+  // we use until that block is authored on the beach (via scripts/publish-
+  // conventions.ts) or while offline.
+  'conventions-local': conventionsLocal,
 };
 
 for (const [name, block] of Object.entries(seeds)) {

@@ -17,6 +17,10 @@ export interface MessagesRequest {
   tools?: any[];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   messages: Array<{ role: 'user' | 'assistant'; content: any }>;
+  // Extended thinking — Sonnet 4.6+ / Opus 4.7 only. Adds latency, billed
+  // at output token rate, but lets the model reason through multi-step
+  // tool sequences before committing to actions.
+  thinking?: { type: 'enabled'; budget_tokens: number };
 }
 
 export interface MessagesResponse {

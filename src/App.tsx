@@ -19,6 +19,7 @@ import { ConstructionButton } from './components/xstream/ConstructionButton'
 import { Column, type ColumnInputs } from './components/Column'
 import { AboutPage } from './components/AboutPage'
 import { readShell, bootstrapShell, type AgentShell } from './lib/bsp-client'
+import { getAdmissionState, isAdmitted } from './kernel/admission'
 import { extractUserSettings, type SettingsBlock } from './kernel/settings-reader'
 import type { Theme, Face } from './types/xstream'
 import './App.css'
@@ -265,6 +266,24 @@ function ColumnsApp({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) =>
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [identity.handle, identity.secret])
 
+  // Admission state — null when no handle (anon, n/a), true when passport:8
+  // exists and verifies, false otherwise. Drives the 🪨 indicator on the
+  // floating button's post-admission tray buttons. Re-checks when the
+  // active handle changes; AdmissionDialog can ping admissionRefreshKey to
+  // force a re-read after a successful admission.
+  const [admitted, setAdmitted] = useState<boolean | null>(null)
+  const [admissionRefreshKey, setAdmissionRefreshKey] = useState(0)
+  useEffect(() => {
+    if (!identity.handle) { setAdmitted(null); return }
+    let cancelled = false
+    ;(async () => {
+      const claim = await getAdmissionState(identity.handle)
+      if (!cancelled) setAdmitted(isAdmitted(claim))
+    })()
+    return () => { cancelled = true }
+  }, [identity.handle, admissionRefreshKey])
+  const refreshAdmission = useCallback(() => setAdmissionRefreshKey(k => k + 1), [])
+
   // Persist identity changes — per-handle keys.
   useEffect(() => {
     if (identity.handle) {
@@ -364,6 +383,7 @@ function ColumnsApp({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) =>
               onFocus={() => setFocusedId(col.id)}
               onClose={columns.length > 1 ? () => closeColumn(col.id) : undefined}
               onInputsChange={handleColumnInputsChange}
+              onAdmissionChange={refreshAdmission}
               initialBeach={col.initialBeach}
               initialFace={col.initialFace}
               initialAddress={col.initialAddress}
@@ -377,6 +397,7 @@ function ColumnsApp({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) =>
       <ConstructionButton
         onThemeChange={setTheme}
         currentTheme={theme}
+        admitted={admitted}
         face={focusedInputs?.face ?? 'character'}
         value={focusedInputs?.value ?? ''}
         onChange={focusedInputs?.onChange ?? (() => {})}

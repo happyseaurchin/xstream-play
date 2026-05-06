@@ -25,10 +25,12 @@ import { useVerificationPoll, loadPersistedWatch } from '../kernel/use-verificat
 import { DraggableSeparator } from './DraggableSeparator'
 import { ViewerDrawer } from './ViewerDrawer'
 import { InboxDrawer } from './InboxDrawer'
+import { AdmissionDialog } from './AdmissionDialog'
+import { getAdmissionState, isAdmitted } from '../kernel/admission'
 import { BeachKernel, type InboxItem } from '../kernel/beach-kernel'
-import { createBeachSession, type BeachSession, type MarkRow, type FrameView, type PoolView, type LiquidPeer } from '../kernel/beach-session'
+import { createBeachSession, channelFromBeach, type BeachSession, type MarkRow, type FrameView, type PoolView, type LiquidPeer, type Channel } from '../kernel/beach-session'
 import { resolveSetting, SETTINGS, type SettingsBlock } from '../kernel/settings-reader'
-import { setHiddenRef, beachToRef, resolveRef, bsp, pscaleRegister, pscaleGrainReach, pscaleKeyPublish, pscaleVerifyRider, pscaleCreateCollective, type AgentShell, type PresenceMark, type PscaleNode } from '../lib/bsp-client'
+import { setHiddenRef, beachToRef, resolveRef, bsp, pscaleRegister, pscaleGrainReach, pscaleKeyPublish, pscaleVerifyRider, pscaleCreateCollective, computePairId, addGrainToShell, readShell, type AgentShell, type PresenceMark, type PscaleNode } from '../lib/bsp-client'
 // SubstrateTray was rendered into the column header in the pre-button-tray
 // era. Its verbs (register / reach / keys / passport / create-collective)
 // now live on the floating ConstructionButton; the handler also lives there
@@ -37,6 +39,7 @@ import { setHiddenRef, beachToRef, resolveRef, bsp, pscaleRegister, pscaleGrainR
 //
 // import { SubstrateTray, type SubstrateAct } from './SubstrateTray'
 import { joinVapourChannel, deriveScope, type VapourChannelHandle, type VapourBroadcast } from '../lib/realtime'
+import { playVapourCue } from '../lib/notify-tone'
 import { getBlock, injectBlock } from '../kernel/block-store'
 import { callClaudeWithTools, callClaudeViaMcpConnector, buildSoftRecipePrompt } from '../kernel/claude-tools'
 import { synthesise, parseRecipe } from '../kernel/medium-llm'
@@ -98,6 +101,10 @@ export interface ColumnProps {
   onFocus: () => void
   onClose?: () => void  // omit/undefined ⇒ column is not closeable (e.g. last one)
   onInputsChange: (id: string, inputs: ColumnInputs | null) => void
+  /** Pinged when admission state may have changed (e.g. after the
+   * AdmissionDialog returns admitted=true). App re-reads passport:8 to
+   * refresh the floating button's 🪨 indicators. */
+  onAdmissionChange?: () => void
   // Seed parameters when spawning a fresh column. Subsequent navigation
   // happens within the column.
   initialBeach?: string
@@ -132,6 +139,12 @@ export function Column(props: ColumnProps) {
   const [frameInput, setFrameInput] = useState('')
   const [viewerOpen, setViewerOpen] = useState(false)
   const [inboxOpen, setInboxOpen] = useState(false)
+  // Admission gate — opens just-in-time when the user reaches for a
+  // post-admission feature (engage / register / sign / notifications) for
+  // the first time. See docs/DESIGN-CHANNELS.md.
+  const [admissionOpen, setAdmissionOpen] = useState(false)
+  const [admissionReason, setAdmissionReason] = useState('')
+  const pendingEngageRef = useRef<{ partner: string; description: string; mySide: string } | null>(null)
 
   // Live data from kernel
   const [presence, setPresence] = useState<PresenceMark[]>([])
@@ -152,6 +165,16 @@ export function Column(props: ColumnProps) {
 
   // Live peer vapour
   const [peerVapour, setPeerVapour] = useState<Record<string, VapourBroadcast>>({})
+  // Vapour-notification — visual ping when peer vapour arrives while this
+  // column is unfocused. Cleared on focus. v0.3 vapour-as-notification.
+  const [hasNewVapour, setHasNewVapour] = useState(false)
+  // Refs so the realtime onPeer callback (set up once at subscribe time)
+  // can read the latest focus state without rebinding the whole channel.
+  const isFocusedRef = useRef(isFocused)
+  useEffect(() => { isFocusedRef.current = isFocused }, [isFocused])
+  // Clear the vapour-notification ping when the column gains focus.
+  useEffect(() => { if (isFocused) setHasNewVapour(false) }, [isFocused])
+  const mutedHandlesRef = useRef<Set<string>>(new Set())
   // Vapour transport status — surfaced as a header indicator so the user can
   // see at a glance whether two-browser vapour will work or is silently dead.
   // 'pending' = joining, 'subscribed' = live, 'no-transport' = Supabase env
@@ -178,6 +201,9 @@ export function Column(props: ColumnProps) {
       setMutedHandles(new Set(raw ? JSON.parse(raw) as string[] : []))
     } catch { setMutedHandles(new Set()) }
   }, [muteKey])
+  // Mirror mutes into the ref so the realtime onPeer callback (bound once
+  // per subscribe) sees the latest mute set without rebinding.
+  useEffect(() => { mutedHandlesRef.current = mutedHandles }, [mutedHandles])
   const toggleMute = useCallback((aid: string) => {
     if (!muteKey || !aid) return
     setMutedHandles(prev => {
@@ -273,6 +299,13 @@ export function Column(props: ColumnProps) {
     kernelRef.current.setUserSettings(userSettings)
   }, [userSettings])
 
+  // Focus-gate the kernel's polling cadence. Focused columns pull at 1.5s
+  // (live-reader). Unfocused drop to 30s — keeps presence alive while not
+  // thrashing the substrate. v0.3 polling-disarm.
+  useEffect(() => {
+    kernelRef.current?.setFocused(isFocused)
+  }, [isFocused])
+
   // Wire agent block hidden directories on beach change
   useEffect(() => {
     const beachRef = beachToRef(beach)
@@ -345,7 +378,32 @@ export function Column(props: ColumnProps) {
       scope,
       agent_id: effectiveAgentId,
       face,
-      onPeer: msg => { setPeerVapour(prev => ({ ...prev, [msg.agent_id]: msg })) },
+      onPeer: msg => {
+        setPeerVapour(prev => ({ ...prev, [msg.agent_id]: msg }))
+        // Vapour-notification: peer vapour arrived. Fire ping + audio when:
+        //   - column is unfocused
+        //   - peer isn't us
+        //   - peer isn't on per-handle mute (legacy localStorage)
+        //   - message has substantive text
+        //   - shell:5.6 settings (allowlist + per-channel default) permit
+        // Per the design: vapour IS the notification (no separate alert
+        // system). Settings schema documented at conventions.json:9.6.
+        const baseAllow = (
+          !isFocusedRef.current &&
+          msg.agent_id &&
+          msg.agent_id !== effectiveAgentId &&
+          !mutedHandlesRef.current.has(msg.agent_id) &&
+          (msg.text || '').trim().length > 0
+        )
+        if (baseAllow && vapourNotificationsAllow({
+          userSettings,
+          beach,
+          peerAgentId: msg.agent_id,
+        })) {
+          setHasNewVapour(true)
+          playVapourCue()
+        }
+      },
       onStatus: (status) => setVapourStatus(status),
     })
     if (handle) vapourChannelRef.current = handle
@@ -549,12 +607,47 @@ export function Column(props: ColumnProps) {
       const [description, mySide] = rest.includes('|')
         ? rest.split('|', 2).map(s => s.trim())
         : [rest.trim(), rest.trim()]
+
+      // Admission gate — engage is post-admission. Check passport:8; if no
+      // claim, open the AdmissionDialog with engage-args stashed; resume
+      // after the modal returns admitted=true.
+      const claim = await getAdmissionState(identity.handle)
+      if (!isAdmitted(claim)) {
+        if (!identity.apiKey) {
+          reportInfo('Engage needs admission first. Add an API key (button → Identity) so the substrate can meet you.')
+          return
+        }
+        pendingEngageRef.current = { partner, description, mySide }
+        setAdmissionReason('Forming a grain is a sovereign relationship.')
+        setAdmissionOpen(true)
+        setVapor('')
+        return
+      }
+
       reportInfo(`🤝 reaching to ${partner}…`)
       const r = await pscaleGrainReach({
         agent_id: identity.handle, partner_agent_id: partner,
         description, my_side_content: mySide, my_passphrase: identity.secret,
       })
       reportInfo(r.ok ? `🤝 ${r.message}` : `engage failed: ${r.message}`)
+      if (r.ok) {
+        // Record the grain in shell:6 so the home view (👁) can list it
+        // and the user can switch the column to the grain in one click.
+        try {
+          const pair_id = await computePairId(identity.handle, partner)
+          const stored = await addGrainToShell({
+            agent_id: identity.handle, secret: identity.secret, partner, pair_id,
+          })
+          if (stored.ok) {
+            const next = await readShell(identity.handle)
+            if (next) props.onShellSaved?.(next)
+          }
+        } catch (e) {
+          // Non-fatal — the substrate-side grain still exists; only the
+          // home-view convenience is missing. Re-engage will retry.
+          setLogs(prev => [...prev.slice(-50), `⚠ grain shell-write failed: ${e instanceof Error ? e.message : String(e)}`])
+        }
+      }
       setVapor('')
       return
     }
@@ -779,25 +872,10 @@ export function Column(props: ColumnProps) {
           timestamp: lp.timestamp ? Date.parse(lp.timestamp) : Date.now(),
         })
       }
-      // De-dupe presence per agent_id — multiple presence digits or stale
-      // entries can land for the same handle. Keep the freshest.
-      const seenPresence = new Set<string>()
-      const sortedPresence = [...presence].sort((a, b) =>
-        (b.timestamp || '').localeCompare(a.timestamp || ''))
-      for (const p of sortedPresence) {
-        if (p.agent_id === effectiveAgentId) continue
-        if (p.agent_id && liquidByAgent.has(p.agent_id)) continue // already shown as liquid
-        const dedupeKey = p.agent_id || `anon-${p.timestamp || ''}`
-        if (seenPresence.has(dedupeKey)) continue
-        seenPresence.add(dedupeKey)
-        cards.push({
-          id: `peer-${dedupeKey}`,
-          userId: `peer-${dedupeKey}`,
-          userName: p.agent_id,
-          content: p.summary || `present at ${p.address || '/'}`,
-          timestamp: p.timestamp ? Date.parse(p.timestamp) : Date.now(),
-        })
-      }
+      // Presence-as-card was previously surfaced here ("X present at /").
+      // Removed: presence already shows in the column header indicator and
+      // in the viewer (👁) — duplicating it as liquid cards muddies the
+      // forming-state signal. Liquid is for actual contributions only.
     }
     return cards
   })()
@@ -987,10 +1065,35 @@ export function Column(props: ColumnProps) {
           face accent (subtle 8% alpha) so the user sees CADO-orientation
           at a glance across multi-column layouts. */}
       <div className="column-header-tint flex items-center gap-2 px-3 h-[44px] border-b border-border/50 text-sm shrink-0 z-10 relative overflow-x-auto">
+        {/* Vapour-notification ping — appears when peer vapour arrives at
+            this column while it's unfocused. Clears on focus. v0.3
+            vapour-as-notification: presence is the only listener, the
+            ping is the only alert. */}
+        {hasNewVapour && (
+          <span
+            className="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0"
+            title="new vapour from a peer at this column"
+          />
+        )}
         <span className={`text-xs font-mono ${identity.handle ? 'text-foreground font-semibold' : 'text-muted-foreground italic'}`}>
           {identity.handle || 'anon'}
         </span>
 
+        {/* Channel indicator — derived from current_beach prefix. Replaces
+            the CADO face cycler in v0.1; per docs/DESIGN-CHANNELS.md the
+            channel sets the V/L/S social rule-set, and CADO becomes a
+            label-of-where-you-are when it returns. */}
+        <span
+          className="text-[10px] uppercase tracking-wider font-mono px-1.5 py-0.5 rounded border border-border/50 text-muted-foreground shrink-0"
+          title={`channel: ${channelFromBeach(beach)} — see docs/DESIGN-CHANNELS.md`}
+        >
+          {channelFromBeach(beach)}
+        </span>
+
+        {/* CADO face cycler — commented out for v0.1. The face state still
+            persists per-column and is tagged at field 4 of every mark; this
+            UI returns when the LLM selects faces in its bsp() calls or when
+            per-face viewer content (author/designer) is ready.
         <div className="flex items-center gap-0.5 border border-border/50 rounded overflow-hidden shrink-0">
           {(['character', 'author', 'designer', 'observer'] as const).map(f => {
             const sf = shell?.faces.find(x => x.canonical === f)
@@ -1011,6 +1114,7 @@ export function Column(props: ColumnProps) {
             )
           })}
         </div>
+        */}
 
         <div className="flex items-center gap-1 text-xs font-mono border border-border/50 rounded px-2 py-0.5 text-foreground min-w-0 shrink">
           <span title="beach" className="text-muted-foreground shrink-0">🌊</span>
@@ -1141,6 +1245,10 @@ export function Column(props: ColumnProps) {
           shell={shell}
           onShellSaved={props.onShellSaved}
           onNavigateAddress={setCurrentAddress}
+          onSwitchBeach={(next) => {
+            setBeach(next)
+            setCurrentAddress('')
+          }}
         />
 
         <InboxDrawer
@@ -1155,7 +1263,107 @@ export function Column(props: ColumnProps) {
           }}
           onAck={key => onAckInbox(key)}
         />
+
+        <AdmissionDialog
+          open={admissionOpen}
+          reason={admissionReason}
+          apiKey={identity.apiKey}
+          handle={identity.handle}
+          secret={identity.secret}
+          model={session.soft_model}
+          beach={beach}
+          onClose={async (admitted) => {
+            setAdmissionOpen(false)
+            if (admitted) {
+              props.onAdmissionChange?.()
+              if (pendingEngageRef.current) {
+                const { partner, description, mySide } = pendingEngageRef.current
+                pendingEngageRef.current = null
+                reportInfo(`🤝 reaching to ${partner}…`)
+                const r = await pscaleGrainReach({
+                  agent_id: identity.handle, partner_agent_id: partner,
+                  description, my_side_content: mySide, my_passphrase: identity.secret,
+                })
+                reportInfo(r.ok ? `🤝 ${r.message}` : `engage failed: ${r.message}`)
+                if (r.ok) {
+                  try {
+                    const pair_id = await computePairId(identity.handle, partner)
+                    const stored = await addGrainToShell({
+                      agent_id: identity.handle, secret: identity.secret, partner, pair_id,
+                    })
+                    if (stored.ok) {
+                      const next = await readShell(identity.handle)
+                      if (next) props.onShellSaved?.(next)
+                    }
+                  } catch (e) {
+                    setLogs(prev => [...prev.slice(-50), `⚠ grain shell-write failed: ${e instanceof Error ? e.message : String(e)}`])
+                  }
+                }
+              }
+            } else {
+              pendingEngageRef.current = null
+            }
+          }}
+        />
       </div>
     </div>
   )
+}
+
+/** Vapour-notification gate. Reads shell:5.6 (per-endpoint allowlist,
+ * per-agent allowlist, per-channel default) and decides whether the chime
+ * + visual ping should fire. Open by default when settings are unset.
+ * Schema: conventions.json:9.6. */
+function vapourNotificationsAllow(opts: {
+  userSettings: SettingsBlock
+  beach: string
+  peerAgentId: string
+}): boolean {
+  const { userSettings, beach, peerAgentId } = opts
+  if (!userSettings) return true
+  const settings = userSettings as Record<string, unknown>
+  const notif = settings['6']
+  if (!notif || typeof notif !== 'object') return true
+  const n = notif as Record<string, unknown>
+
+  // 5.6.4 — per-channel default (1=beach, 2=sed, 3=grain). Defaults: beach
+  // off (noisy), sed on, grain on.
+  const channel: Channel = channelFromBeach(beach)
+  const channelKey = channel === 'beach' ? '1' : channel === 'sed' ? '2' : '3'
+  const channelDefaults = n['4']
+  const defaultBeachOff = channel === 'beach'
+  let channelAllow = !defaultBeachOff
+  if (channelDefaults && typeof channelDefaults === 'object') {
+    const v = (channelDefaults as Record<string, unknown>)[channelKey]
+    if (typeof v === 'boolean') channelAllow = v
+    else if (typeof v === 'number') channelAllow = v !== 0
+    else if (typeof v === 'string') channelAllow = v === 'true' || v === '1'
+  }
+  if (!channelAllow) return false
+
+  // 5.6.2 — endpoint allowlist (digit-keyed strings; if any non-empty,
+  // peer's beach must start with one of them).
+  const endpointList = n['2']
+  if (endpointList && typeof endpointList === 'object') {
+    const allowed: string[] = []
+    for (let d = 1; d <= 9; d++) {
+      const v = (endpointList as Record<string, unknown>)[String(d)]
+      if (typeof v === 'string' && v.trim()) allowed.push(v.trim())
+    }
+    if (allowed.length > 0 && !allowed.some(prefix => beach.startsWith(prefix))) return false
+  }
+
+  // 5.6.3 — agent allowlist (digit-keyed strings; if any non-empty, only
+  // those agents trigger).
+  const agentList = n['3']
+  if (agentList && typeof agentList === 'object') {
+    const allowed: string[] = []
+    for (let d = 1; d <= 9; d++) {
+      const v = (agentList as Record<string, unknown>)[String(d)]
+      if (typeof v === 'string' && v.trim()) allowed.push(v.trim())
+    }
+    if (allowed.length > 0 && !allowed.includes(peerAgentId)) return false
+  }
+
+  return true
 }

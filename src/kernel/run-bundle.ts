@@ -46,6 +46,11 @@ export interface BundleSpec {
   // limits
   maxTurns?: number;
   maxTokens?: number;
+  // Extended thinking budget (Sonnet 4.6+ / Opus 4.7). When > 0, enables
+  // thinking with the given budget_tokens. Recommended: 3000-5000 for
+  // substrate-navigation workloads (multi-step bsp() walks, field
+  // extraction, parameter chaining). Off when undefined / 0.
+  thinkingBudget?: number;
   // telemetry
   telemetry?: BundleTelemetry;
   // hooks
@@ -83,6 +88,10 @@ export async function runBundle(spec: BundleSpec, userMessage: string): Promise<
       max_tokens: maxTokens,
       system: spec.systemPrompt,
       ...(useTools ? { tools: spec.tools } : {}),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ...(spec.thinkingBudget && spec.thinkingBudget > 0
+        ? { thinking: { type: 'enabled', budget_tokens: spec.thinkingBudget } } as any
+        : {}),
       messages,
     });
     lastResp = data;

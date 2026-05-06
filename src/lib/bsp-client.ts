@@ -378,12 +378,34 @@ export interface ShellFace {
   persona: string;
 }
 
+export interface GrainEntry {
+  partner: string;
+  pair_id: string;
+}
+
 export interface AgentShell {
   description: string;
   faces: ShellFace[];
   watched_beaches: string[];
   block_manifest: string[];
+  /** Grains the user has reached or formed — stored at shell:6.<digit> as
+   * "<partner>|<pair_id>" strings. Click in the home view to switch the
+   * column to this grain. */
+  grains: GrainEntry[];
   raw: PscaleNode;
+}
+
+/** Compute a pair_id from two agent_ids — sha256(sort(A,B).join('|'))[:16].
+ * Verified against the bsp-mcp substrate via a synthetic grain_reach
+ * (claude-pairtest-alice + claude-pairtest-bob → pair_id 240260a4dc35a01b
+ * matches sha256("claude-pairtest-alice|claude-pairtest-bob")[:16]).
+ * Sort order is JS string-default; separator is the pipe character. */
+export async function computePairId(a: string, b: string): Promise<string> {
+  const sorted = [a, b].sort();
+  const data = new TextEncoder().encode(sorted.join('|'));
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(digest))
+    .map(byte => byte.toString(16).padStart(2, '0')).join('').slice(0, 16);
 }
 
 const CADO_ORDER: Record<'1' | '2' | '3' | '4', Face> = {
@@ -451,7 +473,66 @@ export async function readShell(agent_id: string): Promise<AgentShell | null> {
     }
   }
 
-  return { description, faces, watched_beaches: watched, block_manifest: manifest, raw };
+  const grains: GrainEntry[] = [];
+  const grainsNode = block['6'];
+  if (typeof grainsNode === 'object' && grainsNode !== null) {
+    const go = grainsNode as Record<string, PscaleNode>;
+    for (let d = 1; d <= 9; d++) {
+      const v = go[String(d)];
+      if (typeof v === 'string' && v.includes('|')) {
+        const [partner, pair_id] = v.split('|', 2);
+        if (partner && pair_id) grains.push({ partner, pair_id });
+      }
+    }
+  }
+
+  return { description, faces, watched_beaches: watched, block_manifest: manifest, grains, raw };
+}
+
+/** Write a grain entry to shell:6.<next-free>. Used after a successful
+ * engage to remember the bilateral channel so the home view can offer
+ * one-click switch to the grain. v0.3 grain switching. */
+export async function addGrainToShell(opts: {
+  agent_id: string;
+  secret: string;
+  partner: string;
+  pair_id: string;
+}): Promise<{ ok: boolean; message: string }> {
+  const { agent_id, secret, partner, pair_id } = opts;
+  // Read current shell to find a free slot at 6.<digit> and avoid duplicates.
+  const shell = await readShell(agent_id);
+  if (shell?.grains.some(g => g.pair_id === pair_id)) {
+    return { ok: true, message: 'grain already in shell:6' };
+  }
+  let nextDigit: string | null = null;
+  if (shell) {
+    const block = shell.raw as Record<string, PscaleNode>;
+    const grainsNode = block['6'];
+    const ring = (typeof grainsNode === 'object' && grainsNode !== null)
+      ? grainsNode as Record<string, PscaleNode>
+      : {};
+    for (let d = 1; d <= 9; d++) {
+      if (!(String(d) in ring) || typeof ring[String(d)] !== 'string') {
+        nextDigit = String(d);
+        break;
+      }
+    }
+  } else {
+    nextDigit = '1';
+  }
+  if (!nextDigit) return { ok: false, message: 'shell:6 is full (9 grains max)' };
+  const result = await bsp({
+    agent_id,
+    block: 'shell',
+    spindle: '6.' + nextDigit,
+    content: `${partner}|${pair_id}`,
+    secret,
+  });
+  if (result.kind !== 'write') return { ok: false, message: 'unexpected result kind' };
+  const w = result as BspWriteResult;
+  return w.ok
+    ? { ok: true, message: `grain stored at shell:6.${nextDigit}` }
+    : { ok: false, message: 'error' in w && w.error ? w.error : 'shell write failed' };
 }
 
 // ── Block reference resolution (per docs/protocol-block-references.md) ──
