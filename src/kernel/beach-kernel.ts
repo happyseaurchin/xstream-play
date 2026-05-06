@@ -23,6 +23,8 @@ import {
   presenceHeartbeat,
   presenceClaimDigit,
   presenceRead,
+  supernestSlots,
+  readSlot,
   type PresenceMark,
   type BspReadResult,
   type PscaleNode,
@@ -86,55 +88,39 @@ async function getPresenceDigit(beach: string, agentId: string): Promise<string>
   return d;
 }
 
-// A presence heartbeat is a structured mark whose underscore matches the
-// canonical "<agent_id> @ <ts> — present at <addr>" form. Marks that share
-// the three required tag fields (1=agent, 2=address, 3=timestamp) but carry
-// substantive user-typed text in the underscore are NOT presence — they're
-// the user's contribution and belong in the solid stream.
-const PRESENCE_RE = /^\S+ @ \S+ — present at /;
+// Presence vs substantive: per pscale__block-conventions:9.2, presence is the
+// "absence of field 4" sub-shape. A presence mark carries the three required
+// tag fields (1=agent, 2=address, 3=timestamp) and an optional human-readable
+// underscore, but no field 4. Substantive marks carry field 4 (face or body).
+// One block, one shape, one discriminator.
 function isPresenceMark(node: PscaleNode): boolean {
   if (typeof node !== 'object' || node === null) return false;
   const obj = node as Record<string, PscaleNode>;
   if (typeof obj['1'] !== 'string' || typeof obj['2'] !== 'string' || typeof obj['3'] !== 'string') return false;
-  return typeof obj._ === 'string' && PRESENCE_RE.test(obj._ as string);
+  return obj['4'] === undefined;
 }
 
-// Super-nest write-slot finder for the dedicated marks block at
-// (beach, 'marks'). Walks digits 1-9 at every level — tagged metadata
-// lives at underscore-prefixed keys (_a/_addr/_t/_f), so positions 1-9
-// are pure sub-mark positions. Prefer free → empty → descend into oldest
-// slot. Recurse indefinitely. Marks accumulate; the path lengthens; tide
-// is the only cleanup. Returns the spindle (e.g. "1.3.7") to write at.
-function findNextMarkSpindle(
-  ring: Record<string, PscaleNode> | null,
-  prefix: string,
-): string {
-  if (!ring) return prefix ? `${prefix}.1` : '1';
-  let bestFree: string | null = null;
-  let bestEmpty: string | null = null;
-  let oldest: { digit: string; ts: string; child: Record<string, PscaleNode> } | null = null;
-  for (let d = 1; d <= 9; d++) {
-    const dk = String(d);
-    if (!(dk in ring)) { if (bestFree === null) bestFree = dk; continue; }
-    const slot = ring[dk];
-    if (typeof slot === 'object' && slot !== null) {
-      const u = (slot as Record<string, PscaleNode>)._;
-      if (typeof u !== 'string' || !u.trim()) {
-        if (bestEmpty === null) bestEmpty = dk;
-        continue;
-      }
-      const ts = (slot as Record<string, PscaleNode>)._t;
-      const tsStr = typeof ts === 'string' ? ts : '';
-      if (!oldest || tsStr < oldest.ts) oldest = { digit: dk, ts: tsStr, child: slot as Record<string, PscaleNode> };
-    } else if (typeof slot === 'string' && !slot.trim()) {
-      if (bestEmpty === null) bestEmpty = dk;
+// Supernest write-slot finder for the marks block. Per pscale__block-conventions:9.3:
+// writers pick the next free positive integer composed of digits 1-9 (no zeros);
+// the bsp walker interprets the integer hierarchically (slot 11 → [1][1], slot
+// 234 → [2][3][4]). After slot 9 the next slot is 11 (10 is the underscore-summary
+// position and stays empty). A slot is free when it's absent, empty-string, or an
+// object with no underscore content. Falls back to '9' if 819 slots are exhausted
+// (vanishingly unlikely; tide cleanup handles long-term accumulation).
+function findNextMarkSpindle(marksBlock: PscaleNode | null): string {
+  for (const slot of supernestSlots()) {
+    const m = readSlot(marksBlock, slot);
+    if (m === null) return slot; // absent
+    if (typeof m === 'string') {
+      if (!m.trim()) return slot; // empty leaf
+      continue;
+    }
+    if (typeof m === 'object') {
+      const u = (m as Record<string, PscaleNode>)._;
+      if (typeof u !== 'string' || !u.trim()) return slot; // empty
     }
   }
-  const segment = (s: string) => prefix ? `${prefix}.${s}` : s;
-  if (bestFree) return segment(bestFree);
-  if (bestEmpty) return segment(bestEmpty);
-  if (oldest) return findNextMarkSpindle(oldest.child, segment(oldest.digit));
-  return segment('9');
+  return '9';
 }
 
 // Tide config — from beach:9.1.1.{1,2,3} (anonymous / handle / signed wipe
@@ -186,11 +172,14 @@ function markIsTideWiped(row: MarkRow, tide: TideConfig, hasSignature: boolean):
   return limitSecs !== null && ageMs > limitSecs * 1000;
 }
 
-// Read marks from the dedicated (beach, 'marks') block. Recursive walk
-// through digits 1-9 at every level. Tagged metadata at underscore-prefixed
-// keys (_a agent, _addr address, _t timestamp, _f face). Soft-wipe by
-// tide config (passed in by caller — read from beach:9). Sorted newest-
-// first by timestamp.
+// Read marks from the marks block (per pscale__block-conventions:9). Recursive
+// supernest walk through digits 1-9 at every level. Tag fields live at digit
+// positions {1: agent_id, 2: address, 3: ts, 4: face/body} for new canonical
+// marks; legacy entries use underscore-prefixed keys (_a/_addr/_t/_f) and are
+// read for backward-compat during the transition. Presence (absence-of-4) is
+// flagged via is_presence and filtered out by callers (solid stream, etc.).
+// Soft-wipe by tide config (passed in by caller — read from beach:9). Sorted
+// newest-first by timestamp.
 function readMarks(marksBlock: PscaleNode | null, addressFilter: string, tide: TideConfig): MarkRow[] {
   if (typeof marksBlock !== 'object' || marksBlock === null) return [];
   const out: MarkRow[] = [];
@@ -206,27 +195,34 @@ function walkMarkTree(
   tide: TideConfig,
   out: MarkRow[],
 ): void {
+  // Read THIS node as a potential leaf mark — tag fields at digit positions 1-4
+  // (new canonical) with underscore-prefixed fallback (_a/_addr/_t/_f) for legacy.
+  // The typeof check disambiguates leaf-vs-parent: at a leaf, fields 1-4 are
+  // strings; at a parent, position 1-9 are sub-mark objects.
+  const aid = typeof node['1'] === 'string' ? (node['1'] as string)
+            : typeof node._a === 'string' ? (node._a as string) : null;
+  const addr = typeof node['2'] === 'string' ? (node['2'] as string)
+             : typeof node._addr === 'string' ? (node._addr as string) : null;
+  const ts = typeof node['3'] === 'string' ? (node['3'] as string)
+           : typeof node._t === 'string' ? (node._t as string) : null;
+  const face = asFace(node['4']) ?? asFace(node._f);
+  const text = typeof node._ === 'string' ? (node._ as string) : '';
+  if (text && digitPath) { // root node has no path; skip emitting it as a mark
+    const passesAddress = !addressFilter || !addr || addr.startsWith(addressFilter);
+    if (passesAddress) {
+      const presence = isPresenceMark(node);
+      const row: MarkRow = { digit: digitPath, agent_id: aid, address: addr, timestamp: ts, text, face, is_presence: presence };
+      const hasSig = !!aid && aid !== '(anon)' && !aid.startsWith('anon-');
+      if (!markIsTideWiped(row, tide, hasSig)) out.push(row);
+    }
+  }
+  // Recurse into supernest children — only object children at digit positions.
   for (let d = 1; d <= 9; d++) {
     const k = String(d);
     const child = node[k];
-    if (child === undefined) continue;
-    const path = digitPath ? `${digitPath}.${k}` : k;
     if (typeof child === 'object' && child !== null) {
-      const obj = child as Record<string, PscaleNode>;
-      const aid = typeof obj._a === 'string' ? (obj._a as string) : null;
-      const addr = typeof obj._addr === 'string' ? (obj._addr as string) : null;
-      const ts = typeof obj._t === 'string' ? (obj._t as string) : null;
-      const face = asFace(obj._f);
-      const text = typeof obj._ === 'string' ? (obj._ as string) : '';
-      if (text) {
-        const passesAddress = !addressFilter || !addr || addr.startsWith(addressFilter);
-        if (passesAddress) {
-          const row: MarkRow = { digit: path, agent_id: aid, address: addr, timestamp: ts, text, face, is_presence: false };
-          const hasSig = !!aid && aid !== '(anon)' && !aid.startsWith('anon-');
-          if (!markIsTideWiped(row, tide, hasSig)) out.push(row);
-        }
-      }
-      walkMarkTree(obj, path, addressFilter, tide, out);
+      const path = digitPath ? `${digitPath}.${k}` : k;
+      walkMarkTree(child as Record<string, PscaleNode>, path, addressFilter, tide, out);
     }
   }
 }
@@ -495,10 +491,10 @@ export class BeachKernel {
     try {
       const digit = await getPresenceDigit(beach, prevAgentId);
       const ts = new Date().toISOString();
-      // Empty presence mark — peers' read-side filter requires non-empty
-      // structured fields, so this looks "departed" to them.
+      // Empty presence mark at the marks block — peers' read-side filter (staleness
+      // + non-empty underscore) treats this as "departed" until the slot ages out.
       await bsp({
-        agent_id: beach, block: 'beach', spindle: '1.' + digit,
+        agent_id: beach, block: 'marks', spindle: digit,
         content: { _: '', '1': prevAgentId, '2': address, '3': ts },
       });
       // Empty liquid slot at beach:7.<address>.<digit> so peers stop seeing
@@ -595,13 +591,13 @@ export class BeachKernel {
       };
     } else {
       blockName = 'marks';
-      spindle = findNextMarkSpindle(ring, '');
+      spindle = findNextMarkSpindle(ring);
       content = {
         _: text,
-        _a: this.session.agent_id || '(anon)',
-        _addr: this.session.current_address,
-        _t: ts,
-        _f: this.session.face,
+        '1': this.session.agent_id || '(anon)',
+        '2': this.session.current_address,
+        '3': ts,
+        '4': this.session.face,
       };
     }
 

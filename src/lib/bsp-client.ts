@@ -245,6 +245,13 @@ export async function bsp(params: BspParams): Promise<BspReadResult | BspWriteRe
 }
 
 // ── Helpers: presence (per docs/presence-via-marks.md) ──
+//
+// Presence and substantive marks share one block: (agent_id='<URL>', block='marks').
+// Slot is a positive integer composed of digits 1-9 (no zeros); the bsp walker
+// interprets it hierarchically — slot 11 walks to [1][1], slot 234 to [2][3][4].
+// Mark shape: {_: text, 1: agent_id, 2: address, 3: ISO-ts, 4: optional body/face}.
+// Presence is the absence-of-field-4 sub-shape — readers filter by !obj['4'].
+// See pscale__block-conventions:9 + docs/presence-via-marks.md (PR pscale-commons/bsp-mcp-server#3).
 
 export interface PresenceMark {
   agent_id: string;
@@ -260,10 +267,39 @@ export interface PresenceRead {
 
 const DEFAULT_STALENESS_MS = 30_000;
 
+// Supernest slot enumerator — yields 1..9, then 11..99 (skip 0-bearing), then
+// 111..999 (skip 0-bearing). 9 + 81 + 729 = 819 candidate slots, enough for any
+// realistic presence/mark population. Per pscale__block-conventions:9.3.
+export function* supernestSlots(): Generator<string> {
+  for (let n = 1; n <= 9; n++) yield String(n);
+  for (let n = 11; n <= 99; n++) {
+    if (String(n).includes('0')) continue;
+    yield String(n);
+  }
+  for (let n = 111; n <= 999; n++) {
+    if (String(n).includes('0')) continue;
+    yield String(n);
+  }
+}
+
+// Read whatever sits at the supernest slot path — string, object, or null if absent.
+export function readSlot(block: PscaleNode | null, slot: string): PscaleNode | null {
+  if (typeof block !== 'object' || block === null) return null;
+  let cur: PscaleNode = block;
+  for (const ch of slot) {
+    if (typeof cur !== 'object' || cur === null) return null;
+    const next = (cur as Record<string, PscaleNode>)[ch];
+    if (next === undefined) return null;
+    cur = next;
+  }
+  return cur;
+}
+
 /**
- * Heartbeat: write or overwrite this agent's presence mark at digit `digit`
- * under `1` of the beach block. Caller maintains the digit across heartbeats
- * (claim once, reuse). Returns the digit used.
+ * Heartbeat: write or overwrite this agent's presence mark at slot `digit`
+ * (legacy param name; now a supernest integer like "1", "11", "234") within
+ * the marks block. Caller maintains the slot across heartbeats (claim once,
+ * reuse). No field 4 — absence-of-4 IS the presence signal per convention.
  */
 export async function presenceHeartbeat(opts: {
   beach: string;
@@ -276,8 +312,8 @@ export async function presenceHeartbeat(opts: {
   const summary = opts.summary ?? `${opts.agent_id} @ ${ts} — present at ${opts.address || '/'}`;
   const result = await bsp({
     agent_id: opts.beach,
-    block: 'beach',
-    spindle: '1.' + opts.digit,
+    block: 'marks',
+    spindle: opts.digit,
     content: { _: summary, '1': opts.agent_id, '2': opts.address, '3': ts },
   });
   return result.ok
@@ -286,8 +322,9 @@ export async function presenceHeartbeat(opts: {
 }
 
 /**
- * Claim a presence digit. Strategy: read marks ring, find a digit where the
- * mark is either absent, ours (same agent_id), or stale. Returns the digit.
+ * Claim a presence slot in the marks block. Strategy:
+ *   1. Walk the supernest looking for our own existing mark — if found, reuse.
+ *   2. Otherwise pick the first slot that is absent, empty, or stale.
  * Falls back to '1' on any read failure.
  */
 export async function presenceClaimDigit(opts: {
@@ -296,40 +333,45 @@ export async function presenceClaimDigit(opts: {
   stalenessMs?: number;
 }): Promise<string> {
   const stalenessMs = opts.stalenessMs ?? DEFAULT_STALENESS_MS;
-  const result = await bsp({ agent_id: opts.beach, block: 'beach', spindle: '1' });
-  if (!result.ok || (result as BspReadResult).raw === null) return '1';
-  const raw = (result as BspReadResult).raw;
-  if (typeof raw !== 'object' || raw === null) return '1';
-  const marks = (raw as Record<string, PscaleNode>)['1'];
-  if (typeof marks !== 'object' || marks === null) return '1';
+  const result = await bsp({ agent_id: opts.beach, block: 'marks' });
+  const marks = (result.ok && 'raw' in result) ? result.raw : null;
   const now = Date.now();
-  const taken = new Set<string>();
-  for (let d = 1; d <= 9; d++) {
-    const k = String(d);
-    const m = (marks as Record<string, PscaleNode>)[k];
-    if (m === undefined) continue;
-    if (typeof m !== 'object' || m === null) { taken.add(k); continue; }
+
+  // Pass 1 — reuse our own slot if it exists anywhere in the supernest.
+  for (const slot of supernestSlots()) {
+    const m = readSlot(marks, slot);
+    if (!m || typeof m !== 'object') continue;
     const obj = m as Record<string, PscaleNode>;
-    const mAgent = obj['1'];
-    const mTs = obj['3'];
-    if (mAgent === opts.agent_id) return k;
-    if (typeof mTs === 'string') {
-      const age = now - Date.parse(mTs);
-      if (Number.isFinite(age) && age < stalenessMs) taken.add(k);
-    } else {
-      taken.add(k);
-    }
+    if (typeof obj['1'] === 'string' && obj['1'] === opts.agent_id) return slot;
   }
-  for (let d = 1; d <= 9; d++) {
-    const k = String(d);
-    if (!taken.has(k)) return k;
+
+  // Pass 2 — claim a free, empty, or stale slot.
+  for (const slot of supernestSlots()) {
+    const m = readSlot(marks, slot);
+    if (m === null) return slot; // absent
+    if (typeof m === 'string') {
+      if (!m.trim()) return slot; // empty leaf
+      continue;
+    }
+    if (typeof m === 'object') {
+      const obj = m as Record<string, PscaleNode>;
+      const u = obj._;
+      if (typeof u !== 'string' || !u.trim()) return slot; // empty
+      const ts = obj['3'];
+      if (typeof ts === 'string') {
+        const age = now - Date.parse(ts);
+        if (Number.isFinite(age) && age >= stalenessMs) return slot; // stale
+      }
+    }
   }
   return '1';
 }
 
 /**
- * Read presence at an address: ring-read marks under `1`, filter by 3
- * required fields, prefix-match address, drop stale.
+ * Read presence at an address: walk the marks block supernest, keep slots
+ * that have all three required fields (1, 2, 3) AND no field 4 (absence-of-4
+ * is the presence-vs-substantive discriminator per block-conventions:9.2),
+ * prefix-match address, drop stale.
  */
 export async function presenceRead(opts: {
   beach: string;
@@ -338,32 +380,50 @@ export async function presenceRead(opts: {
 }): Promise<PresenceRead> {
   const stalenessMs = opts.stalenessMs ?? DEFAULT_STALENESS_MS;
   const addressFilter = opts.address ?? '';
-  const result = await bsp({ agent_id: opts.beach, block: 'beach', spindle: '1' });
+  const result = await bsp({ agent_id: opts.beach, block: 'marks' });
   if (!result.ok || (result as BspReadResult).raw === null) return { present: [], raw_marks_count: 0 };
   const raw = (result as BspReadResult).raw;
   if (typeof raw !== 'object' || raw === null) return { present: [], raw_marks_count: 0 };
-  const marks = (raw as Record<string, PscaleNode>)['1'];
-  if (typeof marks !== 'object' || marks === null) return { present: [], raw_marks_count: 0 };
   const now = Date.now();
   const present: PresenceMark[] = [];
   let rawCount = 0;
-  for (const k of Object.keys(marks as Record<string, PscaleNode>)) {
-    if (k === '_') continue;
-    rawCount++;
-    const m = (marks as Record<string, PscaleNode>)[k];
-    if (typeof m !== 'object' || m === null) continue;
-    const obj = m as Record<string, PscaleNode>;
-    const agentId = obj['1'];
-    const address = obj['2'];
-    const timestamp = obj['3'];
-    if (typeof agentId !== 'string' || typeof address !== 'string' || typeof timestamp !== 'string') continue;
-    if (!address.startsWith(addressFilter)) continue;
-    const age = now - Date.parse(timestamp);
-    if (!Number.isFinite(age) || age >= stalenessMs) continue;
-    const summary = typeof obj._ === 'string' ? (obj._ as string) : undefined;
-    present.push({ agent_id: agentId, address, timestamp, summary });
-  }
+  walkPresence(raw, addressFilter, now, stalenessMs, present, () => { rawCount++; });
   return { present, raw_marks_count: rawCount };
+}
+
+function walkPresence(
+  node: PscaleNode,
+  addressFilter: string,
+  now: number,
+  stalenessMs: number,
+  out: PresenceMark[],
+  onSeen: () => void,
+): void {
+  if (typeof node !== 'object' || node === null) return;
+  const obj = node as Record<string, PscaleNode>;
+  const agentId = obj['1'];
+  const address = obj['2'];
+  const timestamp = obj['3'];
+  // Presence shape: 1, 2, 3 are strings AND field 4 is absent.
+  if (typeof agentId === 'string' && typeof address === 'string' && typeof timestamp === 'string'
+      && obj['4'] === undefined) {
+    onSeen();
+    if (address.startsWith(addressFilter)) {
+      const age = now - Date.parse(timestamp);
+      if (Number.isFinite(age) && age < stalenessMs) {
+        const summary = typeof obj._ === 'string' ? (obj._ as string) : undefined;
+        out.push({ agent_id: agentId, address, timestamp, summary });
+      }
+    }
+  }
+  // Recurse into supernest children — digit-keyed object children.
+  for (let d = 1; d <= 9; d++) {
+    const k = String(d);
+    const child = obj[k];
+    if (typeof child === 'object' && child !== null) {
+      walkPresence(child, addressFilter, now, stalenessMs, out, onSeen);
+    }
+  }
 }
 
 // ── Helpers: shell (per docs/protocol-agent-shell.md) ──
